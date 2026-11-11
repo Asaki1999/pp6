@@ -756,7 +756,9 @@ def bind(project) -> list[str]:
 
     三条规则（都建立在「导入按 id 判断更新，表单/列表按 key 判断」之上）：
 
-    1. 对象名称或编码在库里能对上 → 写回 exist_id，导入走更新
+    1. 对象名称/编码在库里对得上 → **只提示，不再静默写 exist_id**（2026-11-11：
+       新建同名对象曾被误判成更新、导入覆盖线上对象；要更新请在 Excel 的
+       「已有对象ID」列显式填 id，或用反解链路——反解会自带 id）
     2. 表单 key 在库里已有 → 写回 exist_key，不新建一份同名表单
     3. 列表 key 在库里已有 → 同上
     4. 模块填的是名字（如「项目」）→ 换成 module_config.id
@@ -776,12 +778,22 @@ def bind(project) -> list[str]:
         if not hit.get("exists"):
             hit = lookup(bo.code) or {}
         if hit.get("exists"):
-            if not bo.exist_id:
-                bo.exist_id = hit.get("id", "")
+            if bo.exist_id:
+                # 用户显式填了「已有对象ID」——这是明确决定，照它走
+                notices.append(
+                    f"对象「{bo.name}」按你填的已有对象ID {bo.exist_id} 导入，"
+                    f"将更新系统里的「{hit['code']}」")
+            else:
+                # 不再静默绑 id（2026-11-11 修复）：以前名称对上就写 exist_id，
+                # 新建一个叫「项目」的对象会被当成更新系统 project，导入直接
+                # 覆盖线上对象。现在只提示，让用户显式决定。
+                notices.append(
+                    f"⚠ 对象「{bo.name}」与系统已有对象「{hit['code']}」同名"
+                    f"（id {hit.get('id', '')}）。本次按【新建】导入（不会动系统对象）；"
+                    f"若要更新它，请在 1_业务对象 的「已有对象ID」列填 {hit.get('id', '')}；"
+                    f"若担心混淆，请给新对象换个名字")
             if not bo.module_id and hit.get("moduleId"):
-                bo.module_id = hit["moduleId"]
-            notices.append(
-                f"对象「{bo.name}」系统里已有（{hit['code']}，id {bo.exist_id or '空'}），按更新处理")
+                bo.module_id = hit["moduleId"]   # 模块归属补齐，无覆盖风险
 
     form_keys = {k for it in catalog() for k in (it.get("forms") or {})}
     for form in project.forms:

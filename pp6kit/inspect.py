@@ -63,6 +63,10 @@ def _parse_bo(root) -> Bo | None:
         type_id=ent.attrib.get("typeId", ""),
         pk=ent.attrib.get("pk", "id"),
         desc=ent.attrib.get("desc", ""),
+        # 反解即显式：包里的对象 id 原样带回 exist_id，出包时导入仍按「更新」
+        # 处理（XML id 不变）。以前反解不带 id，靠 bind() 的名称匹配静默补——
+        # 那条路现已封死（新建同名对象会被误判成更新），反解场景必须自带 id。
+        exist_id=ent.attrib.get("id", "") or "",
     )
     if not bo.tbl_name and bo.code:
         from .model import table_name_for

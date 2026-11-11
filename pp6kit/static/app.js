@@ -754,12 +754,12 @@ function renderAiBo(d) {
   const objInfo = d.objectSource && d.objectSource.count
     ? `<span class="chip" title="关联对象（object 类型）只能选这里的编码，选错导入后是空下拉框">对象库 ${d.objectSource.count} 个 · ${esc(d.objectSource.source)}</span>`
     : "";
-  // 对象名和库里已有的一致时，导入会走「更新」而不是「新增」——
-  // 依据是 iform_bo_def.id，界面必须让人看得见
+  // 系统里有同名对象：不再自动按「更新」导入（2026-11-11 起），必须显式确认。
+  // AI 生成的对象默认是新建；要更新同名对象，下载 Excel 后在「已有对象ID」列填 id。
   const exist = d.existObject;
   const existChip = exist && exist.exists
-    ? `<span class="chip warn" title="导入时按更新处理，会覆盖系统里这个对象的结构">
-         ⚠ 系统里已有同名对象 ${esc(exist.code)}（id ${esc(exist.id || "未知")}），导入将按「更新」处理</span>`
+    ? `<span class="chip warn" title="本次下载的 Excel 按「新建」导入，不会动系统里这个对象。若要更新它：下载 Excel 后在 1_业务对象 的「已有对象ID」列填 ${esc(exist.id || "该对象的 id")}">
+         ⚠ 系统里已有同名对象 ${esc(exist.code)}（id ${esc(exist.id || "未知")}）· 将按「新建」导入</span>`
     : `<span class="chip" title="系统里没有同名对象，导入会新建一个">＋ 新对象</span>`;
 
   return `

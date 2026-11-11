@@ -259,6 +259,26 @@ def validate(proj: Project) -> list[Issue]:
     except Exception:
         pass
 
+    # 同名对象提醒：2026-11-11 起 bind() 不再静默把同名对象绑到系统 id 上
+    # （防新建覆盖线上对象），所以这里提前告诉用户「同名了，走的是新建，
+    # 要更新就填已有对象ID」——不然用户以为在改，其实建了个新的。
+    try:
+        from . import objects as _objects
+        if _objects.catalog():
+            for bo in proj.bos:
+                if bo.exist_id:
+                    continue
+                hit = _objects.lookup(bo.name) or {}
+                if not hit.get("exists"):
+                    hit = _objects.lookup(bo.code) or {}
+                if hit.get("exists"):
+                    issues.append(Issue(
+                        "warn", f"业务对象 {bo.code}",
+                        f"与系统已有对象「{hit['code']}」同名（id {hit.get('id', '')}），"
+                        f"将按【新建】导入；要更新它请在「已有对象ID」列填该 id"))
+    except Exception:
+        pass
+
     return issues
 
 
