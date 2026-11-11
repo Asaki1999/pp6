@@ -207,8 +207,21 @@ def _ensure_value_sources(project: Project) -> list[str]:
     if not ordered:
         return notices
 
-    # 已经指向某个已存在数据集的控件：这些字段不再动（反解来的包、用户手配的）
+    # 系统库里已有的数据集 key（refresh 时拉的 iform_data_dataset.key_）。
+    # 真实系统自带 97 个 <对象>_value 数据集（project/customer/contract/... 全都有）
+    # ——引用这些对象时**根本不该再建**，控件直接指向系统已有的数据集即可，
+    # 否则导入撞 key 报错。离线/无清单时为空，保持本包内查重。
+    sys_ds_keys: set[str] = set()
+    try:
+        from . import objects as _objects
+        sys_ds_keys = set(_objects.extra().get("datasets") or [])
+    except Exception:
+        sys_ds_keys = set()
+
+    # 已经指向某个已存在数据集的控件：这些字段不再动（反解来的包、用户手配的）。
+    # 本包与系统库的 key 都算「已存在」——反解真实包的控件指向的是系统数据集。
     wired: set[str] = set()
+    all_known = ds_keys | sys_ds_keys
     for form in project.forms:
         bo = project.bo(form.bo_code)
         if bo is None:
@@ -219,25 +232,33 @@ def _ensure_value_sources(project: Project) -> list[str]:
             bf = next((x for x in bo.fields if x.code == ff.name or x.name == ff.name), None)
             if bf is None or bf.type_new != "object" or not bf.object_type:
                 continue
-            if ff.value_source in ds_keys:
+            if ff.value_source in all_known and ff.value_source != bf.object_type:
+                # 已指向真实数据集 key（≠对象编码默认填法）→ 用户配置/反解来的，不动。
+                # value_source 恰好等于对象编码的仍走下面的 key_of 流程：
+                # 那是 blueprint 的默认填法，要按「本包/系统是否已有数据集」决定
+                # 是引用还是替换。
                 wired.add(bf.object_type)
 
     def _key_for(dst: str) -> str:
-        # 已有现成数据集（key=对象编码 或 <对象>_value）→ 直接复用，不重复建；
-        # 反解→再出包、用户先建了数据集忘接线的场景都靠这里收敛
-        if f"{dst}_value" in ds_keys:
-            return f"{dst}_value"
-        if dst in ds_keys:
-            return dst
+        # 已有现成数据集（本包 key、系统 key、对象编码本身）→ 直接复用，不重复建
+        for candidate in (f"{dst}_value", dst):
+            if candidate in ds_keys or candidate in sys_ds_keys:
+                return candidate
         return f"{dst}_value"          # 新建（到此为止它必然不存在，不会冲突）
 
     key_of: dict[str, str] = {}
     created: list[str] = []
+    reused: list[str] = []
     for dst in sorted(refs):
         if dst in wired:
             continue              # 控件已经指向数据集了，不要再建/再接
         key = _key_for(dst)
-        if key not in ds_keys:
+        if key in ds_keys:
+            key_of[dst] = key     # 本包已有，复用
+        elif key in sys_ds_keys:
+            key_of[dst] = key     # 系统库里已有（真实系统自带 <obj>_value），直接引用不建
+            reused.append(key)
+        else:
             ds = DataSet(key=key, name=f"{names.get(dst, dst)}值来源",
                          from_table=dst, ds_type=DS_VALUE)
             project.datasets.append(ds)
@@ -248,6 +269,10 @@ def _ensure_value_sources(project: Project) -> list[str]:
         notices.append(
             "已自动创建值来源数据集 " + "、".join(created)
             + "：关联对象的下拉框要靠它取数（真实系统的做法）")
+    if reused:
+        notices.append(
+            "引用系统已有数据集 " + "、".join(sorted(set(reused)))
+            + "（系统自带值来源，不重复创建）")
 
     # 接线：控件 value_source 恰好等于目标对象编码（blueprint 的默认填法）→ 指向数据集。
     # 用户手填的数据集 key、反解来的 key 都不等于对象编码，天然不受影响。

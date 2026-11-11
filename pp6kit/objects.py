@@ -223,6 +223,14 @@ def refresh(cfg: dict | None = None) -> dict:
         except Exception:
             relationships = None      # 老库没有这张表，降级用旧缓存/快照
 
+        # 系统已有数据集 key 清单：自动创建值来源数据集前先查这里——
+        # 真实系统自带 97 个 <对象>_value 数据集，撞 key 的重复导入会报错
+        try:
+            cur.execute("SELECT key_ FROM iform_data_dataset WHERE key_ IS NOT NULL")
+            ds_keys = [r[0] for r in cur.fetchall() if r[0]]
+        except Exception:
+            ds_keys = []
+
         # 表单/列表按「它属于哪个对象」归到对象名下，出包时一眼能查到
         for it in items:
             prefix = it["code"]
@@ -236,10 +244,13 @@ def refresh(cfg: dict | None = None) -> dict:
     n = save(items)
     save_extra(forms=forms, lists=lists, modules=modules)
     save_extra(dics=dics)
+    if ds_keys:
+        save_extra(datasets=ds_keys)
     rel_count = save_relationships(relationships) if relationships is not None else -1
     return {"count": n, "forms": sum(len(v) for v in forms.values()),
             "lists": sum(len(v) for v in lists.values()), "modules": len(modules),
-            "dics": len(dics), "relationships": rel_count, "source": "目标库"}
+            "dics": len(dics), "datasets": len(ds_keys),
+            "relationships": rel_count, "source": "目标库"}
 
 
 def _relationships_cache_path() -> Path:
@@ -332,7 +343,7 @@ def extra(force: bool = False) -> dict:
     return _extra
 
 
-def save_extra(forms=None, lists=None, modules=None, dics=None) -> None:
+def save_extra(forms=None, lists=None, modules=None, dics=None, datasets=None) -> None:
     global _extra
     data = extra()
     if forms is not None:
@@ -343,6 +354,8 @@ def save_extra(forms=None, lists=None, modules=None, dics=None) -> None:
         data["modules"] = modules
     if dics is not None:
         data["dics"] = dics
+    if datasets is not None:
+        data["datasets"] = datasets
     _extra_path().parent.mkdir(parents=True, exist_ok=True)
     _extra_path().write_text(json.dumps(data, ensure_ascii=False, indent=0), encoding="utf-8")
     _extra = data
