@@ -373,13 +373,17 @@ def build_zip(data: bytes, codes: list[str] | None = None,
         src = allp.path if allp else (next((d.path for d in res.deliverables), None))
         if src is None:
             raise ValueError("没有可交付的包")
-        # 重写一遍以挂上注释（直接拷字节没法加 comment）
+        # 重写一遍以挂上注释（直接拷字节没法加 comment）。
+        # 2026-11-11 逆向系统「发布 ZIP」产物确认：原生包的 comment 格式是
+        # `CONFIG_SYNC_NOTE:<发布说明>`（发布工作区里填的说明原文）。
+        # 我们的生成报告挂同样的前缀——导入端若解析 comment 能读到报告，
+        # 不解析也无害，格式与系统原生一致。
         buf = io.BytesIO()
         with zipfile.ZipFile(src) as zin, \
                 zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zout:
             for info in zin.infolist():
                 zout.writestr(info, zin.read(info.filename))
-            zout.comment = report.encode("utf-8")
+            zout.comment = ("CONFIG_SYNC_NOTE:" + report).encode("utf-8")
         # 下载文件名要能看出是干什么的：{业务名}-导入包-{日期}.zip
         # （以前是 config-sync-20261110-221234.zip，落地到下载目录完全认不出）
         stamp = datetime.now().strftime("%Y%m%d")
