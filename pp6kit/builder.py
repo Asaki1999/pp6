@@ -167,6 +167,58 @@ def package_name(label: str, part: str, stamp: str = "") -> str:
     return "-".join(bits) + ".zip"
 
 
+_ENTRY_SN = re.compile(r"^\d{3,}-")
+
+
+def entry_slug(entry: str, prefix: str = "") -> str:
+    """包内条目名 → 去掉序号先后的文件名（`bo/001-project.xml` → `project.xml`）。
+
+    系统导出包的命名规则是「前缀-编码.xml」，序号在**一个 zip 内唯一**：
+    `多个对象整体导出.zip` 里是 bo/001、bo/002、bo/003、form/004、data_template/005
+    ——同目录不重复，还跨目录接着往下数。
+    所以重排序号时只能取编码部分，否则会拼出 `form/001-create.xml`、
+    `form/001-detail.xml` 这种重号（zip 允许同名条目，导入端只会认其中一个，
+    等于静默丢文件）。
+
+    prefix：中间产物实际用的前缀（来自 `0_项目设置 › 文件前缀`）。用户可能填
+    `pp6` 这种非数字前缀，此时必须按它整段剥掉，否则会拼出
+    `bo/001-pp6-project.xml` 这种双前缀；剥完再用 `\\d{3,}-` 兜底（前缀改过、
+    或条目来自不认前缀的老包时仍能去掉序号）。
+    """
+    name = Path(entry).name
+    head = (prefix or "").strip().rstrip("-")
+    # 前缀和序号谁在前都可能（正常是 `pp6-project.xml`、老包是 `001-project.xml`），
+    # 两轮剥：先剥前缀再剥序号，谁先命中都能收敛到编码本身。
+    for _ in range(2):
+        if head and name.startswith(f"{head}-"):
+            name = name[len(head) + 1:]
+        name = _ENTRY_SN.sub("", name)
+    return name
+
+
+def unique_entry(used: set[str], entry: str) -> str:
+    """保证包内条目名不重复；真撞名（两条产物同一个编码）时补 `__2`/`__3` 后缀。
+
+    zip 格式本身允许同名条目，写进去不会报错，导入时按名字取文件就会丢内容，
+    所以这里宁可加后缀也要让它唯一。
+
+    后缀**不能带连字符**：反解侧（`inspect`、`tools/compare.py`、
+    `tools/capture_snippets.py`）用 `stem.split("-", 1)[-1]` 取编码，
+    补 `-2` 会被读成 `code-2` 这种不存在的编码，`code__2` 至少不会伪装成编码。
+    """
+    if entry not in used:
+        used.add(entry)
+        return entry
+    path = Path(entry)
+    sn = 2
+    candidate = f"{path.parent.as_posix()}/{path.stem}__{sn}{path.suffix}"
+    while candidate in used:
+        sn += 1
+        candidate = f"{path.parent.as_posix()}/{path.stem}__{sn}{path.suffix}"
+    used.add(candidate)
+    return candidate
+
+
 def _pack_module(out: Path, code: str, items: list[Artifact], prefix: str,
                  name: str | None = None) -> Path:
     """把一个模块的所有 XML 合成**一个** zip——系统导入是按模块来的，
@@ -174,17 +226,24 @@ def _pack_module(out: Path, code: str, items: list[Artifact], prefix: str,
 
     注意要写 XML 原文：单条产物本身已经是 data_template/xxx.xml 这样的一层 zip，
     直接把那个 zip 塞进去会变成 zip 套 zip，系统解不出来。
+
+    条目名重排连续序号（001/002/003…），与系统自己导出的包一致：
+    真实包 `项目列表.zip` → data_template/001-project_list_table.xml，
+    勾多个同类内容导出时同样是 001、002、003 往下数，没有重号。
     """
     mod = mod_def.of(code)
     out.mkdir(parents=True, exist_ok=True)
     target = out / (name or f"{prefix}-{mod.label}.zip")
+    used: set[str] = set()
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
-        for a in items:
+        for sn, a in enumerate(items, 1):
+            folder = Path(a.entry).parent.as_posix()
+            entry = unique_entry(used, f"{folder}/{sn:03d}-{entry_slug(a.entry, prefix)}")
             if a.xml is None:
                 with zipfile.ZipFile(a.zip_path) as src:
-                    z.writestr(a.entry, src.read(a.entry))
+                    z.writestr(entry, src.read(a.entry))
             else:
-                z.writestr(a.entry, a.xml.encode("utf-8"))
+                z.writestr(entry, a.xml.encode("utf-8"))
     return target
 
 
@@ -215,18 +274,20 @@ def _pack_all(out: Path, res: BuildResult, prefix: str, name: str | None = None)
     out.mkdir(parents=True, exist_ok=True)
     target = out / (name or f"{prefix}-整包（全部模块）.zip")
     sn = 0
+    used: set[str] = set()
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
-        # 按系统导入顺序写，业务对象必须最先
-        order = {"bo": 10, "dataset": 20, "filter": 20, "form": 30, "list": 40}
+        # 按真实导出包的顺序写：bo → form → data_template（业务对象必须最先，
+        # 表单/列表按表名找它）。`多个对象整体导出.zip` 就是
+        # bo/001-003、form/004、data_template/005 —— data_template 排在 form 之后，
+        # 服务端是否依赖这个顺序未知，但既然真实包如此，跟着走更稳。
+        order = {"bo": 10, "form": 20, "list": 30, "dataset": 30, "filter": 30}
         for a in sorted(res.artifacts, key=lambda x: order.get(a_module(x), 99)):
             mod = a_module(a)
             if mod == "workflow":
                 continue
             folder = mod_def.of(mod).folder
             sn += 1
-            base = Path(a.entry).name
-            base = re.sub(r"^\d{3}-", "", base)          # 去掉原序号，重新连续编
-            entry = f"{folder}/{sn:03d}-{base}"
+            entry = unique_entry(used, f"{folder}/{sn:03d}-{entry_slug(a.entry, prefix)}")
             if a.xml is not None:
                 z.writestr(entry, a.xml.encode("utf-8"))
             else:

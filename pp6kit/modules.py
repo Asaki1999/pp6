@@ -24,6 +24,13 @@
     筛选器      管理 > 筛选器   > 导入        目录 data_template/ 文件名 001-{key}.xml
     流程        管理 > 流程设计 > 导入        裸 XML（不进 zip）  文件名 {流程名}.xml
 
+**序号在一个 zip 内必须唯一**：系统导出的包里每个 XML 前三位是流水号，
+同目录顺着数、跨目录接着数（bo/001、bo/002、bo/003、form/004、data_template/005）。
+生成器出「按模块」包时同样从 001 起逐条编号（真实包 `项目列表.zip` 单条就是
+`data_template/001-project_list_table.xml`），绝不能多条共用同一个 001——
+zip 允许同名条目，导入端按名字取文件，重号等于静默丢内容。
+编号逻辑见 `builder.entry_slug()` / `builder.unique_entry()`。
+
 流程仍然单独走：它是裸 XML，不参与整包。
 
 `data_template/` 下三位是同一类东西（数据集），系统里却按「列表 / 数据集 / 筛选器」
