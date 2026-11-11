@@ -406,6 +406,52 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 4. **调用模型必须传 `max_tokens`** — 不传会一直写到自然结束，生成类任务能拖到 100 秒。
 5. **降级链要区分「模型没开通」和「Key 无效」** — 前者该跳过，后者该报错，混在一起就两头不讨好。
 
+## 版本控制与 GitHub
+
+代码托管在 **github.com/Asaki1999/pp6**（私有仓库），推送走 SSH 免密。
+
+### 日常操作（改完代码后）
+
+```bash
+git add -A
+git commit -m "改了什么，一句话"
+git push
+```
+
+约定：**改完代码先 commit 再打包**（`dist/` 产物本身不入库，源码丢了 dist 救不了）。
+
+### 新电脑上克隆
+
+```bash
+git clone git@github.com:Asaki1999/pp6.git
+cd pp6
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-desktop.txt
+```
+
+克隆下来就能开发，但注意 **`PP6/` 不在仓库里**（真实系统导出包 + 客户表单，94M 且含业务
+数据）——`tools/selftest.py` 依赖它，需要从线上系统重新导出几个包放进 `PP6/业务对象/`。
+
+### SSH 密钥（推送权限的唯一凭证）
+
+本机密钥是 `~/.ssh/id_ed25519`（注释 `pp6-mac`），对应 GitHub 上 Title 为 `pp6-mac`
+的那把钥匙。**换了电脑 / 密钥丢了**：
+
+```bash
+ssh-keygen -t ed25519 -C "pp6-mac" -f ~/.ssh/id_ed25519 -N ""
+cat ~/.ssh/id_ed25519.pub        # 复制输出
+```
+
+打开 https://github.com/settings/ssh/new → Title 随意 → 粘贴 → Add SSH key，
+然后 `ssh -T git@github.com` 见到 `Hi Asaki1999!` 即通。
+
+### 什么在仓库里、什么不在
+
+| 在仓库 | 不在仓库（.gitignore）|
+|---|---|
+| `pp6kit/` 全部源码 + `assets/` 快照资源 | `PP6/`（客户业务数据，94M）|
+| `tools/`、`docs/`、`build/`（脚本与 spec）| `dist/`、`build/work/`（可重建产物）|
+| `out/规范2.xlsx`（测试样本）| `out/` 其余输出、`.venv/`、`backup/` |
+
 ## 按模块导入（重要）
 
 系统里**每个模块是单独的导入菜单，一个 zip 只能属于一个模块**，混装会导入失败。
