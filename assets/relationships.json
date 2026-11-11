@@ -1,0 +1,558 @@
+{
+ "version": 1,
+ "fetched_at": "2026-11-10T15:08:22.855231+00:00",
+ "rows": [
+  {
+   "src": "classification_project_role",
+   "srcName": "项目类型角色表",
+   "dst": "classification",
+   "dstName": "项目类型表",
+   "field": "classification_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "classification_project_role",
+   "srcName": "项目类型角色表",
+   "dst": "iform_object_role",
+   "dstName": "对象角色",
+   "field": "object_role_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "classification_project_role_config",
+   "srcName": "项目类型角色配置",
+   "dst": "classification",
+   "dstName": "项目类型表",
+   "field": "classification_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "contract",
+   "srcName": "合同",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_ids_",
+   "type": "PARENT"
+  },
+  {
+   "src": "contract",
+   "srcName": "合同",
+   "dst": "customer",
+   "dstName": "客户信息",
+   "field": "customer_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "contract",
+   "srcName": "合同",
+   "dst": "vendor",
+   "dstName": "供应商",
+   "field": "vendor_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "contract_node",
+   "srcName": "合同收付款计划",
+   "dst": "contract",
+   "dstName": "合同信息",
+   "field": "contract_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "contract_payment",
+   "srcName": "合同收付款记录",
+   "dst": "contract_node",
+   "dstName": "合同收付款计划",
+   "field": "related_node_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "contract_payment",
+   "srcName": "合同收付款记录",
+   "dst": "contract",
+   "dstName": "合同信息",
+   "field": "contract_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "csgslqexx",
+   "srcName": "测试关联关系",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "zi_duan_1_",
+   "type": "PARENT"
+  },
+  {
+   "src": "customer",
+   "srcName": "客户",
+   "dst": "crmperson",
+   "dstName": "联系人",
+   "field": "primary_contact_person_",
+   "type": "PARENT"
+  },
+  {
+   "src": "defect",
+   "srcName": "缺陷",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "delay_reason",
+   "srcName": "任务延迟原因",
+   "dst": "classification",
+   "dstName": "项目类型表",
+   "field": "classification_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "dev_sprint",
+   "srcName": "开发迭代",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "dev_sprint_product",
+   "srcName": "迭代关联的产品",
+   "dst": "product_version",
+   "dstName": "产品版本",
+   "field": "product_version_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "dev_sprint_product",
+   "srcName": "迭代关联的产品",
+   "dst": "product",
+   "dstName": "产品",
+   "field": "product_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "dev_sprint_product",
+   "srcName": "迭代关联的产品",
+   "dst": "dev_sprint",
+   "dstName": "开发迭代",
+   "field": "dev_sprint_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "dev_task",
+   "srcName": "开发任务",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "dev_task",
+   "srcName": "开发任务",
+   "dst": "requirement",
+   "dstName": "系统需求",
+   "field": "dev_req_id_",
+   "type": "PARALLEL"
+  },
+  {
+   "src": "dev_task_assignment",
+   "srcName": "开发任务责任人",
+   "dst": "dev_task",
+   "dstName": "开发任务",
+   "field": "dev_task_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "dev_task_setting",
+   "srcName": "开发任务设置",
+   "dst": "project_role",
+   "dstName": "项目角色",
+   "field": "project_role_ids_",
+   "type": "PARENT"
+  },
+  {
+   "src": "dev_task_setting",
+   "srcName": "开发任务设置",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "dev_task_template",
+   "srcName": "开发任务模版",
+   "dst": "classification",
+   "dstName": "项目类型表",
+   "field": "classification_ids_",
+   "type": "PARENT"
+  },
+  {
+   "src": "dev_task_template_task",
+   "srcName": "开发任务模版中定义的任务清单",
+   "dst": "dev_task_template",
+   "dstName": "开发任务模版表",
+   "field": "dev_task_template_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "document",
+   "srcName": "文档",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "owner_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "document_flow",
+   "srcName": "文档审批",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "document_flow",
+   "srcName": "文档审批",
+   "dst": "pp_document",
+   "dstName": "文档",
+   "field": "doc_id_",
+   "type": "PARALLEL"
+  },
+  {
+   "src": "document_flow",
+   "srcName": "文档审批",
+   "dst": "project_plan",
+   "dstName": "计划",
+   "field": "plan_id_",
+   "type": "PARALLEL"
+  },
+  {
+   "src": "document_flow",
+   "srcName": "文档审批",
+   "dst": "task",
+   "dstName": "任务",
+   "field": "task_id_",
+   "type": "PARALLEL"
+  },
+  {
+   "src": "fblccsysc",
+   "srcName": "发布流程（测试--要删除）",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "belong_object_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "issue",
+   "srcName": "问题",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "mrd_requirement",
+   "srcName": "MRD需求",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_ids_",
+   "type": "PARENT"
+  },
+  {
+   "src": "NEW01",
+   "srcName": "新的项目需求-01",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "belong_object_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "plan_approval",
+   "srcName": "计划审批",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "plan_change",
+   "srcName": "计划变更",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "pp_directory",
+   "srcName": "文档目录表",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "owner_id_",
+   "type": "PARALLEL"
+  },
+  {
+   "src": "pp_document",
+   "srcName": "文档",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "owner_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "product",
+   "srcName": "产品",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_ids",
+   "type": "PARENT"
+  },
+  {
+   "src": "product",
+   "srcName": "产品",
+   "dst": "product_category",
+   "dstName": "产品分类",
+   "field": "category_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "product_role",
+   "srcName": "产品角色",
+   "dst": "product",
+   "dstName": "产品",
+   "field": "product_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "product_version",
+   "srcName": "产品版本",
+   "dst": "product",
+   "dstName": "产品",
+   "field": "product_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "program_member",
+   "srcName": "项目集成员",
+   "dst": "program",
+   "dstName": "项目集",
+   "field": "program_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "project_budget_approval",
+   "srcName": "项目预算审批",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "belong_object_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "project_budget_change",
+   "srcName": "项目预算变更",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "belong_object_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "project_completion",
+   "srcName": "项目结项",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "project_cost",
+   "srcName": "项目成本",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "project_create",
+   "srcName": "项目立项",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "project_member",
+   "srcName": "项目成员",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "project_phase",
+   "srcName": "项目阶段表",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "project_plan",
+   "srcName": "计划",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "project_role",
+   "srcName": "项目角色",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "project_role",
+   "srcName": "项目角色",
+   "dst": "iform_object_role",
+   "dstName": "对象角色",
+   "field": "role_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "requirement",
+   "srcName": "系统需求",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "risk",
+   "srcName": "风险",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "task",
+   "srcName": "任务",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "tdbglc",
+   "srcName": "团队变更流程",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "test_case",
+   "srcName": "测试用例",
+   "dst": "test_suite",
+   "dstName": "测试用例集表",
+   "field": "test_suite_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "test_case_step",
+   "srcName": "测试用例操作步骤",
+   "dst": "test_case",
+   "dstName": "测试用例表",
+   "field": "test_case_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "test_case_template",
+   "srcName": "用例模板",
+   "dst": "test_suite_template",
+   "dstName": "用例库测试用例集",
+   "field": "test_suite_template_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "test_suite",
+   "srcName": "测试用例集",
+   "dst": "test_plan",
+   "dstName": "测试执行",
+   "field": "test_plan_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "test_suite_template",
+   "srcName": "用例库测试用例集",
+   "dst": "test_case_base",
+   "dstName": "测试用例库",
+   "field": "test_case_base_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "TR1",
+   "srcName": "TR1",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "TR2",
+   "srcName": "TR2",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "vendor_qualification",
+   "srcName": "供应商资质",
+   "dst": "vendor",
+   "dstName": "供应商",
+   "field": "vendor_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "wwqe",
+   "srcName": "威威企鹅",
+   "dst": "ydrd10dcsbd",
+   "dstName": "要导入到10的测试表单",
+   "field": "tenant_id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "xmlxcs",
+   "srcName": "项目立项测试",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "project_Id_",
+   "type": "PARENT"
+  },
+  {
+   "src": "ydrd10dcsbd",
+   "srcName": "要导入到10的测试表单",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "zi_duan_1_",
+   "type": "PARENT"
+  },
+  {
+   "src": "zl",
+   "srcName": "战略",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "xiang_mu_",
+   "type": "PARENT"
+  },
+  {
+   "src": "zsggcjddx",
+   "srcName": "这是刚刚创建的对象一会删除",
+   "dst": "project",
+   "dstName": "项目",
+   "field": "zi_duan_1_",
+   "type": "PARENT"
+  }
+ ]
+}

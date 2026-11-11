@@ -1,0 +1,1390 @@
+[
+ {
+  "question": "列出所有项目",
+  "sql": "SELECT `t`.`name_` AS `项目名称`, `t`.`phase_` AS `项目阶段名称`, `t`.`light_description_` AS `亮灯描述`, `t`.`notes_` AS `备注`, `r_classification_id_`.`name_` AS `项目类型`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `pp_project_phase` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`phase_ids_`)) AS `项目阶段`, `r_org_id_`.`name_` AS `隶属部门`, `t`.`progress_` AS `实际进度` FROM `pp_project` AS `t` LEFT JOIN `pp_classification` AS `r_classification_id_` ON `r_classification_id_`.`id_` = `t`.`classification_id_` LEFT JOIN `iform_party_org` AS `r_org_id_` ON `r_org_id_`.`id_` = `t`.`org_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "列出所有项目及其状态、级别、项目经理",
+  "sql": "SELECT `t`.`name_` AS `项目名称`, `r_state_id_`.`name_` AS `项目状态`, `r_grade_id_`.`name_` AS `项目级别`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`manager_ids_`)) AS `项目经理` FROM `pp_project` AS `t` LEFT JOIN `pp_project_state` AS `r_state_id_` ON `r_state_id_`.`id_` = `t`.`state_id_` LEFT JOIN `pp_project_grade` AS `r_grade_id_` ON `r_grade_id_`.`id_` = `t`.`grade_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "每个项目状态有多少个项目",
+  "sql": "SELECT COALESCE(`r_state_id_`.`name_`, '未关联') AS `项目状态`, COUNT(*) AS `数量` FROM `pp_project` AS `t` LEFT JOIN `pp_project_state` AS `r_state_id_` ON `r_state_id_`.`id_` = `t`.`state_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_state_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "按项目类型统计项目数",
+  "sql": "SELECT COALESCE(`r_classification_id_`.`name_`, '未关联') AS `项目类型`, COUNT(*) AS `数量` FROM `pp_project` AS `t` LEFT JOIN `pp_classification` AS `r_classification_id_` ON `r_classification_id_`.`id_` = `t`.`classification_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_classification_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "项目名称里带芯片的项目",
+  "sql": "SELECT `t`.`name_` AS `项目名称` FROM `pp_project` AS `t` WHERE `t`.`name_` LIKE '%芯片%' LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "项目进度低于50的项目",
+  "sql": "SELECT `t`.`name_` AS `项目名称`, `t`.`progress_` AS `实际进度` FROM `pp_project` AS `t` WHERE `t`.`progress_` < 50 LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "本月创建的项目",
+  "sql": "SELECT `t`.`name_` AS `项目名称`, `t`.`phase_` AS `项目阶段名称`, `t`.`light_description_` AS `亮灯描述`, `t`.`notes_` AS `备注`, `r_classification_id_`.`name_` AS `项目类型`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `pp_project_phase` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`phase_ids_`)) AS `项目阶段`, `r_org_id_`.`name_` AS `隶属部门`, `t`.`progress_` AS `实际进度` FROM `pp_project` AS `t` LEFT JOIN `pp_classification` AS `r_classification_id_` ON `r_classification_id_`.`id_` = `t`.`classification_id_` LEFT JOIN `iform_party_org` AS `r_org_id_` ON `r_org_id_`.`id_` = `t`.`org_id_` WHERE DATE_FORMAT(`t`.`create_time_`, '%Y-%m') = DATE_FORMAT(CURRENT_DATE, '%Y-%m') LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "今年的项目",
+  "sql": "SELECT `t`.`name_` AS `项目名称`, `t`.`phase_` AS `项目阶段名称`, `t`.`light_description_` AS `亮灯描述`, `t`.`notes_` AS `备注`, `r_classification_id_`.`name_` AS `项目类型`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `pp_project_phase` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`phase_ids_`)) AS `项目阶段`, `r_org_id_`.`name_` AS `隶属部门`, `t`.`progress_` AS `实际进度` FROM `pp_project` AS `t` LEFT JOIN `pp_classification` AS `r_classification_id_` ON `r_classification_id_`.`id_` = `t`.`classification_id_` LEFT JOIN `iform_party_org` AS `r_org_id_` ON `r_org_id_`.`id_` = `t`.`org_id_` WHERE YEAR(`t`.`create_time_`) = YEAR(CURRENT_DATE) LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "每个部门有多少项目",
+  "sql": "SELECT COALESCE(`r_org_id_`.`name_`, '未关联') AS `隶属部门`, COUNT(*) AS `数量` FROM `pp_project` AS `t` LEFT JOIN `iform_party_org` AS `r_org_id_` ON `r_org_id_`.`id_` = `t`.`org_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_org_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "每个项目经理负责多少项目",
+  "sql": "SELECT `g_manager_ids_`.`name_` AS `项目经理`, COUNT(DISTINCT `t`.`id_`) AS `数量` FROM `pp_project` AS `t` JOIN `iform_party_employee` AS `g_manager_ids_` ON FIND_IN_SET(`g_manager_ids_`.`id_`, `t`.`manager_ids_`) > 0 WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `g_manager_ids_`.`name_` LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "列出所有客户",
+  "sql": "SELECT `t`.`name_` AS `客户名称`, `t`.`state_` AS `客户状态`, `t`.`priority_` AS `优先级`, `t`.`province_` AS `省份`, `t`.`city_` AS `城市`, `t`.`address_` AS `地址`, `t`.`industry_` AS `行业`, `t`.`source_` AS `客户来源` FROM `pp_customer` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_customer"
+  ]
+ },
+ {
+  "question": "每个客户有多少合同",
+  "sql": "SELECT COALESCE(`r_customer_id_`.`name_`, '未关联') AS `客户`, COUNT(*) AS `数量` FROM `pp_contract` AS `t` LEFT JOIN `pp_customer` AS `r_customer_id_` ON `r_customer_id_`.`id_` = `t`.`customer_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_customer_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "question": "每个客户有多少项目",
+  "sql": "SELECT `j_customer`.`name_` AS `客户名称`, COUNT(*) AS `数量` FROM `pp_project` AS `t` LEFT JOIN `pp_contract` AS `j_contract` ON FIND_IN_SET(`t`.`id_`, `j_contract`.`project_ids_`) > 0 LEFT JOIN `pp_customer` AS `j_customer` ON `j_customer`.`id_` = `j_contract`.`customer_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `j_customer`.`name_` LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "列出最近创建的合同",
+  "sql": "SELECT `t`.`name_` AS `合同名称`, `t`.`category_` AS `合同类别`, `t`.`state_` AS `合同状态`, `t`.`payment_state_` AS `合同支付状态`, `t`.`priority_` AS `优先级`, `t`.`description_` AS `详细描述`, `t`.`customer_name_` AS `客户名称`, `t`.`tag_` AS `标签` FROM `pp_contract` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' ORDER BY `t`.`create_time_` DESC LIMIT 200",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "question": "今年的合同",
+  "sql": "SELECT `t`.`name_` AS `合同名称`, `t`.`category_` AS `合同类别`, `t`.`state_` AS `合同状态`, `t`.`payment_state_` AS `合同支付状态`, `t`.`priority_` AS `优先级`, `t`.`description_` AS `详细描述`, `t`.`customer_name_` AS `客户名称`, `t`.`tag_` AS `标签` FROM `pp_contract` AS `t` WHERE YEAR(`t`.`create_time_`) = YEAR(CURRENT_DATE) LIMIT 200",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "question": "列出最近的任务",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, `t`.`category_` AS `任务类别`, `t`.`tag_` AS `标签`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`assignee_ids_`)) AS `任务责任人`, `r_project_id_`.`name_` AS `所属项目`, `r_related_phase_id_`.`name_` AS `关联阶段`, `t`.`progress_` AS `进度`, `t`.`standard_hours_` AS `标准工时` FROM `pp_task` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` LEFT JOIN `pp_project_phase` AS `r_related_phase_id_` ON `r_related_phase_id_`.`id_` = `t`.`related_phase_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' ORDER BY `t`.`create_time_` DESC LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "任务清单",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, `t`.`category_` AS `任务类别`, `t`.`tag_` AS `标签`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`assignee_ids_`)) AS `任务责任人`, `r_project_id_`.`name_` AS `所属项目`, `r_related_phase_id_`.`name_` AS `关联阶段`, `t`.`progress_` AS `进度`, `t`.`standard_hours_` AS `标准工时` FROM `pp_task` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` LEFT JOIN `pp_project_phase` AS `r_related_phase_id_` ON `r_related_phase_id_`.`id_` = `t`.`related_phase_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "列出任务名称以及任务的责任人",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`assignee_ids_`)) AS `任务责任人` FROM `pp_task` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "查询任务名称和任务责任人 排除任务名称为根任务的任务",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`assignee_ids_`)) AS `任务责任人` FROM `pp_task` AS `t` WHERE `t`.`name_` NOT LIKE '%根任务%' LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "每个任务责任人有多少任务",
+  "sql": "SELECT `g_assignee_ids_`.`name_` AS `任务责任人`, COUNT(DISTINCT `t`.`id_`) AS `数量` FROM `pp_task` AS `t` JOIN `iform_party_employee` AS `g_assignee_ids_` ON FIND_IN_SET(`g_assignee_ids_`.`id_`, `t`.`assignee_ids_`) > 0 WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `g_assignee_ids_`.`name_` LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "最近7天创建的任务",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, `t`.`category_` AS `任务类别`, `t`.`tag_` AS `标签`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`assignee_ids_`)) AS `任务责任人`, `r_project_id_`.`name_` AS `所属项目`, `r_related_phase_id_`.`name_` AS `关联阶段`, `t`.`progress_` AS `进度`, `t`.`standard_hours_` AS `标准工时` FROM `pp_task` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` LEFT JOIN `pp_project_phase` AS `r_related_phase_id_` ON `r_related_phase_id_`.`id_` = `t`.`related_phase_id_` WHERE DATE(`t`.`create_time_`) >= CURRENT_DATE - INTERVAL '7' DAY ORDER BY `t`.`create_time_` DESC LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "列出开发任务和状态",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`state_` AS `状态` FROM `pp_dev_task` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_dev_task"
+  ]
+ },
+ {
+  "question": "按开发任务状态统计数量",
+  "sql": "SELECT COALESCE(`r_state_id_`.`name_`, '未关联') AS `任务状态`, COUNT(*) AS `数量` FROM `pp_dev_task` AS `t` LEFT JOIN `pp_project_state` AS `r_state_id_` ON `r_state_id_`.`id_` = `t`.`state_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_state_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_dev_task"
+  ]
+ },
+ {
+  "question": "每个开发任务责任人有多少任务",
+  "sql": "SELECT `g_assignee_ids_`.`name_` AS `开发任务责任人`, COUNT(DISTINCT `t`.`id_`) AS `数量` FROM `pp_dev_task` AS `t` LEFT JOIN `pp_project_expect_doc` AS `j_project_expect_doc` ON `t`.`id_` = `j_project_expect_doc`.`dev_task_id_` LEFT JOIN `pp_task` AS `j_task` ON `j_task`.`id_` = `j_project_expect_doc`.`task_id_` LEFT JOIN `pp_task_assignment` AS `j_task_assignment` ON `j_task`.`id_` = `j_task_assignment`.`task_id_` JOIN `iform_party_employee` AS `g_assignee_ids_` ON FIND_IN_SET(`g_assignee_ids_`.`id_`, `t`.`assignee_ids_`) > 0 WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `g_assignee_ids_`.`name_` LIMIT 200",
+  "tables": [
+   "pp_dev_task"
+  ]
+ },
+ {
+  "question": "列出所有风险",
+  "sql": "SELECT `t`.`name_` AS `风险名称`, `t`.`category_` AS `风险类别`, `t`.`state_` AS `状态`, `t`.`priority_` AS `优先级`, `t`.`strategy_type_` AS `应对类型`, `t`.`process_state_` AS `流程状态`, `t`.`source_` AS `来源`, `t`.`domain_` AS `风险影响领域` FROM `pp_risk` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "列出所有风险及其等级",
+  "sql": "SELECT `t`.`name_` AS `风险名称`, `t`.`rating_` AS `风险等级` FROM `pp_risk` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "高风险的风险有哪些",
+  "sql": "SELECT `p`.`name_` AS `项目名称`, `r`.`name_` AS `风险名称`, `r`.`rating_` AS `风险等级`, `r`.`probability_` AS `可能性`, `r`.`impact_` AS `影响`, `r`.`state_` AS `状态`, `r`.`due_time_` AS `到期时间` FROM `pp_risk` AS `r` LEFT JOIN `pp_project` AS `p` ON `p`.`id_` = `r`.`project_id_` WHERE COALESCE(`r`.`deleted_`, 'N') <> 'Y' AND `r`.`rating_` = 'High' ORDER BY `r`.`due_time_` IS NULL, `r`.`due_time_` LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "除了高风险以外的风险",
+  "sql": "SELECT `t`.`name_` AS `风险名称`, `t`.`category_` AS `风险类别`, `t`.`state_` AS `状态`, `t`.`priority_` AS `优先级`, `t`.`strategy_type_` AS `应对类型`, `t`.`process_state_` AS `流程状态`, `t`.`source_` AS `来源`, `t`.`domain_` AS `风险影响领域`, `t`.`rating_` AS `风险等级` FROM `pp_risk` AS `t` WHERE `t`.`rating_` <> 'High' LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "每个风险等级有多少个风险",
+  "sql": "SELECT `t`.`rating_` AS `风险等级`, COUNT(*) AS `数量` FROM `pp_risk` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `t`.`rating_` LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "列出所有未关闭的风险",
+  "sql": "SELECT `t`.`name_` AS `风险名称`, `t`.`category_` AS `风险类别`, `t`.`state_` AS `状态`, `t`.`priority_` AS `优先级`, `t`.`strategy_type_` AS `应对类型`, `t`.`process_state_` AS `流程状态`, `t`.`source_` AS `来源`, `t`.`domain_` AS `风险影响领域` FROM `pp_risk` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "不要状态是已关闭的风险",
+  "sql": "SELECT `t`.`name_` AS `风险名称`, `t`.`state_` AS `状态` FROM `pp_risk` AS `t` LEFT JOIN `pp_project` AS `j_project` ON `j_project`.`id_` = `t`.`project_id_` LEFT JOIN `pp_project_state` AS `j_project_state` ON `j_project_state`.`id_` = `j_project`.`state_id_` WHERE `t`.`state_` <> 'closed' LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "每个项目有多少个风险",
+  "sql": "SELECT COALESCE(`r_project_id_`.`name_`, '未关联') AS `隶属项目`, COUNT(*) AS `数量` FROM `pp_risk` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_project_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "列出所有问题",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`status_` AS `状态`, `t`.`priority_` AS `优先级`, `t`.`process_state_` AS `流程状态`, `t`.`category_` AS `问题小类`, `t`.`source_` AS `问题来源`, `t`.`process_node_` AS `流程节点`, `r_project_id_`.`name_` AS `关联项目` FROM `pp_issue` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "question": "状态为进行中的问题",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`status_` AS `状态` FROM `pp_issue` AS `t` LEFT JOIN `pp_project` AS `j_project` ON `j_project`.`id_` = `t`.`project_id_` LEFT JOIN `pp_project_state` AS `j_project_state` ON `j_project_state`.`id_` = `j_project`.`state_id_` WHERE `t`.`status_` = 'in_progress' LIMIT 200",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "question": "高优先级的问题",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`priority_` AS `优先级` FROM `pp_issue` AS `t` WHERE `t`.`priority_` = 'high' LIMIT 200",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "question": "每个问题责任人有多少问题",
+  "sql": "SELECT `g_causer_id_`.`name_` AS `问题责任人`, COUNT(DISTINCT `t`.`id_`) AS `数量` FROM `pp_issue` AS `t` JOIN `iform_party_employee` AS `g_causer_id_` ON FIND_IN_SET(`g_causer_id_`.`id_`, `t`.`causer_id_`) > 0 WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `g_causer_id_`.`name_` LIMIT 200",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "question": "每个问题状态有多少个问题",
+  "sql": "SELECT `j_project`.`name_` AS `项目名称`, COUNT(*) AS `数量` FROM `pp_issue` AS `t` LEFT JOIN `pp_project` AS `j_project` ON `j_project`.`id_` = `t`.`project_id_` LEFT JOIN `pp_project_state` AS `j_project_state` ON `j_project_state`.`id_` = `j_project`.`state_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `j_project`.`name_` LIMIT 200",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "question": "列出所有待办",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`object_type_` AS `对象类型`, `t`.`task_predecessors_completed_` AS `任务前置是否已完成`, `r_user_id_`.`name_` AS `待办人`, `r_project_id_`.`name_` AS `所属项目`, `t`.`progress_` AS `进度`, `t`.`plan_finish_` AS `计划完成时间`, `t`.`plan_start_` AS `计划开始时间` FROM `pp_todo` AS `t` LEFT JOIN `iform_party_employee` AS `r_user_id_` ON `r_user_id_`.`id_` = `t`.`user_id_` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_todo"
+  ]
+ },
+ {
+  "question": "每个待办责任人有多少待办",
+  "sql": "SELECT COALESCE(`r_project_id_`.`name_`, '未关联') AS `所属项目`, COUNT(*) AS `数量` FROM `pp_todo` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_project_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_todo"
+  ]
+ },
+ {
+  "question": "列出所有需求",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`process_state_` AS `流程状态`, `t`.`tag_` AS `需求标签`, `t`.`urgency_` AS `紧急程度`, `t`.`process_node_` AS `流程节点`, `r_assignee_id_`.`name_` AS `需求负责人`, `r_project_id_`.`name_` AS `关联项目`, `r_submit_department_id_`.`name_` AS `提出部门` FROM `pp_requirement` AS `t` LEFT JOIN `iform_party_employee` AS `r_assignee_id_` ON `r_assignee_id_`.`id_` = `t`.`assignee_id_` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` LEFT JOIN `iform_party_org` AS `r_submit_department_id_` ON `r_submit_department_id_`.`id_` = `t`.`submit_department_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_requirement"
+  ]
+ },
+ {
+  "question": "每个需求状态有多少个需求",
+  "sql": "SELECT `j_project`.`name_` AS `项目名称`, COUNT(*) AS `数量` FROM `pp_requirement` AS `t` LEFT JOIN `pp_project` AS `j_project` ON `j_project`.`id_` = `t`.`project_id_` LEFT JOIN `pp_project_state` AS `j_project_state` ON `j_project_state`.`id_` = `j_project`.`state_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `j_project`.`name_` LIMIT 200",
+  "tables": [
+   "pp_requirement"
+  ]
+ },
+ {
+  "question": "列出所有缺陷",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`category_` AS `缺陷类型`, `t`.`urgency_` AS `优先级`, `t`.`node_name_` AS `状态`, `t`.`process_state_` AS `流程状态`, `t`.`root_cause_type_` AS `问题根源分析`, `t`.`severity_` AS `严重程度`, `t`.`probability_` AS `出现概率` FROM `pp_defect` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_defect"
+  ]
+ },
+ {
+  "question": "每个缺陷状态有多少个缺陷",
+  "sql": "SELECT `j_project`.`name_` AS `项目名称`, COUNT(*) AS `数量` FROM `pp_defect` AS `t` LEFT JOIN `pp_project` AS `j_project` ON `j_project`.`id_` = `t`.`project_id_` LEFT JOIN `pp_project_state` AS `j_project_state` ON `j_project_state`.`id_` = `j_project`.`state_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `j_project`.`name_` LIMIT 200",
+  "tables": [
+   "pp_defect"
+  ]
+ },
+ {
+  "question": "列出所有产品",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`description_` AS `产品描述`, `r_category_id_`.`name_` AS `产品分类`, `r_department_id_`.`name_` AS `所属部门`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`manager_ids_`)) AS `产品经理` FROM `pp_product` AS `t` LEFT JOIN `pp_product_category` AS `r_category_id_` ON `r_category_id_`.`id_` = `t`.`category_id_` LEFT JOIN `iform_party_org` AS `r_department_id_` ON `r_department_id_`.`id_` = `t`.`department_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_product"
+  ]
+ },
+ {
+  "question": "列出所有测试计划",
+  "sql": "SELECT `t`.`name_` AS `计划名称`, `t`.`test_types_` AS `测试类型列表`, `t`.`state_` AS `状态`, `r_project_id_`.`name_` AS `所属项目`, `r_sprint_id_`.`name_` AS `关联迭代`, `t`.`finish_` AS `计划结束`, `t`.`start_` AS `计划开始`, `r_pp_parent_id_`.`name_` AS `父计划` FROM `pp_test_plan` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` LEFT JOIN `pp_dev_sprint` AS `r_sprint_id_` ON `r_sprint_id_`.`id_` = `t`.`sprint_id_` LEFT JOIN `pp_test_plan` AS `r_pp_parent_id_` ON `r_pp_parent_id_`.`id_` = `t`.`pp_parent_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_test_plan"
+  ]
+ },
+ {
+  "question": "列出所有项目阶段",
+  "sql": "SELECT `r_project_id_`.`name_` AS `项目` FROM `pp_project_phase` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_project_phase"
+  ]
+ },
+ {
+  "question": "每个项目阶段有多少个任务",
+  "sql": "SELECT `j_project_phase`.`name_` AS `阶段名称`, COUNT(*) AS `数量` FROM `pp_task` AS `t` LEFT JOIN `pp_project_phase` AS `j_project_phase` ON `j_project_phase`.`id_` = `t`.`related_phase_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `j_project_phase`.`name_` LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "列出所有项目角色",
+  "sql": "SELECT `p`.`name_` AS `项目名称`, `r`.`name_` AS `项目角色` FROM `pp_project` AS `p` JOIN `pp_project_role` AS `pr` ON `pr`.`project_id_` = `p`.`id_` LEFT JOIN `iform_object_role` AS `r` ON `r`.`id_` = `pr`.`object_role_id_` WHERE COALESCE(`p`.`deleted_`, 'N') <> 'Y' AND COALESCE(`pr`.`deleted_`, 'N') <> 'Y' ORDER BY `p`.`id_` DESC, `pr`.`order_` LIMIT 200",
+  "tables": [
+   "pp_project_role"
+  ]
+ },
+ {
+  "question": "列出所有项目预算条目",
+  "sql": "SELECT `r_project_budget_id_`.`name_` AS `项目预算` FROM `pp_project_budget_item` AS `t` LEFT JOIN `pp_project_budget` AS `r_project_budget_id_` ON `r_project_budget_id_`.`id_` = `t`.`project_budget_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_project_budget_item"
+  ]
+ },
+ {
+  "question": "每个项目有多少预算条目",
+  "sql": "SELECT `j_project`.`name_` AS `项目名称`, COUNT(*) AS `数量` FROM `pp_project_budget_item` AS `t` LEFT JOIN `pp_project_budget` AS `j_project_budget` ON `j_project_budget`.`id_` = `t`.`project_budget_id_` LEFT JOIN `pp_project` AS `j_project` ON `j_project`.`id_` = `j_project_budget`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `j_project`.`name_` LIMIT 200",
+  "tables": [
+   "pp_project_budget_item"
+  ]
+ },
+ {
+  "question": "列出所有基线任务",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, `t`.`category_` AS `任务类型`, `t`.`progress_` AS `进度`, `t`.`standard_hours_` AS `标准工时`, `t`.`duration_` AS `工期`, `t`.`finish_` AS `计划完成时间`, `t`.`start_` AS `计划开始时间`, `t`.`actual_finish_` AS `实际结束时间` FROM `pp_plan_baseline_task` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_plan_baseline_task"
+  ]
+ },
+ {
+  "question": "列出所有变更任务",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, `t`.`original_is_critical_` AS `原是否关键路径`, `t`.`original_is_milestone_` AS `原是否里程碑`, `t`.`original_is_schedule_lock_` AS `原是否排期锁定`, `t`.`original_progress_` AS `原进度`, `t`.`standard_hours_` AS `标准工时`, `t`.`duration_` AS `工期`, `t`.`finish_` AS `计划完成时间` FROM `pp_chg_task` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_chg_task"
+  ]
+ },
+ {
+  "question": "列出所有反馈",
+  "sql": "SELECT `t`.`progress_` AS `进度` FROM `pp_feedback` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_feedback"
+  ]
+ },
+ {
+  "question": "每个反馈状态有多少条",
+  "sql": "SELECT `g_create_by_`.`name_` AS `创建人`, COUNT(DISTINCT `t`.`id_`) AS `数量` FROM `pp_feedback` AS `t` JOIN `iform_party_employee` AS `g_create_by_` ON FIND_IN_SET(`g_create_by_`.`id_`, `t`.`create_by_`) > 0 WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `g_create_by_`.`name_` LIMIT 200",
+  "tables": [
+   "pp_feedback"
+  ]
+ },
+ {
+  "question": "列出所有开发迭代",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`state_` AS `迭代状态`, `r_assignee_id_`.`name_` AS `负责人`, `r_project_id_`.`name_` AS `隶属项目`, `t`.`plan_finish_` AS `计划结束日期`, `t`.`plan_start_` AS `计划开始日期`, `t`.`actual_finish_` AS `实际结束时间` FROM `pp_dev_sprint` AS `t` LEFT JOIN `iform_party_employee` AS `r_assignee_id_` ON `r_assignee_id_`.`id_` = `t`.`assignee_id_` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_dev_sprint"
+  ]
+ },
+ {
+  "question": "每个开发迭代有多少开发任务",
+  "sql": "SELECT `j_dev_sprint`.`name_` AS `名称`, COUNT(*) AS `数量` FROM `pp_dev_task` AS `t` LEFT JOIN `pp_dev_sprint` AS `j_dev_sprint` ON `j_dev_sprint`.`id_` = `t`.`dev_sprint_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `j_dev_sprint`.`name_` LIMIT 200",
+  "tables": [
+   "pp_dev_task"
+  ]
+ },
+ {
+  "question": "列出所有文档",
+  "sql": "SELECT `t`.`name_` AS `文档名称`, `t`.`owner_type_` AS `所属对象类型`, `t`.`state_` AS `文档状态`, `t`.`archive_mode_` AS `归档模式`, `r_owner_id_`.`name_` AS `所属对象Id`, `r_category_id_`.`name_` AS `文档类型`, `r_directory_id_`.`name_` AS `文件夹ID` FROM `pp_document` AS `t` LEFT JOIN `iform_party_employee` AS `r_owner_id_` ON `r_owner_id_`.`id_` = `t`.`owner_id_` LEFT JOIN `pp_task_category` AS `r_category_id_` ON `r_category_id_`.`id_` = `t`.`category_id_` LEFT JOIN `pp_directory` AS `r_directory_id_` ON `r_directory_id_`.`id_` = `t`.`directory_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_document"
+  ]
+ },
+ {
+  "question": "列出所有预期文档",
+  "sql": "SELECT `t`.`name_` AS `预期文档名称`, `t`.`delivery_status_` AS `交付状态`, `t`.`archive_mode_` AS `归档模式`, `t`.`task_finish_mode_` AS `控制任务完成方式`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`assignee_ids_`)) AS `责任人`, `r_project_id_`.`name_` AS `关联项目`, `r_phase_id_`.`name_` AS `关联阶段`, `t`.`plan_finish_` AS `计划完成` FROM `pp_project_expect_doc` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` LEFT JOIN `pp_project_phase` AS `r_phase_id_` ON `r_phase_id_`.`id_` = `t`.`phase_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_project_expect_doc"
+  ]
+ },
+ {
+  "question": "列出所有成员记录",
+  "sql": "SELECT `r_project_id_`.`name_` AS `所属项目`, `r_project_role_id_`.`id_` AS `所属项目角色`, `r_user_id_`.`name_` AS `人员` FROM `pp_project_member` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` LEFT JOIN `pp_project_role` AS `r_project_role_id_` ON `r_project_role_id_`.`id_` = `t`.`project_role_id_` LEFT JOIN `iform_party_employee` AS `r_user_id_` ON `r_user_id_`.`id_` = `t`.`user_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_project_member"
+  ]
+ },
+ {
+  "question": "每个项目有多少成员",
+  "sql": "SELECT `p`.`name_` AS `项目名称`, COUNT(DISTINCT `pm`.`user_id_`) AS `数量` FROM `pp_project_member` AS `pm` JOIN `pp_project` AS `p` ON `p`.`id_` = `pm`.`project_id_` WHERE COALESCE(`pm`.`deleted_`, 'N') <> 'Y' AND COALESCE(`p`.`deleted_`, 'N') <> 'Y' GROUP BY `p`.`id_`, `p`.`name_` ORDER BY `数量` DESC LIMIT 200",
+  "tables": [
+   "pp_project_member"
+  ]
+ },
+ {
+  "question": "上个月创建的问题",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`status_` AS `状态`, `t`.`priority_` AS `优先级`, `t`.`process_state_` AS `流程状态`, `t`.`category_` AS `问题小类`, `t`.`source_` AS `问题来源`, `t`.`process_node_` AS `流程节点`, `r_project_id_`.`name_` AS `关联项目` FROM `pp_issue` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE DATE_FORMAT(`t`.`create_time_`, '%Y-%m') = DATE_FORMAT(CURRENT_DATE - INTERVAL '1' MONTH, '%Y-%m') LIMIT 200",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "question": "最近30天创建的开发任务",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`urgency_` AS `优先级`, `r_state_id_`.`name_` AS `任务状态`, `t`.`process_node_` AS `流程节点`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`assignee_ids_`)) AS `开发任务责任人`, `r_product_id_`.`name_` AS `关联产品`, `r_dev_sprint_id_`.`name_` AS `所属迭代`, `t`.`forecast_hours_` AS `预估工时` FROM `pp_dev_task` AS `t` LEFT JOIN `pp_project_state` AS `r_state_id_` ON `r_state_id_`.`id_` = `t`.`state_id_` LEFT JOIN `pp_product` AS `r_product_id_` ON `r_product_id_`.`id_` = `t`.`product_id_` LEFT JOIN `pp_dev_sprint` AS `r_dev_sprint_id_` ON `r_dev_sprint_id_`.`id_` = `t`.`dev_sprint_id_` WHERE DATE(`t`.`create_time_`) >= CURRENT_DATE - INTERVAL '30' DAY ORDER BY `t`.`create_time_` DESC LIMIT 200",
+  "tables": [
+   "pp_dev_task"
+  ]
+ },
+ {
+  "question": "任务的责任人都有谁",
+  "sql": "SELECT `r_task_id_`.`name_` AS `所属任务`, `r_user_id_`.`name_` AS `人员` FROM `pp_task_assignment` AS `t` LEFT JOIN `pp_task` AS `r_task_id_` ON `r_task_id_`.`id_` = `t`.`task_id_` LEFT JOIN `iform_party_employee` AS `r_user_id_` ON `r_user_id_`.`id_` = `t`.`user_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "哪些任务还没开始",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, `t`.`category_` AS `任务类别`, `t`.`tag_` AS `标签`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`assignee_ids_`)) AS `任务责任人`, `r_project_id_`.`name_` AS `所属项目`, `r_related_phase_id_`.`name_` AS `关联阶段`, `t`.`progress_` AS `进度`, `t`.`standard_hours_` AS `标准工时` FROM `pp_task` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` LEFT JOIN `pp_project_phase` AS `r_related_phase_id_` ON `r_related_phase_id_`.`id_` = `t`.`related_phase_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "进度超过80的任务",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, `t`.`progress_` AS `进度` FROM `pp_task` AS `t` WHERE `t`.`progress_` > 80 LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "里程碑任务有哪些",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, `t`.`category_` AS `任务类别`, `t`.`tag_` AS `标签`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`assignee_ids_`)) AS `任务责任人`, `r_project_id_`.`name_` AS `所属项目`, `r_related_phase_id_`.`name_` AS `关联阶段`, `t`.`progress_` AS `进度`, `t`.`standard_hours_` AS `标准工时` FROM `pp_task` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` LEFT JOIN `pp_project_phase` AS `r_related_phase_id_` ON `r_related_phase_id_`.`id_` = `t`.`related_phase_id_` WHERE `t`.`category_` = '里程碑' LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "关键路径上的任务",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, `t`.`category_` AS `任务类别`, `t`.`tag_` AS `标签`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`assignee_ids_`)) AS `任务责任人`, `r_project_id_`.`name_` AS `所属项目`, `r_related_phase_id_`.`name_` AS `关联阶段`, `t`.`progress_` AS `进度`, `t`.`standard_hours_` AS `标准工时` FROM `pp_task` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` LEFT JOIN `pp_project_phase` AS `r_related_phase_id_` ON `r_related_phase_id_`.`id_` = `t`.`related_phase_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "每个任务类别有多少任务",
+  "sql": "SELECT `t`.`category_` AS `任务类别`, COUNT(*) AS `数量` FROM `pp_task` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `t`.`category_` LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "风险责任人的分布",
+  "sql": "SELECT `r`.`rating_` AS `风险等级`, COUNT(*) AS `数量` FROM `pp_risk` AS `r` WHERE COALESCE(`r`.`deleted_`, 'N') <> 'Y' GROUP BY `r`.`rating_` ORDER BY `数量` DESC LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "本月新增的风险",
+  "sql": "SELECT `t`.`name_` AS `风险名称`, `t`.`category_` AS `风险类别`, `t`.`state_` AS `状态`, `t`.`priority_` AS `优先级`, `t`.`strategy_type_` AS `应对类型`, `t`.`process_state_` AS `流程状态`, `t`.`source_` AS `来源`, `t`.`domain_` AS `风险影响领域` FROM `pp_risk` AS `t` WHERE DATE_FORMAT(`t`.`create_time_`, '%Y-%m') = DATE_FORMAT(CURRENT_DATE, '%Y-%m') LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "每个风险的应对类型",
+  "sql": "SELECT `t`.`name_` AS `风险名称`, `t`.`strategy_type_` AS `应对类型` FROM `pp_risk` AS `t` LEFT JOIN `pp_project` AS `j_project` ON `j_project`.`id_` = `t`.`project_id_` LEFT JOIN `pp_classification` AS `j_classification` ON `j_classification`.`id_` = `j_project`.`classification_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "问题的来源分布",
+  "sql": "SELECT `i`.`priority_` AS `问题优先级`, COUNT(*) AS `数量` FROM `pp_issue` AS `i` WHERE COALESCE(`i`.`deleted_`, 'N') <> 'Y' GROUP BY `i`.`priority_` ORDER BY `数量` DESC LIMIT 200",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "question": "未关闭且高优先级的问题",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`priority_` AS `优先级` FROM `pp_issue` AS `t` WHERE `t`.`priority_` = 'high' LIMIT 200",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "question": "开发任务按优先级统计",
+  "sql": "SELECT `t`.`urgency_` AS `优先级`, COUNT(*) AS `数量` FROM `pp_dev_task` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `t`.`urgency_` LIMIT 200",
+  "tables": [
+   "pp_dev_task"
+  ]
+ },
+ {
+  "question": "每个开发迭代的任务数",
+  "sql": "SELECT COALESCE(`r_dev_sprint_id_`.`name_`, '未关联') AS `所属迭代`, COUNT(*) AS `数量` FROM `pp_dev_task` AS `t` LEFT JOIN `pp_dev_sprint` AS `r_dev_sprint_id_` ON `r_dev_sprint_id_`.`id_` = `t`.`dev_sprint_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_dev_sprint_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_dev_task"
+  ]
+ },
+ {
+  "question": "缺陷按严重程度统计",
+  "sql": "SELECT `d`.`severity_` AS `缺陷严重程度`, COUNT(*) AS `数量` FROM `pp_defect` AS `d` WHERE COALESCE(`d`.`deleted_`, 'N') <> 'Y' GROUP BY `d`.`severity_` ORDER BY `数量` DESC LIMIT 200",
+  "tables": [
+   "pp_defect"
+  ]
+ },
+ {
+  "question": "需求清单",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`process_state_` AS `流程状态`, `t`.`tag_` AS `需求标签`, `t`.`urgency_` AS `紧急程度`, `t`.`process_node_` AS `流程节点`, `r_assignee_id_`.`name_` AS `需求负责人`, `r_project_id_`.`name_` AS `关联项目`, `r_submit_department_id_`.`name_` AS `提出部门` FROM `pp_requirement` AS `t` LEFT JOIN `iform_party_employee` AS `r_assignee_id_` ON `r_assignee_id_`.`id_` = `t`.`assignee_id_` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` LEFT JOIN `iform_party_org` AS `r_submit_department_id_` ON `r_submit_department_id_`.`id_` = `t`.`submit_department_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_requirement"
+  ]
+ },
+ {
+  "question": "文档目录清单",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`owner_type_` AS `所属对象类型`, `r_owner_id_`.`name_` AS `所属对象ID` FROM `pp_directory` AS `t` LEFT JOIN `iform_party_employee` AS `r_owner_id_` ON `r_owner_id_`.`id_` = `t`.`owner_id_` WHERE 1 = 1 LIMIT 200",
+  "tables": [
+   "pp_directory"
+  ]
+ },
+ {
+  "question": "待办事项清单",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`object_type_` AS `对象类型`, `t`.`task_predecessors_completed_` AS `任务前置是否已完成`, `r_user_id_`.`name_` AS `待办人`, `r_project_id_`.`name_` AS `所属项目`, `t`.`progress_` AS `进度`, `t`.`plan_finish_` AS `计划完成时间`, `t`.`plan_start_` AS `计划开始时间` FROM `pp_todo` AS `t` LEFT JOIN `iform_party_employee` AS `r_user_id_` ON `r_user_id_`.`id_` = `t`.`user_id_` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_todo"
+  ]
+ },
+ {
+  "question": "每个项目有多少阶段",
+  "sql": "SELECT COALESCE(`r_project_id_`.`name_`, '未关联') AS `项目`, COUNT(*) AS `数量` FROM `pp_project_phase` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_project_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_project_phase"
+  ]
+ },
+ {
+  "question": "项目阶段清单",
+  "sql": "SELECT `r_project_id_`.`name_` AS `项目` FROM `pp_project_phase` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_project_phase"
+  ]
+ },
+ {
+  "question": "合同金额大于100万",
+  "sql": "SELECT `t`.`name_` AS `合同名称`, `t`.`amount_` AS `合同金额` FROM `pp_contract` AS `t` WHERE `t`.`amount_` > 100 LIMIT 200",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "question": "每个合同的付款进度",
+  "sql": "SELECT `t`.`name_` AS `合同名称`, `t`.`payment_progress_` AS `付款进度` FROM `pp_contract` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "question": "客户所在行业分布",
+  "sql": "SELECT `t`.`industry_` AS `行业`, COUNT(*) AS `数量` FROM `pp_customer` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `t`.`industry_` LIMIT 200",
+  "tables": [
+   "pp_customer"
+  ]
+ },
+ {
+  "question": "每个销售负责多少客户",
+  "sql": "SELECT `g_sales_id_`.`name_` AS `销售人员1`, COUNT(DISTINCT `t`.`id_`) AS `数量` FROM `pp_customer` AS `t` JOIN `iform_party_employee` AS `g_sales_id_` ON FIND_IN_SET(`g_sales_id_`.`id_`, `t`.`sales_id_`) > 0 WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `g_sales_id_`.`name_` LIMIT 200",
+  "tables": [
+   "pp_customer"
+  ]
+ },
+ {
+  "question": "产品清单",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`description_` AS `产品描述`, `r_category_id_`.`name_` AS `产品分类`, `r_department_id_`.`name_` AS `所属部门`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`manager_ids_`)) AS `产品经理` FROM `pp_product` AS `t` LEFT JOIN `pp_product_category` AS `r_category_id_` ON `r_category_id_`.`id_` = `t`.`category_id_` LEFT JOIN `iform_party_org` AS `r_department_id_` ON `r_department_id_`.`id_` = `t`.`department_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_product"
+  ]
+ },
+ {
+  "question": "测试计划清单",
+  "sql": "SELECT `t`.`name_` AS `计划名称`, `t`.`test_types_` AS `测试类型列表`, `t`.`state_` AS `状态`, `r_project_id_`.`name_` AS `所属项目`, `r_sprint_id_`.`name_` AS `关联迭代`, `t`.`finish_` AS `计划结束`, `t`.`start_` AS `计划开始`, `r_pp_parent_id_`.`name_` AS `父计划` FROM `pp_test_plan` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` LEFT JOIN `pp_dev_sprint` AS `r_sprint_id_` ON `r_sprint_id_`.`id_` = `t`.`sprint_id_` LEFT JOIN `pp_test_plan` AS `r_pp_parent_id_` ON `r_pp_parent_id_`.`id_` = `t`.`pp_parent_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_test_plan"
+  ]
+ },
+ {
+  "question": "项目预算清单",
+  "sql": "SELECT `r_project_budget_id_`.`name_` AS `项目预算` FROM `pp_project_budget_item` AS `t` LEFT JOIN `pp_project_budget` AS `r_project_budget_id_` ON `r_project_budget_id_`.`id_` = `t`.`project_budget_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_project_budget"
+  ]
+ },
+ {
+  "question": "每个预算大类汇总",
+  "sql": "SELECT COALESCE(`r_finance_domain_id_`.`name_`, '未关联') AS `预算大类`, COUNT(*) AS `数量` FROM `pp_project_budget_domain_sum` AS `t` LEFT JOIN `pp_finance_domain` AS `r_finance_domain_id_` ON `r_finance_domain_id_`.`id_` = `t`.`finance_domain_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_finance_domain_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_project_budget_domain_sum"
+  ]
+ },
+ {
+  "question": "项目人员角色分布",
+  "sql": "SELECT `r`.`name_` AS `项目角色`, COUNT(DISTINCT `pm`.`user_id_`) AS `数量` FROM `pp_project_member` AS `pm` LEFT JOIN `iform_object_role` AS `r` ON `r`.`id_` = `pm`.`project_role_id_` WHERE COALESCE(`pm`.`deleted_`, 'N') <> 'Y' GROUP BY `r`.`name_` ORDER BY `数量` DESC LIMIT 200",
+  "tables": [
+   "pp_project_member"
+  ]
+ },
+ {
+  "question": "最近访问记录",
+  "sql": "SELECT `t`.`object_type_` AS `类型`, `r_user_id_`.`name_` AS `用户` FROM `pp_recent` AS `t` LEFT JOIN `iform_party_employee` AS `r_user_id_` ON `r_user_id_`.`id_` = `t`.`user_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' ORDER BY `t`.`create_time_` DESC LIMIT 200",
+  "tables": [
+   "pp_recent"
+  ]
+ },
+ {
+  "question": "反馈清单",
+  "sql": "SELECT `t`.`progress_` AS `进度` FROM `pp_feedback` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_feedback"
+  ]
+ },
+ {
+  "question": "帮我看看项目都有哪些",
+  "sql": "SELECT `t`.`name_` AS `项目名称`, `t`.`phase_` AS `项目阶段名称`, `t`.`light_description_` AS `亮灯描述`, `t`.`notes_` AS `备注`, `r_classification_id_`.`name_` AS `项目类型`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `pp_project_phase` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`phase_ids_`)) AS `项目阶段`, `r_org_id_`.`name_` AS `隶属部门`, `t`.`progress_` AS `实际进度` FROM `pp_project` AS `t` LEFT JOIN `pp_classification` AS `r_classification_id_` ON `r_classification_id_`.`id_` = `t`.`classification_id_` LEFT JOIN `iform_party_org` AS `r_org_id_` ON `r_org_id_`.`id_` = `t`.`org_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "现在跑着的项目有几个",
+  "sql": "SELECT COALESCE(`r_classification_id_`.`name_`, '未关联') AS `项目类型`, COUNT(*) AS `数量` FROM `pp_project` AS `t` LEFT JOIN `pp_classification` AS `r_classification_id_` ON `r_classification_id_`.`id_` = `t`.`classification_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_classification_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "哪些项目延期了",
+  "sql": "SELECT `t`.`name_` AS `项目名称`, `t`.`phase_` AS `项目阶段名称`, `t`.`light_description_` AS `亮灯描述`, `t`.`notes_` AS `备注`, `r_classification_id_`.`name_` AS `项目类型`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `pp_project_phase` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`phase_ids_`)) AS `项目阶段`, `r_org_id_`.`name_` AS `隶属部门`, `t`.`progress_` AS `实际进度` FROM `pp_project` AS `t` LEFT JOIN `pp_classification` AS `r_classification_id_` ON `r_classification_id_`.`id_` = `t`.`classification_id_` LEFT JOIN `iform_party_org` AS `r_org_id_` ON `r_org_id_`.`id_` = `t`.`org_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "项目负责人都是谁",
+  "sql": "SELECT `t`.`name_` AS `项目名称`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`manager_ids_`)) AS `项目经理` FROM `pp_project` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "手上有多少任务没做完",
+  "sql": "SELECT COALESCE(`r_project_id_`.`name_`, '未关联') AS `所属项目`, COUNT(*) AS `数量` FROM `pp_task` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_project_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "把任务按负责人分一下",
+  "sql": "SELECT `g_assignee_ids_`.`name_` AS `任务责任人`, COUNT(DISTINCT `t`.`id_`) AS `数量` FROM `pp_task` AS `t` JOIN `iform_party_employee` AS `g_assignee_ids_` ON FIND_IN_SET(`g_assignee_ids_`.`id_`, `t`.`assignee_ids_`) > 0 WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `g_assignee_ids_`.`name_` LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "任务都分给谁了",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`assignee_ids_`)) AS `任务责任人` FROM `pp_task` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "有没有超期的任务",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, `t`.`category_` AS `任务类别`, `t`.`tag_` AS `标签`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`assignee_ids_`)) AS `任务责任人`, `r_project_id_`.`name_` AS `所属项目`, `r_related_phase_id_`.`name_` AS `关联阶段`, `t`.`progress_` AS `进度`, `t`.`standard_hours_` AS `标准工时` FROM `pp_task` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` LEFT JOIN `pp_project_phase` AS `r_related_phase_id_` ON `r_related_phase_id_`.`id_` = `t`.`related_phase_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "风险这块现在什么情况",
+  "sql": "SELECT `t`.`name_` AS `风险名称`, `t`.`category_` AS `风险类别`, `t`.`state_` AS `状态`, `t`.`priority_` AS `优先级`, `t`.`strategy_type_` AS `应对类型`, `t`.`process_state_` AS `流程状态`, `t`.`source_` AS `来源`, `t`.`domain_` AS `风险影响领域` FROM `pp_risk` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "问题是不是变多了",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`status_` AS `状态`, `t`.`priority_` AS `优先级`, `t`.`process_state_` AS `流程状态`, `t`.`category_` AS `问题小类`, `t`.`source_` AS `问题来源`, `t`.`process_node_` AS `流程节点`, `r_project_id_`.`name_` AS `关联项目` FROM `pp_issue` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "question": "客户都有哪些单位",
+  "sql": "SELECT `t`.`name_` AS `客户名称`, `t`.`state_` AS `客户状态`, `t`.`priority_` AS `优先级`, `t`.`province_` AS `省份`, `t`.`city_` AS `城市`, `t`.`address_` AS `地址`, `t`.`industry_` AS `行业`, `t`.`source_` AS `客户来源` FROM `pp_customer` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_customer"
+  ]
+ },
+ {
+  "question": "合同签了多少单",
+  "sql": "SELECT COALESCE(`r_pp_parent_id_`.`name_`, '未关联') AS `父合同`, COUNT(*) AS `数量` FROM `pp_contract` AS `t` LEFT JOIN `pp_contract` AS `r_pp_parent_id_` ON `r_pp_parent_id_`.`id_` = `t`.`pp_parent_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_pp_parent_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "question": "这个月的收入情况",
+  "sql": "SELECT `t`.`name_` AS `合同名称`, `t`.`category_` AS `合同类别`, `t`.`state_` AS `合同状态`, `t`.`payment_state_` AS `合同支付状态`, `t`.`priority_` AS `优先级`, `t`.`description_` AS `详细描述`, `t`.`customer_name_` AS `客户名称`, `t`.`tag_` AS `标签` FROM `pp_contract` AS `t` WHERE DATE_FORMAT(`t`.`create_time_`, '%Y-%m') = DATE_FORMAT(CURRENT_DATE, '%Y-%m') LIMIT 200",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "question": "开发任务按人看看",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`urgency_` AS `优先级`, `r_state_id_`.`name_` AS `任务状态`, `t`.`process_node_` AS `流程节点`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`assignee_ids_`)) AS `开发任务责任人`, `r_product_id_`.`name_` AS `关联产品`, `r_dev_sprint_id_`.`name_` AS `所属迭代`, `t`.`forecast_hours_` AS `预估工时` FROM `pp_dev_task` AS `t` LEFT JOIN `pp_project_state` AS `r_state_id_` ON `r_state_id_`.`id_` = `t`.`state_id_` LEFT JOIN `pp_product` AS `r_product_id_` ON `r_product_id_`.`id_` = `t`.`product_id_` LEFT JOIN `pp_dev_sprint` AS `r_dev_sprint_id_` ON `r_dev_sprint_id_`.`id_` = `t`.`dev_sprint_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_dev_task"
+  ]
+ },
+ {
+  "question": "谁会做开发任务",
+  "sql": "SELECT `t`.`name_` AS `名称`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`assignee_ids_`)) AS `开发任务责任人` FROM `pp_dev_task` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_dev_task"
+  ]
+ },
+ {
+  "question": "需求都提到谁头上了",
+  "sql": "SELECT (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`handler_ids_`)) AS `当前处理人id清单` FROM `pp_requirement` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_requirement"
+  ]
+ },
+ {
+  "question": "缺陷谁在管",
+  "sql": "SELECT `t`.`name_` AS `名称`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`handler_ids_`)) AS `当前处理人` FROM `pp_defect` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_defect"
+  ]
+ },
+ {
+  "question": "测试计划有哪些",
+  "sql": "SELECT `t`.`name_` AS `计划名称`, `t`.`test_types_` AS `测试类型列表`, `t`.`state_` AS `状态`, `r_project_id_`.`name_` AS `所属项目`, `r_sprint_id_`.`name_` AS `关联迭代`, `t`.`finish_` AS `计划结束`, `t`.`start_` AS `计划开始`, `r_pp_parent_id_`.`name_` AS `父计划` FROM `pp_test_plan` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` LEFT JOIN `pp_dev_sprint` AS `r_sprint_id_` ON `r_sprint_id_`.`id_` = `t`.`sprint_id_` LEFT JOIN `pp_test_plan` AS `r_pp_parent_id_` ON `r_pp_parent_id_`.`id_` = `t`.`pp_parent_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_test_plan"
+  ]
+ },
+ {
+  "question": "待办清单给我看下",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`object_type_` AS `对象类型`, `t`.`task_predecessors_completed_` AS `任务前置是否已完成`, `r_user_id_`.`name_` AS `待办人`, `r_project_id_`.`name_` AS `所属项目`, `t`.`progress_` AS `进度`, `t`.`plan_finish_` AS `计划完成时间`, `t`.`plan_start_` AS `计划开始时间` FROM `pp_todo` AS `t` LEFT JOIN `iform_party_employee` AS `r_user_id_` ON `r_user_id_`.`id_` = `t`.`user_id_` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_todo"
+  ]
+ },
+ {
+  "question": "文档都有哪些目录",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`owner_type_` AS `所属对象类型`, `r_owner_id_`.`name_` AS `所属对象ID` FROM `pp_directory` AS `t` LEFT JOIN `iform_party_employee` AS `r_owner_id_` ON `r_owner_id_`.`id_` = `t`.`owner_id_` WHERE 1 = 1 LIMIT 200",
+  "tables": [
+   "pp_directory"
+  ]
+ },
+ {
+  "question": "项目成员都是谁",
+  "sql": "SELECT `p`.`name_` AS `项目名称`, `r`.`name_` AS `项目角色`, `e`.`name_` AS `团队成员` FROM `pp_project` AS `p` JOIN `pp_project_role` AS `pr` ON `pr`.`project_id_` = `p`.`id_` LEFT JOIN `iform_object_role` AS `r` ON `r`.`id_` = `pr`.`object_role_id_` LEFT JOIN `pp_project_member` AS `pm` ON `pm`.`project_id_` = `p`.`id_` AND `pm`.`project_role_id_` = `pr`.`object_role_id_` LEFT JOIN `iform_party_employee` AS `e` ON `e`.`id_` = `pm`.`user_id_` WHERE COALESCE(`p`.`deleted_`, 'N') <> 'Y' AND COALESCE(`pr`.`deleted_`, 'N') <> 'Y' AND COALESCE(`pm`.`deleted_`, 'N') <> 'Y' ORDER BY `p`.`id_` DESC, (`e`.`name_` IS NULL), `pr`.`order_` LIMIT 200",
+  "tables": [
+   "pp_project_member"
+  ]
+ },
+ {
+  "question": "每个项目挂了多少人",
+  "sql": "SELECT COALESCE(`r_project_id_`.`name_`, '未关联') AS `所属项目`, COUNT(*) AS `数量` FROM `pp_project_member` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_project_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_project_member"
+  ]
+ },
+ {
+  "question": "项目角色有哪些种类",
+  "sql": "SELECT `p`.`name_` AS `项目名称`, `r`.`name_` AS `项目角色` FROM `pp_project` AS `p` JOIN `pp_project_role` AS `pr` ON `pr`.`project_id_` = `p`.`id_` LEFT JOIN `iform_object_role` AS `r` ON `r`.`id_` = `pr`.`object_role_id_` WHERE COALESCE(`p`.`deleted_`, 'N') <> 'Y' AND COALESCE(`pr`.`deleted_`, 'N') <> 'Y' ORDER BY `p`.`id_` DESC, `pr`.`order_` LIMIT 200",
+  "tables": [
+   "pp_project_role"
+  ]
+ },
+ {
+  "question": "预算都花在哪了",
+  "sql": "SELECT `r_project_budget_id_`.`name_` AS `项目预算` FROM `pp_project_budget_item` AS `t` LEFT JOIN `pp_project_budget` AS `r_project_budget_id_` ON `r_project_budget_id_`.`id_` = `t`.`project_budget_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_project_budget_item"
+  ]
+ },
+ {
+  "question": "每个项目的预算总额",
+  "sql": "SELECT `r_project_budget_id_`.`name_` AS `项目预算` FROM `pp_project_budget_item` AS `t` LEFT JOIN `pp_project_budget` AS `r_project_budget_id_` ON `r_project_budget_id_`.`id_` = `t`.`project_budget_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_project_budget_item"
+  ]
+ },
+ {
+  "question": "反馈都来自哪些状态",
+  "sql": "SELECT `t`.`progress_` AS `进度` FROM `pp_feedback` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_feedback"
+  ]
+ },
+ {
+  "question": "迭代一共有几个",
+  "sql": "SELECT COALESCE(`r_project_id_`.`name_`, '未关联') AS `隶属项目`, COUNT(*) AS `数量` FROM `pp_dev_sprint` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_project_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_dev_sprint"
+  ]
+ },
+ {
+  "question": "每个迭代的开发任务有多少",
+  "sql": "SELECT COALESCE(`r_dev_task_id_`.`name_`, '未关联') AS `关联开发任务`, COUNT(*) AS `数量` FROM `pp_project_expect_doc` AS `t` LEFT JOIN `pp_dev_task` AS `r_dev_task_id_` ON `r_dev_task_id_`.`id_` = `t`.`dev_task_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_dev_task_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_dev_task"
+  ]
+ },
+ {
+  "question": "产品线有哪些",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`description_` AS `产品描述`, `r_category_id_`.`name_` AS `产品分类`, `r_department_id_`.`name_` AS `所属部门`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`manager_ids_`)) AS `产品经理` FROM `pp_product` AS `t` LEFT JOIN `pp_product_category` AS `r_category_id_` ON `r_category_id_`.`id_` = `t`.`category_id_` LEFT JOIN `iform_party_org` AS `r_department_id_` ON `r_department_id_`.`id_` = `t`.`department_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_product"
+  ]
+ },
+ {
+  "question": "哪些客户还没签合同",
+  "sql": "SELECT `t`.`name_` AS `合同名称`, `r_customer_id_`.`name_` AS `客户` FROM `pp_contract` AS `t` LEFT JOIN `pp_customer` AS `r_customer_id_` ON `r_customer_id_`.`id_` = `t`.`customer_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_customer"
+  ]
+ },
+ {
+  "question": "排期后状态是1的任务有多少",
+  "sql": "SELECT `t`.`schedule_state_` AS `排期后状态`, COUNT(*) AS `数量` FROM `pp_task` AS `t` LEFT JOIN `pp_project` AS `j_project` ON `j_project`.`id_` = `t`.`project_id_` LEFT JOIN `pp_project_state` AS `j_project_state` ON `j_project_state`.`id_` = `j_project`.`state_id_` WHERE `t`.`schedule_state_` LIKE '%1%' GROUP BY `t`.`schedule_state_` LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "风险等级是高的有哪些",
+  "sql": "SELECT `p`.`name_` AS `项目名称`, `r`.`name_` AS `风险名称`, `r`.`rating_` AS `风险等级`, `r`.`probability_` AS `可能性`, `r`.`impact_` AS `影响`, `r`.`state_` AS `状态`, `r`.`due_time_` AS `到期时间` FROM `pp_risk` AS `r` LEFT JOIN `pp_project` AS `p` ON `p`.`id_` = `r`.`project_id_` WHERE COALESCE(`r`.`deleted_`, 'N') <> 'Y' AND `r`.`rating_` = 'High' ORDER BY `r`.`due_time_` IS NULL, `r`.`due_time_` LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "问题优先级为低的清单",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`priority_` AS `优先级` FROM `pp_issue` AS `t` WHERE `t`.`priority_` = 'low' LIMIT 200",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "question": "项目按级别分一下",
+  "sql": "SELECT COALESCE(`r_grade_id_`.`name_`, '未关联') AS `项目级别`, COUNT(*) AS `数量` FROM `pp_project` AS `t` LEFT JOIN `pp_project_grade` AS `r_grade_id_` ON `r_grade_id_`.`id_` = `t`.`grade_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_grade_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "上上周创建的合同",
+  "sql": "SELECT `t`.`name_` AS `合同名称`, `t`.`category_` AS `合同类别`, `t`.`state_` AS `合同状态`, `t`.`payment_state_` AS `合同支付状态`, `t`.`priority_` AS `优先级`, `t`.`description_` AS `详细描述`, `t`.`customer_name_` AS `客户名称`, `t`.`tag_` AS `标签` FROM `pp_contract` AS `t` WHERE YEARWEEK(`t`.`create_time_`, 1) = YEARWEEK(CURRENT_DATE, 1) - 1 LIMIT 200",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "question": "最近三个月的问题",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`status_` AS `状态`, `t`.`priority_` AS `优先级`, `t`.`process_state_` AS `流程状态`, `t`.`category_` AS `问题小类`, `t`.`source_` AS `问题来源`, `t`.`process_node_` AS `流程节点`, `r_project_id_`.`name_` AS `关联项目` FROM `pp_issue` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' ORDER BY `t`.`create_time_` DESC LIMIT 200",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "question": "列出任务名称和任务责任人 筛选的任务名称不能包含根任务",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`assignee_ids_`)) AS `任务责任人` FROM `pp_task` AS `t` WHERE `t`.`name_` NOT LIKE '%根任务%' LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "任务的责任人是谁",
+  "sql": "SELECT `r_task_id_`.`name_` AS `所属任务`, `r_user_id_`.`name_` AS `人员` FROM `pp_task_assignment` AS `t` LEFT JOIN `pp_task` AS `r_task_id_` ON `r_task_id_`.`id_` = `t`.`task_id_` LEFT JOIN `iform_party_employee` AS `r_user_id_` ON `r_user_id_`.`id_` = `t`.`user_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "开发任务的责任人是谁",
+  "sql": "SELECT (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`assignee_ids_`)) AS `开发任务责任人`, `j_task`.`name_` AS `任务名称` FROM `pp_dev_task` AS `t` LEFT JOIN `pp_project_expect_doc` AS `j_project_expect_doc` ON `t`.`id_` = `j_project_expect_doc`.`dev_task_id_` LEFT JOIN `pp_task` AS `j_task` ON `j_task`.`id_` = `j_project_expect_doc`.`task_id_` LEFT JOIN `pp_task_assignment` AS `j_task_assignment` ON `j_task`.`id_` = `j_task_assignment`.`task_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_dev_task"
+  ]
+ },
+ {
+  "question": "每个项目的成员数",
+  "sql": "SELECT `p`.`name_` AS `项目名称`, COUNT(DISTINCT `pm`.`user_id_`) AS `数量` FROM `pp_project_member` AS `pm` JOIN `pp_project` AS `p` ON `p`.`id_` = `pm`.`project_id_` WHERE COALESCE(`pm`.`deleted_`, 'N') <> 'Y' AND COALESCE(`p`.`deleted_`, 'N') <> 'Y' GROUP BY `p`.`id_`, `p`.`name_` ORDER BY `数量` DESC LIMIT 200",
+  "tables": [
+   "pp_project_member"
+  ]
+ },
+ {
+  "question": "每个产品的版本有多少",
+  "sql": "SELECT `t`.`version_` AS `版本`, COUNT(*) AS `数量` FROM `pp_product` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `t`.`version_` LIMIT 200",
+  "tables": [
+   "pp_product"
+  ]
+ },
+ {
+  "question": "每个阶段的任务数量",
+  "sql": "SELECT `t`.`is_plan_root_` AS `是否是项目计划的根任务`, COUNT(*) AS `数量` FROM `pp_task` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `t`.`is_plan_root_` LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "优先级为高的问题",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`priority_` AS `优先级` FROM `pp_issue` AS `t` WHERE `t`.`priority_` = 'high' LIMIT 200",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "question": "问题名称里不要包含性能的",
+  "sql": "SELECT `t`.`name_` AS `名称` FROM `pp_issue` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "question": "风险等级不是高的风险",
+  "sql": "SELECT `p`.`name_` AS `项目名称`, `r`.`name_` AS `风险名称`, `r`.`rating_` AS `风险等级`, `r`.`probability_` AS `可能性`, `r`.`impact_` AS `影响`, `r`.`state_` AS `状态`, `r`.`due_time_` AS `到期时间` FROM `pp_risk` AS `r` LEFT JOIN `pp_project` AS `p` ON `p`.`id_` = `r`.`project_id_` WHERE COALESCE(`r`.`deleted_`, 'N') <> 'Y' AND `r`.`rating_` = 'High' ORDER BY `r`.`due_time_` IS NULL, `r`.`due_time_` LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "任务名称不包含测试",
+  "sql": "SELECT `t`.`name_` AS `任务名称` FROM `pp_task` AS `t` WHERE `t`.`name_` NOT LIKE '%测试%' LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "查询任务名称和任务责任人，要去除掉任务名称为根任务的任务",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `iform_party_employee` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`assignee_ids_`)) AS `任务责任人` FROM `pp_task` AS `t` WHERE `t`.`name_` NOT LIKE '%根任务%' LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "去除掉任务名称为根任务的任务",
+  "sql": "SELECT `t`.`name_` AS `任务名称` FROM `pp_task` AS `t` WHERE `t`.`name_` NOT LIKE '%根任务%' LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "排除掉状态是已关闭的风险",
+  "sql": "SELECT `t`.`name_` AS `风险名称`, `t`.`state_` AS `状态` FROM `pp_risk` AS `t` LEFT JOIN `pp_project` AS `j_project` ON `j_project`.`id_` = `t`.`project_id_` LEFT JOIN `pp_project_state` AS `j_project_state` ON `j_project_state`.`id_` = `j_project`.`state_id_` WHERE `t`.`state_` <> 'closed' LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "剔除掉优先级为低的问题",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`priority_` AS `优先级` FROM `pp_issue` AS `t` WHERE `t`.`priority_` <> 'low' LIMIT 200",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "question": "跳过状态是已关闭的风险",
+  "sql": "SELECT `t`.`name_` AS `风险名称`, `t`.`state_` AS `状态` FROM `pp_risk` AS `t` LEFT JOIN `pp_project` AS `j_project` ON `j_project`.`id_` = `t`.`project_id_` LEFT JOIN `pp_project_state` AS `j_project_state` ON `j_project_state`.`id_` = `j_project`.`state_id_` WHERE `t`.`state_` <> 'closed' LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "忽略高风险",
+  "sql": "SELECT `t`.`name_` AS `风险名称`, `t`.`category_` AS `风险类别`, `t`.`state_` AS `状态`, `t`.`priority_` AS `优先级`, `t`.`strategy_type_` AS `应对类型`, `t`.`process_state_` AS `流程状态`, `t`.`source_` AS `来源`, `t`.`domain_` AS `风险影响领域`, `t`.`rating_` AS `风险等级` FROM `pp_risk` AS `t` WHERE `t`.`rating_` <> 'High' LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "略过已立项的项目",
+  "sql": "SELECT `t`.`name_` AS `项目名称`, `t`.`phase_` AS `项目阶段名称`, `t`.`light_description_` AS `亮灯描述`, `t`.`notes_` AS `备注`, `r_classification_id_`.`name_` AS `项目类型`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `pp_project_phase` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`phase_ids_`)) AS `项目阶段`, `r_org_id_`.`name_` AS `隶属部门`, `t`.`progress_` AS `实际进度` FROM `pp_project` AS `t` LEFT JOIN `pp_classification` AS `r_classification_id_` ON `r_classification_id_`.`id_` = `t`.`classification_id_` LEFT JOIN `iform_party_org` AS `r_org_id_` ON `r_org_id_`.`id_` = `t`.`org_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "屏掉高风险",
+  "sql": "SELECT `t`.`name_` AS `风险名称`, `t`.`category_` AS `风险类别`, `t`.`state_` AS `状态`, `t`.`priority_` AS `优先级`, `t`.`strategy_type_` AS `应对类型`, `t`.`process_state_` AS `流程状态`, `t`.`source_` AS `来源`, `t`.`domain_` AS `风险影响领域`, `t`.`rating_` AS `风险等级` FROM `pp_risk` AS `t` WHERE `t`.`rating_` <> 'High' LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "任务名称里不能有测试的任务",
+  "sql": "SELECT `t`.`name_` AS `任务名称` FROM `pp_task` AS `t` WHERE `t`.`name_` NOT LIKE '%测试%' LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "不看已关闭的项目",
+  "sql": "SELECT `t`.`name_` AS `项目名称`, `t`.`phase_` AS `项目阶段名称`, `t`.`light_description_` AS `亮灯描述`, `t`.`notes_` AS `备注`, `r_classification_id_`.`name_` AS `项目类型`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `pp_project_phase` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`phase_ids_`)) AS `项目阶段`, `r_org_id_`.`name_` AS `隶属部门`, `t`.`progress_` AS `实际进度` FROM `pp_project` AS `t` LEFT JOIN `pp_classification` AS `r_classification_id_` ON `r_classification_id_`.`id_` = `t`.`classification_id_` LEFT JOIN `iform_party_org` AS `r_org_id_` ON `r_org_id_`.`id_` = `t`.`org_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "进度最高的5个项目",
+  "sql": "SELECT `t`.`name_` AS `项目名称`, `t`.`progress_` AS `实际进度` FROM `pp_project` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' ORDER BY `t`.`progress_` DESC LIMIT 5",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "进度最低的项目有哪些",
+  "sql": "SELECT `t`.`name_` AS `项目名称`, `t`.`progress_` AS `实际进度` FROM `pp_project` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' ORDER BY `t`.`progress_` ASC LIMIT 20",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "金额最大的合同",
+  "sql": "SELECT `t`.`name_` AS `合同名称`, `t`.`amount_` AS `合同金额` FROM `pp_contract` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' ORDER BY `t`.`amount_` DESC LIMIT 20",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "question": "优先级最高的风险",
+  "sql": "SELECT `t`.`name_` AS `风险名称`, `t`.`priority_` AS `优先级` FROM `pp_risk` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' ORDER BY `t`.`priority_` DESC LIMIT 20",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "最近创建的项目是哪个",
+  "sql": "SELECT `t`.`name_` AS `项目名称`, `t`.`phase_` AS `项目阶段名称`, `t`.`light_description_` AS `亮灯描述`, `t`.`notes_` AS `备注`, `r_classification_id_`.`name_` AS `项目类型`, (SELECT GROUP_CONCAT(`j`.`name_` SEPARATOR '、') FROM `pp_project_phase` AS `j` WHERE FIND_IN_SET(`j`.`id_`, `t`.`phase_ids_`)) AS `项目阶段`, `r_org_id_`.`name_` AS `隶属部门`, `t`.`progress_` AS `实际进度` FROM `pp_project` AS `t` LEFT JOIN `pp_classification` AS `r_classification_id_` ON `r_classification_id_`.`id_` = `t`.`classification_id_` LEFT JOIN `iform_party_org` AS `r_org_id_` ON `r_org_id_`.`id_` = `t`.`org_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' ORDER BY `t`.`create_time_` DESC LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "任务数量最多的项目",
+  "sql": "SELECT COALESCE(`r_project_id_`.`name_`, '未关联') AS `所属项目`, COUNT(*) AS `数量` FROM `pp_task` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_project_id_`.`name_`, '未关联') ORDER BY COUNT(*) DESC LIMIT 20",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "风险数量最多的项目",
+  "sql": "SELECT COALESCE(`r_project_id_`.`name_`, '未关联') AS `隶属项目`, COUNT(*) AS `数量` FROM `pp_risk` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_project_id_`.`name_`, '未关联') ORDER BY COUNT(*) DESC LIMIT 20",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "成员最多的项目",
+  "sql": "SELECT `p`.`name_` AS `项目名称`, `r`.`name_` AS `项目角色`, `e`.`name_` AS `团队成员` FROM `pp_project` AS `p` JOIN `pp_project_role` AS `pr` ON `pr`.`project_id_` = `p`.`id_` LEFT JOIN `iform_object_role` AS `r` ON `r`.`id_` = `pr`.`object_role_id_` LEFT JOIN `pp_project_member` AS `pm` ON `pm`.`project_id_` = `p`.`id_` AND `pm`.`project_role_id_` = `pr`.`object_role_id_` LEFT JOIN `iform_party_employee` AS `e` ON `e`.`id_` = `pm`.`user_id_` WHERE COALESCE(`p`.`deleted_`, 'N') <> 'Y' AND COALESCE(`pr`.`deleted_`, 'N') <> 'Y' AND COALESCE(`pm`.`deleted_`, 'N') <> 'Y' ORDER BY `p`.`id_` DESC, (`e`.`name_` IS NULL), `pr`.`order_` LIMIT 200",
+  "tables": [
+   "pp_project_member"
+  ]
+ },
+ {
+  "question": "提交时间最早的问题",
+  "sql": "SELECT `t`.`name_` AS `名称`, `t`.`status_` AS `状态`, `t`.`priority_` AS `优先级`, `t`.`process_state_` AS `流程状态`, `t`.`category_` AS `问题小类`, `t`.`source_` AS `问题来源`, `t`.`process_node_` AS `流程节点`, `r_project_id_`.`name_` AS `关联项目` FROM `pp_issue` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' ORDER BY `t`.`start_time_` ASC LIMIT 20",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "question": "工期最长的任务",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, `t`.`duration_` AS `工期` FROM `pp_task` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' ORDER BY `t`.`duration_` DESC LIMIT 20",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "项目的平均进度",
+  "sql": "SELECT AVG(`t`.`progress_`) AS `平均实际进度` FROM `pp_project` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 1",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "合同金额合计",
+  "sql": "SELECT SUM(`t`.`amount_`) AS `合计合同金额` FROM `pp_contract` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 1",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "question": "所有任务的总工期",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, `t`.`duration_` AS `工期` FROM `pp_task` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "风险的总数是多少",
+  "sql": "SELECT COALESCE(`r_project_id_`.`name_`, '未关联') AS `隶属项目`, COUNT(*) AS `数量` FROM `pp_risk` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY COALESCE(`r_project_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "每个项目任务的平均工期",
+  "sql": "SELECT AVG(`t`.`duration_`) AS `平均工期` FROM `pp_task` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 1",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "预算合计是多少",
+  "sql": "SELECT SUM(`t`.`original_total_budget_`) AS `合计原始总预算` FROM `pp_project_budget` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 1",
+  "tables": [
+   "pp_project_budget"
+  ]
+ },
+ {
+  "question": "进度大于40的项目",
+  "sql": "SELECT `t`.`name_` AS `项目名称`, `t`.`progress_` AS `实际进度` FROM `pp_project` AS `t` WHERE `t`.`progress_` > 40 LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "金额超过100万的合同",
+  "sql": "SELECT `t`.`name_` AS `合同名称`, `t`.`amount_` AS `合同金额` FROM `pp_contract` AS `t` WHERE `t`.`amount_` > 100 LIMIT 200",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "question": "工期小于3天的任务",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, `t`.`duration_` AS `工期` FROM `pp_task` AS `t` WHERE `t`.`duration_` < 3 LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "进度低于30的项目",
+  "sql": "SELECT `t`.`name_` AS `项目名称`, `t`.`progress_` AS `实际进度` FROM `pp_project` AS `t` WHERE `t`.`progress_` < 30 LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "优先级大于中等的风险",
+  "sql": "SELECT `t`.`name_` AS `风险名称`, `t`.`priority_` AS `优先级` FROM `pp_risk` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "项目状态分布占比",
+  "sql": "SELECT `g_create_by_`.`name_` AS `创建人`, COUNT(DISTINCT `t`.`id_`) AS `数量` FROM `pp_project_state` AS `t` JOIN `iform_party_employee` AS `g_create_by_` ON FIND_IN_SET(`g_create_by_`.`id_`, `t`.`create_by_`) > 0 WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `g_create_by_`.`name_` LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "风险等级占比",
+  "sql": "SELECT `t`.`rating_` AS `风险等级`, COUNT(*) AS `数量` FROM `pp_risk` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `t`.`rating_` LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "项目按进度降序",
+  "sql": "SELECT `t`.`name_` AS `项目名称`, `t`.`progress_` AS `实际进度` FROM `pp_project` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' ORDER BY `t`.`progress_` DESC LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "合同按金额从大到小排序",
+  "sql": "SELECT `t`.`name_` AS `合同名称`, `t`.`amount_` AS `合同金额` FROM `pp_contract` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' ORDER BY `t`.`amount_` DESC LIMIT 200",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "question": "任务按计划完成时间升序",
+  "sql": "SELECT `t`.`name_` AS `任务名称`, `t`.`finish_` AS `计划完成时间`, `t`.`actual_finish_` AS `实际完成时间` FROM `pp_task` AS `t` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' ORDER BY `t`.`finish_` ASC LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "查询工时数据",
+  "sql": "SELECT `t`.`object_type_` AS `对象的类型`, `t`.`work_content_` AS `工时描述`, `r_user_id_`.`name_` AS `填报人`, `r_project_id_`.`name_` AS `归属项目`, `r_org_id_`.`name_` AS `填报人所属部门`, `t`.`normal_hours_` AS `正常工时`, `t`.`timesheet_date_` AS `工时日期` FROM `pp_timesheet` AS `t` LEFT JOIN `iform_party_employee` AS `r_user_id_` ON `r_user_id_`.`id_` = `t`.`user_id_` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` LEFT JOIN `iform_party_org` AS `r_org_id_` ON `r_org_id_`.`id_` = `t`.`org_id_` WHERE 1 = 1 LIMIT 200",
+  "tables": [
+   "pp_timesheet"
+  ]
+ },
+ {
+  "question": "工时明细",
+  "sql": "SELECT `t`.`object_type_` AS `对象的类型`, `t`.`work_content_` AS `工时描述`, `r_user_id_`.`name_` AS `填报人`, `r_project_id_`.`name_` AS `归属项目`, `r_org_id_`.`name_` AS `填报人所属部门`, `t`.`normal_hours_` AS `正常工时`, `t`.`timesheet_date_` AS `工时日期` FROM `pp_timesheet` AS `t` LEFT JOIN `iform_party_employee` AS `r_user_id_` ON `r_user_id_`.`id_` = `t`.`user_id_` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` LEFT JOIN `iform_party_org` AS `r_org_id_` ON `r_org_id_`.`id_` = `t`.`org_id_` WHERE 1 = 1 LIMIT 200",
+  "tables": [
+   "pp_timesheet"
+  ]
+ },
+ {
+  "question": "所有工时记录",
+  "sql": "SELECT `t`.`object_type_` AS `对象的类型`, `t`.`work_content_` AS `工时描述`, `r_user_id_`.`name_` AS `填报人`, `r_project_id_`.`name_` AS `归属项目`, `r_org_id_`.`name_` AS `填报人所属部门`, `t`.`normal_hours_` AS `正常工时`, `t`.`timesheet_date_` AS `工时日期` FROM `pp_timesheet` AS `t` LEFT JOIN `iform_party_employee` AS `r_user_id_` ON `r_user_id_`.`id_` = `t`.`user_id_` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` LEFT JOIN `iform_party_org` AS `r_org_id_` ON `r_org_id_`.`id_` = `t`.`org_id_` WHERE 1 = 1 LIMIT 200",
+  "tables": [
+   "pp_timesheet"
+  ]
+ },
+ {
+  "question": "工时按项目统计",
+  "sql": "SELECT COALESCE(`r_project_id_`.`name_`, '未关联') AS `归属项目`, COUNT(*) AS `数量` FROM `pp_timesheet` AS `t` LEFT JOIN `pp_project` AS `r_project_id_` ON `r_project_id_`.`id_` = `t`.`project_id_` WHERE 1 = 1 GROUP BY COALESCE(`r_project_id_`.`name_`, '未关联') LIMIT 200",
+  "tables": [
+   "pp_timesheet"
+  ]
+ },
+ {
+  "question": "每个填报人有多少条工时",
+  "sql": "SELECT `g_user_id_`.`name_` AS `填报人`, COUNT(DISTINCT `t`.`id_`) AS `数量` FROM `pp_timesheet` AS `t` JOIN `iform_party_employee` AS `g_user_id_` ON FIND_IN_SET(`g_user_id_`.`id_`, `t`.`user_id_`) > 0 WHERE 1 = 1 GROUP BY `g_user_id_`.`name_` LIMIT 200",
+  "tables": [
+   "pp_timesheet"
+  ]
+ },
+ {
+  "question": "每个项目的计划进度和实际进度差多少",
+  "sql": "SELECT `p`.`name_` AS `项目名称`, `p`.`planned_progress_` AS `计划进度`, `p`.`progress_` AS `实际进度`, (`p`.`progress_` - `p`.`planned_progress_`) AS `进度偏差`, `p`.`light_description_` AS `亮灯说明` FROM `pp_project` AS `p` WHERE COALESCE(`p`.`deleted_`, 'N') <> 'Y' ORDER BY `进度偏差` DESC, `p`.`id_` DESC LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "进度亮红灯的项目有哪些",
+  "sql": "SELECT `p`.`name_` AS `项目名称`, `p`.`phase_` AS `当前阶段`, `p`.`planned_progress_` AS `计划进度`, `p`.`progress_` AS `实际进度`, `p`.`light_description_` AS `亮灯原因` FROM `pp_project` AS `p` WHERE COALESCE(`p`.`deleted_`, 'N') <> 'Y' AND `p`.`light_description_` LIKE '%红灯%' ORDER BY `p`.`id_` DESC LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "每个项目的预算和实际成本对比",
+  "sql": "SELECT `p`.`name_` AS `项目名称`, `p`.`total_budget_` AS `预算`, COALESCE(SUM(`c`.`amount_`), 0) AS `实际成本`, (`p`.`total_budget_` - COALESCE(SUM(`c`.`amount_`), 0)) AS `结余`, CASE WHEN `p`.`total_budget_` > 0 THEN ROUND(COALESCE(SUM(`c`.`amount_`), 0) / `p`.`total_budget_` * 100, 1) ELSE NULL END AS `预算执行率%` FROM `pp_project` AS `p` LEFT JOIN `pp_project_cost` AS `c` ON `c`.`project_id_` = `p`.`id_` AND COALESCE(`c`.`deleted_`, 'N') <> 'Y' WHERE COALESCE(`p`.`deleted_`, 'N') <> 'Y' GROUP BY `p`.`id_`, `p`.`name_`, `p`.`total_budget_` ORDER BY `实际成本` DESC LIMIT 200",
+  "tables": [
+   "pp_project",
+   "pp_project_cost"
+  ]
+ },
+ {
+  "question": "超支的项目有哪些",
+  "sql": "SELECT `p`.`name_` AS `项目名称`, `p`.`total_budget_` AS `预算`, COALESCE(SUM(`c`.`amount_`), 0) AS `实际成本`, (`p`.`total_budget_` - COALESCE(SUM(`c`.`amount_`), 0)) AS `结余`, CASE WHEN `p`.`total_budget_` > 0 THEN ROUND(COALESCE(SUM(`c`.`amount_`), 0) / `p`.`total_budget_` * 100, 1) ELSE NULL END AS `预算执行率%` FROM `pp_project` AS `p` LEFT JOIN `pp_project_cost` AS `c` ON `c`.`project_id_` = `p`.`id_` AND COALESCE(`c`.`deleted_`, 'N') <> 'Y' WHERE COALESCE(`p`.`deleted_`, 'N') <> 'Y' GROUP BY `p`.`id_`, `p`.`name_`, `p`.`total_budget_` HAVING `实际成本` > `预算` AND `预算` > 0 ORDER BY `结余` ASC LIMIT 200",
+  "tables": [
+   "pp_project",
+   "pp_project_cost"
+  ]
+ },
+ {
+  "question": "每个成员的任务负载",
+  "sql": "SELECT `e`.`name_` AS `成员`, COUNT(DISTINCT `t`.`id_`) AS `任务数`, SUM(CASE WHEN `t`.`progress_` >= 100 THEN 1 ELSE 0 END) AS `已完成`, SUM(CASE WHEN `t`.`progress_` < 100 AND NOT `t`.`finish_` IS NULL AND `t`.`finish_` < NOW() THEN 1 ELSE 0 END) AS `已逾期` FROM `pp_task` AS `t` JOIN `iform_party_employee` AS `e` ON FIND_IN_SET(`e`.`id_`, `t`.`assignee_ids_`) WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' GROUP BY `e`.`id_`, `e`.`name_` ORDER BY `任务数` DESC LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "高风险的未关闭项目",
+  "sql": "SELECT `p`.`name_` AS `项目名称`, `r`.`name_` AS `风险名称`, `r`.`rating_` AS `风险等级`, `r`.`probability_` AS `可能性`, `r`.`impact_` AS `影响`, `r`.`state_` AS `状态`, `r`.`due_time_` AS `到期时间` FROM `pp_risk` AS `r` LEFT JOIN `pp_project` AS `p` ON `p`.`id_` = `r`.`project_id_` WHERE COALESCE(`r`.`deleted_`, 'N') <> 'Y' AND `r`.`rating_` = 'High' AND COALESCE(`r`.`state_`, '') <> 'closed' ORDER BY `r`.`due_time_` IS NULL, `r`.`due_time_` LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "风险按等级分布",
+  "sql": "SELECT `r`.`rating_` AS `风险等级`, COUNT(*) AS `数量` FROM `pp_risk` AS `r` WHERE COALESCE(`r`.`deleted_`, 'N') <> 'Y' GROUP BY `r`.`rating_` ORDER BY `数量` DESC LIMIT 200",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "question": "问题按优先级分布",
+  "sql": "SELECT `i`.`priority_` AS `问题优先级`, COUNT(*) AS `数量` FROM `pp_issue` AS `i` WHERE COALESCE(`i`.`deleted_`, 'N') <> 'Y' GROUP BY `i`.`priority_` ORDER BY `数量` DESC LIMIT 200",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "question": "缺陷按严重程度分布",
+  "sql": "SELECT `d`.`severity_` AS `缺陷严重程度`, COUNT(*) AS `数量` FROM `pp_defect` AS `d` WHERE COALESCE(`d`.`deleted_`, 'N') <> 'Y' GROUP BY `d`.`severity_` ORDER BY `数量` DESC LIMIT 200",
+  "tables": [
+   "pp_defect"
+  ]
+ },
+ {
+  "question": "里程碑达成情况",
+  "sql": "SELECT `p`.`name_` AS `项目名称`, `t`.`name_` AS `里程碑`, `t`.`finish_` AS `计划完成`, `t`.`progress_` AS `进度`, CASE WHEN `t`.`progress_` >= 100 THEN '已完成' WHEN NOT `t`.`finish_` IS NULL AND `t`.`finish_` < NOW() THEN '已逾期' WHEN `t`.`finish_` IS NULL THEN '未排期' ELSE '进行中' END AS `达成状态` FROM `pp_task` AS `t` LEFT JOIN `pp_project` AS `p` ON `p`.`id_` = `t`.`project_id_` WHERE COALESCE(`t`.`deleted_`, 'N') <> 'Y' AND `t`.`is_milestone_` = 'Y' ORDER BY `p`.`id_` DESC, `t`.`finish_` LIMIT 200",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "question": "项目健康度一页纸",
+  "sql": "SELECT `p`.`name_` AS `项目名称`, `p`.`planned_progress_` AS `计划进度`, `p`.`progress_` AS `实际进度`, (`p`.`progress_` - `p`.`planned_progress_`) AS `进度偏差`, CASE WHEN `p`.`light_description_` LIKE '%红灯%' THEN '红' WHEN `p`.`light_description_` LIKE '%黄灯%' THEN '黄' WHEN `p`.`light_description_` LIKE '%绿灯%' THEN '绿' ELSE '—' END AS `灯`, (SELECT COUNT(*) FROM `pp_task` AS `t` WHERE `t`.`project_id_` = `p`.`id_` AND COALESCE(`t`.`deleted_`, 'N') <> 'Y') AS `任务数`, (SELECT COUNT(*) FROM `pp_task` AS `t` WHERE `t`.`project_id_` = `p`.`id_` AND COALESCE(`t`.`deleted_`, 'N') <> 'Y' AND `t`.`progress_` < 100 AND NOT `t`.`finish_` IS NULL AND `t`.`finish_` < NOW()) AS `逾期任务`, (SELECT COUNT(*) FROM `pp_risk` AS `r` WHERE `r`.`project_id_` = `p`.`id_` AND COALESCE(`r`.`deleted_`, 'N') <> 'Y' AND `r`.`rating_` = 'High' AND COALESCE(`r`.`state_`, '') <> 'closed') AS `高风险未关闭`, (SELECT COUNT(*) FROM `pp_issue` AS `i` WHERE `i`.`project_id_` = `p`.`id_` AND COALESCE(`i`.`deleted_`, 'N') <> 'Y' AND COALESCE(`i`.`status_`, '') <> 'pass') AS `未关闭问题`, `p`.`total_budget_` AS `预算`, (SELECT COALESCE(SUM(`c`.`amount_`), 0) FROM `pp_project_cost` AS `c` WHERE `c`.`project_id_` = `p`.`id_` AND COALESCE(`c`.`deleted_`, 'N') <> 'Y') AS `实际成本` FROM `pp_project` AS `p` WHERE COALESCE(`p`.`deleted_`, 'N') <> 'Y' ORDER BY `进度偏差` ASC, `p`.`id_` DESC LIMIT 200",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "question": "每个成员的工时合计",
+  "sql": "SELECT `e`.`name_` AS `成员`, ROUND(SUM(`t`.`normal_hours_`), 1) AS `工时合计`, COUNT(*) AS `记录数`, SUM(CASE WHEN `t`.`approve_state_` IN ('1', '2') THEN 1 ELSE 0 END) AS `待审批` FROM `pp_timesheet` AS `t` LEFT JOIN `iform_party_employee` AS `e` ON `e`.`id_` = `t`.`user_id_` GROUP BY `t`.`user_id_`, `e`.`name_` ORDER BY `工时合计` DESC LIMIT 200",
+  "tables": [
+   "pp_timesheet"
+  ]
+ },
+ {
+  "question": "各项目工时汇总",
+  "sql": "SELECT `p`.`name_` AS `项目名称`, ROUND(SUM(`t`.`normal_hours_`), 1) AS `工时合计`, COUNT(DISTINCT `t`.`user_id_`) AS `参与人数` FROM `pp_timesheet` AS `t` JOIN `pp_project` AS `p` ON `p`.`id_` = `t`.`project_id_` GROUP BY `p`.`id_`, `p`.`name_` ORDER BY `工时合计` DESC LIMIT 200",
+  "tables": [
+   "pp_timesheet"
+  ]
+ },
+ {
+  "question": "待审批的工时",
+  "sql": "SELECT `e`.`name_` AS `填报人`, `t`.`timesheet_date_` AS `日期`, `t`.`normal_hours_` AS `工时`, CASE `t`.`approve_state_` WHEN '0' THEN '已保存' WHEN '1' THEN '待审核' WHEN '2' THEN '审核中' WHEN '3' THEN '审核通过' WHEN '4' THEN '审核不通过' ELSE `t`.`approve_state_` END AS `审核状态`, `p`.`name_` AS `项目名称`, `t`.`work_content_` AS `工作内容` FROM `pp_timesheet` AS `t` LEFT JOIN `iform_party_employee` AS `e` ON `e`.`id_` = `t`.`user_id_` LEFT JOIN `pp_project` AS `p` ON `p`.`id_` = `t`.`project_id_` WHERE `t`.`approve_state_` IN ('1', '2') ORDER BY `t`.`timesheet_date_` DESC LIMIT 200",
+  "tables": [
+   "pp_timesheet"
+  ]
+ },
+ {
+  "question": "工时按对象类型分布",
+  "sql": "SELECT `t`.`object_type_` AS `对象类型`, ROUND(SUM(`t`.`normal_hours_`), 1) AS `工时合计`, COUNT(*) AS `记录数` FROM `pp_timesheet` AS `t` GROUP BY `t`.`object_type_` ORDER BY `工时合计` DESC LIMIT 200",
+  "tables": [
+   "pp_timesheet"
+  ]
+ },
+ {
+  "question": "合同台账",
+  "sql": "SELECT `c`.`name_` AS `合同名称`, `c`.`customer_name_` AS `客户`, CASE `c`.`category_` WHEN 'productContract' THEN '产品合同' WHEN 'developmentContract' THEN '开发合同' WHEN 'supportContract' THEN '支持合同' ELSE `c`.`category_` END AS `合同类别`, `c`.`amount_` AS `合同金额`, `c`.`currency_` AS `币种`, CASE `c`.`state_` WHEN 'inProgress' THEN '执行中' WHEN 'underNegotiation' THEN '洽谈中' WHEN 'paused' THEN '暂停' WHEN 'completed' THEN '已完成' WHEN 'terminated' THEN '已终止' ELSE `c`.`state_` END AS `状态`, `c`.`payment_progress_` AS `收款进度%`, CASE `c`.`payment_state_` WHEN 'unpaid' THEN '未收款' WHEN 'partiallyPaid' THEN '部分收款' WHEN 'paid' THEN '已收清' ELSE `c`.`payment_state_` END AS `收款状态` FROM `pp_contract` AS `c` WHERE COALESCE(`c`.`deleted_`, 'N') <> 'Y' ORDER BY `c`.`amount_` DESC LIMIT 200",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "question": "未结清的合同",
+  "sql": "SELECT `c`.`name_` AS `合同名称`, `c`.`customer_name_` AS `客户`, `c`.`amount_` AS `合同额`, COALESCE(`c`.`total_payment_amount`, 0) AS `已收`, COALESCE(`c`.`unsettled_amount`, 0) AS `未结`, `c`.`payment_progress_` AS `收款进度%`, CASE `c`.`payment_state_` WHEN 'unpaid' THEN '未收款' WHEN 'partiallyPaid' THEN '部分收款' WHEN 'paid' THEN '已收清' ELSE `c`.`payment_state_` END AS `收款状态` FROM `pp_contract` AS `c` WHERE COALESCE(`c`.`deleted_`, 'N') <> 'Y' AND COALESCE(`c`.`unsettled_amount`, 0) > 0 ORDER BY `未结` DESC LIMIT 200",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "question": "合同按币种汇总",
+  "sql": "SELECT `c`.`currency_` AS `币种`, COUNT(*) AS `合同数`, ROUND(SUM(`c`.`amount_`), 2) AS `金额合计` FROM `pp_contract` AS `c` WHERE COALESCE(`c`.`deleted_`, 'N') <> 'Y' GROUP BY `c`.`currency_` ORDER BY `金额合计` DESC LIMIT 200",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "question": "合同按类别汇总",
+  "sql": "SELECT CASE `c`.`category_` WHEN 'productContract' THEN '产品合同' WHEN 'developmentContract' THEN '开发合同' WHEN 'supportContract' THEN '支持合同' ELSE `c`.`category_` END AS `合同类别`, COUNT(*) AS `合同数`, ROUND(SUM(`c`.`amount_`), 2) AS `金额合计` FROM `pp_contract` AS `c` WHERE COALESCE(`c`.`deleted_`, 'N') <> 'Y' GROUP BY CASE `c`.`category_` WHEN 'productContract' THEN '产品合同' WHEN 'developmentContract' THEN '开发合同' WHEN 'supportContract' THEN '支持合同' ELSE `c`.`category_` END ORDER BY `金额合计` DESC LIMIT 200",
+  "tables": [
+   "pp_contract"
+  ]
+ }
+]

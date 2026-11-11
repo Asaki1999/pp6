@@ -1,0 +1,22 @@
+# --- 运行时/产物（可随时重建） ---
+.venv/
+build/work/
+build/art/
+dist/
+__pycache__/
+*.pyc
+
+# --- 输出目录：排除产物，保留规格样本（tools/test_relations.py 依赖它） ---
+out/*
+!out/规范2.xlsx
+
+# --- 外部数据：真实系统导出包（94M，含客户业务数据，不入库；本机保留） ---
+PP6/
+
+# --- 临时/系统文件 ---
+backup/
+samples_pdf/
+.workbuddy/
+.DS_Store
+ls.json
+*.xlsx.tmp

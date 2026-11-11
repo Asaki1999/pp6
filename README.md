@@ -1,0 +1,645 @@
+# pp6kit — 导入包生成器
+
+把 Excel 表格变成 PowerProject V6 可直接导入的 zip 包（业务对象 / 表单 / 列表 / 数据集）。
+
+## 为什么不是"照抄模板"
+
+系统导出的 zip 内部是**强耦合的 XML**：表单控件的 `fieldOptions` 是 30+ 键的 JSON，
+列表视图的 `attrs` 是上万字符的 JSON，字段顺序、CDATA、`&quot;` 转义都有讲究。
+手写字面量必错。本工具的做法是：
+
+1. `capture` 从你线上的导出包里**提取骨架**（19 种控件、4 种视图、栅格布局）
+2. `build` 时**只替换差异部分**（字段、标签、数据源、列），骨架原样保留
+3. 系统升级后重跑 `capture`，工具自动跟上新格式
+
+## AI 能力（两个功能共用一套配置）
+
+顶部「设置」页里配一次大模型，**导入包生成**和**数据查询**都能用。
+
+```
+导入包生成  |  数据查询  |  设置 ●     ← 圆点：绿=已配置，灰=没配
+```
+
+| 功能 | 用 AI 做什么 | 不用 AI 会怎样 |
+|---|---|---|
+| 导入包生成 | 一句话 → 业务对象 + 字段 | 手填 Excel，功能完整 |
+| 数据查询 | 规则答不上时兜底出 SQL | 只用本地规则，覆盖率约 80% |
+
+### 一句话生成业务对象 + 表单 + 列表
+
+导入页输入框描述需求：
+
+```
+员工报销单：报销单号、报销人、所属部门、报销金额、费用类型、发生日期、事由说明、附件
+```
+
+**三步流水线**（每步一次模型调用，输出小、成功率高、出错好定位）：
+
+| 步骤 | AI 决定什么 | 参考的 JeecgBoot 技能 |
+|---|---|---|
+| ① 业务对象 | 对象名、编码、字段清单、字段类型 | `codegen` |
+| ② 表单布局 | 分几组、每组放哪些字段、哪些必填、哪些占整行 | `desform` |
+| ③ 列表视图 | 显示哪些列、默认排序、用哪些视图（表格/看板/甘特） | `onlreport` + `onlchart` |
+
+页面用三个页签分别预览，确认后点「套用并下载 Excel」，
+得到一份**对象、表单、列表都填好的 Excel**，接着改就能出包。
+
+实测输出（"员工报销单"）：
+
+```
+【报销信息】 报销单号* / 报销人* / 所属部门
+【费用详情】 报销金额* / 费用类型* / 发生日期*
+【事由说明】 事由说明 / 附件
+列表：表格视图 · 报销单号/报销人/报销金额/费用类型/发生日期 · 按发生日期倒序
+```
+
+> 带 `*` 的是 AI 判断的必填项。
+
+**为什么分三步而不是一次问完**：一次让模型产出"对象+表单+列表"会是几千 token，
+容易截断、出错也难定位。分步后每步失败可以单独降级（表单失败就退回默认布局），
+不会因为一块坏了整个生成作废。
+
+实测类型选择：
+
+| 你说的 | AI 给的 |
+|---|---|
+| 报销单号 / 合同编号 | `autoNumber` 自动编号 |
+| 报销人 / 负责人 / 审批人 | `user` 人员 |
+| 所属部门 | `department` 部门 |
+| 金额 / 数量 / 单价 | `number` 数字 |
+| 备注 / 说明 / 应对措施 | `clob` 多行文本 |
+| 所属项目 / 关联客户 | `object` 关联对象 |
+| 附件 | `attachment` 附件 |
+
+**为什么不让 AI 直接写 XML**：一份 bo XML 有 35KB、几百个转义字符和 18 位 ID。
+模型写这个必错；写「对象名 + 10 个字段」的 JSON 很稳。
+所以 AI 只产出**结构化清单**，XML 仍由既有模板生成——和 JeecgBoot 的 skills 是同一个思路。
+
+### 视图生成能力与限制
+
+| 视图 | 生成能力 | 说明 |
+|---|---|---|
+| `grid` 表格 | 完整 | 列、排序、显示宽度都写进 XML |
+| `board` 看板 | 完整 | 自动挑「选项」字段分列（状态/级别/紧急程度） |
+| `gantt` 甘特 | 完整 | 自动挑开始/结束两个日期字段 |
+| `chart` 图表 | **只有空视图** | 系统导出包里本来就只有 3 个键，图表样式要在系统界面里另配 |
+
+看板分列有个坑：**只能用「选项」类型的字段**。人员、部门、关联对象都不行——
+「按申请人分列」= 一个人一列，「按所属项目分列」= 一个项目一列，
+数据一多就碎成几十上百列，看板彻底没法用。所以对象里没有 dic 字段时，
+看板视图会直接跳过并给出提示，而不是硬塞一个不合适的字段。
+
+### 免费平台
+
+| 平台 | 免费政策 | 申请 |
+|---|---|---|
+| 智谱 GLM（推荐） | GLM-4.7-Flash 约 30M tokens/Key | https://open.bigmodel.cn |
+| 硅基流动 | 新用户送 2000 万 tokens | https://cloud.siliconflow.cn |
+| 火山豆包 | Lite 每日 200 万 token（需手动开通模型） | https://console.volcengine.com/ark |
+| DeepSeek | 新用户少量，之后极便宜 | https://platform.deepseek.com |
+
+Key 存在 `~/.pp6kit/nlq.json`，换机器可以直接拷。
+
+## 第二个模式：自然语言查数据（NL2SQL）
+
+应用顶部可切到「数据查询」：连你们自己的库，实施用中文提问，自动出 SQL 并执行。
+
+**为什么准**：不靠猜表名。库里平台自带的元数据表就是语义层——
+
+| 元数据表 | 提供什么 |
+|---|---|
+| `iform_bo_def` | 业务对象（编码 / 中文名） |
+| `iform_bo_table` | 物理表（`pp_xxx` / 中文表名 / 行数） |
+| `iform_bo_attr` | 属性中文名、`dataTypeNew`、关联对象 |
+| `iform_bo_attr_column` | **中文属性 → 物理列名** |
+| `iform_cat_type/dic` | 选项字典（`key` → 中文） |
+
+再叠加两层：
+- **外键自动识别**：`object` 字段 → 目标表，生成子查询（`state_id_ IN (SELECT id_ FROM pp_project_state WHERE name_='执行中')`）
+- **真实取值注入**：把关联表的实际值（`执行中/已立项/暂停中`…）写进提示词，而不是让模型猜
+
+所以**客户自己扩的字段也能自动跟上**——只要建过对象，元数据里就有记录。
+
+### 数据库画像（先摸库，再生成）
+
+```bash
+bin/pp6 profile        # 全库扫一遍：真实行数 / 软删除写法 / 枚举取值 / 空表
+bin/pp6 dbmap          # 结构图谱（按业务域分组）
+```
+
+关系图谱见 [docs/关系图谱.md](docs/关系图谱.md)：中心表排名、两两实体最短路径、
+**26 条有孤儿引用的关系**（`pp_project_budget_config` 44% 指向已删项目，
+`pp_template_task.category_` 100% 失效）——所以生成 SQL 一律用 LEFT JOIN。
+
+产物两份：`docs/数据库画像.md`（人看）+ `assets/dbprofile.json`（程序用）。
+
+当前库实测结论（555 表 / 33.9 万行）：
+
+| 指标 | 数值 |
+|---|---|
+| 业务表（pp_*） | 225 张，其中 **147 张有数据、78 张是空表** |
+| 业务对象 | 192 个，**133 个有数据** |
+| 软删除 `deleted_` 全为 NULL 的表 | **50 张** |
+| 全为 'N' 的表 | 58 张 |
+
+> **软删除是最大的坑**：用 `deleted_ <> 'Y'` 会把「全 NULL」的 50 张表整表过滤光
+> （`pp_task` 601 行变 0 行）。现在统一写 `IFNULL(deleted_,'N') <> 'Y'`。
+
+### 枚举值与中文翻译
+
+库里的状态/优先级存的是**英文码**（`inProgress` / `high` / `under_tracking`），
+字典表只覆盖一部分，直接拿中文去比永远是 0 行。工具的做法：
+
+1. 连库时给每张表的枚举列采样真实取值（`COUNT(DISTINCT)` + `GROUP BY`）
+2. 用 `iform_cat_dic` 的 key→中文 + 全局码表（449 条）反推「中文 → 码」
+3. 用户说「进行中」→ 自动翻成 `in_progress`；说「高优先级」→ `high`
+
+实测映射（`pp_issue`）：
+
+```
+状态     进行中=in_progress、已通过=pass、已拒绝=rejected、开始=start
+优先级   高=high、中=medium、低=low
+风险等级 高风险=High、中风险=Medium、低风险=Low
+开发任务 已发布=released、未开始=notStarted、开发中=developing
+```
+
+### 跨对象查询：自动补多跳 join
+
+两张表之间没有直接外键也能查——按关系图算最短路径（`pp6kit/nlq/graph.py`）：
+
+```
+客户 ←合同→ 项目        （2 跳，靠 pp_contract.project_ids_ 多值关联）
+产品 ←项目→ 客户        （1 跳）
+开发任务 ←项目→ 客户     （3 跳）
+```
+
+实测 197 条关系，全库是**一个连通块（111 张表）**，没有孤立表。
+`pp_project` 是绝对中心（47 条连接），其次 `pp_classification`(19)、`pp_product`(15)。
+
+问「每个客户有多少项目」会自动生成：
+
+```sql
+SELECT COALESCE(r_customer_id_.name_, '未关联') AS 客户, COUNT(*) AS 数量
+FROM pp_project t
+LEFT JOIN pp_contract j_contract ON FIND_IN_SET(t.id_, j_contract.project_ids_) > 0
+LEFT JOIN pp_customer j_customer ON j_customer.id_ = j_contract.customer_id_
+GROUP BY COALESCE(r_customer_id_.name_, '未关联')
+```
+
+> 27 个项目里有 13 个挂了合同、能查到客户，另外 20 个归到「未关联」——
+> 这是数据现状，不是查错。
+
+### 相对时间
+
+「本月」「上周」「最近 7 天」「今年」都能识别，自动选时间列：
+
+| 说法 | 生成的 WHERE |
+|---|---|
+| 本月 | `DATE_FORMAT(col,'%Y-%m') = DATE_FORMAT(CURDATE(),'%Y-%m')` |
+| 上周 | `YEARWEEK(col,1) = YEARWEEK(CURDATE(),1) - 1` |
+| 最近 7 天 | `DATE(col) >= CURDATE() - INTERVAL 7 DAY` |
+| 今年 | `YEAR(col) = YEAR(CURDATE())` |
+
+选列规则：问句点名的日期字段 > 语义关键词（到期→`due_time_`、开始→`start_`）> `create_time_`。
+
+### 空结果会告诉你为什么
+
+0 行不再只回一句「没有数据」：
+
+```
+「总预算」只有 6/32 行有值，范围 0 ~ 2,800,000；条件 10,000,000 没落在范围内。
+「任务名称」里没有包含「电池」的记录。
+「项目预算」在当前库里没有数据（该模块还没启用），换个对象试试。
+pp_task（任务）601 行，去掉筛选条件能查到 601 行 —— 是筛选值没匹配上。
+```
+
+### 结果怎么变的（本地引擎的取列规则）
+
+| 你的说法 | 生成的列 |
+|---|---|
+| 列出所有项目 | 整行（识别不到具体字段时不瞎猜） |
+| 列出所有项目及其状态、级别、项目经理、项目经理所在部门 | 项目名称 + 状态 + 级别 + 项目经理 + 项目经理所属部门 |
+| 查询项目编号和项目名称 | 正好这两列，按你说的顺序 |
+
+- **自动带标题列**：只点名了几个字段时，会把「项目名称」补到最前（否则「列出」类问题只有状态一列，看不出是哪个项目）
+- **多值外键**：一个项目挂多个经理时（`manager_ids_` 存 `id1,id2`），用 `GROUP_CONCAT` 聚合成「甲、乙」，不会把一行拆成两行
+- **人员/部门两跳**：`项目经理所在部门` / `项目经理的所属部门` 都能识别，走 人员表 → 组织表
+- **包含式条件**：`项目名称里带芯片` / `项目名称包含电池` → `LIKE '%芯片%'`
+
+### 复制 SQL
+
+SQL 卡片右上角有「复制 SQL」：
+
+- 桌面版走系统剪贴板（macOS `pbcopy` / Windows `clip`），中文和多行都完整
+- 网页版走浏览器 Clipboard API，失败时退回选中 + 复制，再失败会提示手动复制
+
+### 不配大模型也能用
+
+实现同事现场不一定有 API Key，所以内置了一个**本地规则解析器**（`pp6kit/nlq/local.py`）：
+
+- 认对象名 + 字段名（`项目名称`、`项目经理`、`项目状态`…）
+- 自动补 join：外键 → 目标表、人员 → `iform_party_employee`、部门 → `iform_party_org`
+- 认「人员的所属部门」这种两跳关系（人员 → 组织）
+- 认统计语句（`每个X有多少个`、`按X统计`）→ `COUNT` + `GROUP BY`
+- 认「最近/最新」→ 按创建时间倒序
+- 认条件（`状态是执行中`）→ 自动区分外键子查询 / 字典值 / 模糊匹配
+
+**大模型不是必须的**，它是「问法很自由时才需要」的加分项。界面上有 Key 走大模型，没有就走本地。
+
+### 结构图谱
+
+```bash
+bin/pp6 dbmap        # 生成 docs/数据库结构图谱.md
+```
+
+输出：表分类统计、按业务域分组的表清单、606 条对象关系（标注**实测有数据/整列为空**）、常用 join 路径。
+换一个客户的库重跑一次，就得到他那套库的图谱。
+
+### 使用
+
+1. 左侧填连接串（host / port / user / 密码 / 库名）→ 点「连接并读取结构」
+2. 直接点下方模板（项目清单、按状态统计…），或用一句话提问
+3. SQL 可手改后重新执行；结果可导出 CSV
+4. 觉得答得准就点「存为示例」，下次同类问题会作为 few-shot 参考
+
+### 大模型（可选）
+
+不填也能用内置模板。「生成 SQL」需要 OpenAI 兼容接口：
+
+| 服务 | base_url | model |
+|---|---|---|
+| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` |
+| 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| 本地 Ollama | `http://127.0.0.1:11434/v1` | `qwen2.5-coder` |
+
+配置存在 `~/.pp6kit/nlq.json`（不进程序目录，方便随机器迁移）。
+
+### 安全
+
+生成结果一律过闸，用 **sqlglot 解析成 AST 再判断**（不是正则匹配）：
+
+- 只放行 `SELECT` / `WITH ... SELECT`，语句数必须为 1
+- 从 AST 取真实表名（自动排除 CTE 别名）比对白名单
+- 拒绝 `information_schema` / `mysql` / `sys` 等系统库
+- 拒绝 `INTO OUTFILE`、`SLEEP`、`BENCHMARK`、`LOAD_FILE` 等
+- 自动补 `LIMIT 500`（已有更大的值也压下来）
+
+11 个绕过尝试全部拦截（多语句、写操作、系统库、危险函数、导出文件）。
+
+## 桌面应用（发给同事用这个）
+
+`dist/PP6 导入包生成器.app` 是自带 Python 运行时的独立程序，对方无需安装任何东西：
+
+1. 把整个 `.app` 压缩后发给同事（微信 / 内网盘都行）
+2. 对方解压后拖进「应用程序」文件夹，双击打开
+3. 首次打开若提示「无法验证开发者」：右键点图标 → 打开 → 再点「打开」
+
+命令行解除隔离（可选）：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/PP6 导入包生成器.app"
+```
+
+界面：拖入（或点击选择）Excel → 立即看到对象/字段/表单布局 → 校验结果 → 一键生成 zip。
+
+> **文件进出走系统原生对话框**，不依赖浏览器下载语义。
+> WKWebView / WebView2 里 `<a download>` 是无效的、隐藏的 file input 也唤不起选择框，
+> 所以桌面版的「选择文件 / 保存」都调 `pp6kit/desktop_api.py` 的原生接口；
+> 网页模式（`bin/pp6 ui`）仍走浏览器下载，两条路径互不影响。
+
+### 重新打包
+
+```bash
+./build/build_macos.sh          # macOS → dist/PP6 导入包生成器.app
+build\build_windows.bat          # Windows → dist\PP6ImportBuilder\PP6ImportBuilder.exe
+```
+
+Windows 版必须在 Windows 机器上打（PyInstaller 不能交叉编译）。
+如果没有 Windows 电脑：把项目推到 GitHub，手动跑一次 `.github/workflows/build-desktop.yml`，
+在 Actions 的 Artifacts 里下载 `.exe`。
+
+> 分发 Windows 版要发**整个文件夹**，不能只发 exe（它依赖同级 `_internal`）。
+
+### ⚠️ 改完界面看不到变化？
+
+PyInstaller 把 `pp6kit/static` **打进了 dist/**，改源码不会自动生效。
+如果你改的是 `index.html` / `app.js` / `query.js` / `style.css`，
+不用重新打包，直接同步（几秒）：
+
+```bash
+.venv/bin/python tools/sync_static.py          # 同步到已打包的 App
+.venv/bin/python tools/sync_static.py --check  # 只检查是否一致
+```
+
+然后**完全退出 App（Cmd+Q）再打开**——只关窗口 WKWebView 可能还在用缓存。
+
+只有改了 `.py` 逻辑，才必须重新打包。
+
+## 命令行安装
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+```
+
+## 用法
+
+```bash
+./bin/pp6 ui                    # 打开可视化界面（本地起服务 + 浏览器）
+.venv/bin/python -m pp6kit.app  # 桌面窗口模式
+
+# 1. 学习骨架（已有 assets/snippets.json 可跳过；系统升级后重跑）
+.venv/bin/python -m pp6kit capture PP6
+
+# 2. 生成填写模板（内置一套"采购申请"示例，改字即用）
+.venv/bin/python -m pp6kit template out/模板.xlsx
+
+# 3. 校验（不生成）
+.venv/bin/python -m pp6kit check out/模板.xlsx
+
+# 4. 出包（按模块，每个模块一个独立的包）
+.venv/bin/python -m pp6kit build out/模板.xlsx -o out/build
+
+# 只要某个模块的包
+.venv/bin/python -m pp6kit build out/模板.xlsx -m form        # 只出表单
+.venv/bin/python -m pp6kit build out/模板.xlsx -m bo,dataset  # 出对象 + 数据集
+
+# 起稿捷径：拿一份线上跑通的导出包反解成 Excel，改字段再出包
+.venv/bin/python -m pp6kit inspect PP6 -o out/基于现有配置.xlsx
+```
+
+### 自检命令
+
+```bash
+.venv/bin/python -m pp6kit probe              # 183 条中文问答语料回归（当前 183/183）
+.venv/bin/python -m pp6kit audit              # 规则引擎盲区审计
+.venv/bin/python -m pp6kit audit --sweep      # 全表全列扫描（查幽灵列）
+.venv/bin/python tools/selftest.py            # 端到端自检（7 项）
+.venv/bin/python tools/sync_static.py --check # 打包产物里的前端是否最新
+```
+
+## HTTP 接口
+
+都是裸字节 POST（不走 multipart），文件直接当 body。
+
+| 接口 | 入参 | 返回 |
+|---|---|---|
+| `POST /api/parse` | xlsx 字节 | 结构 + 模块清单 + 校验结果 |
+| `POST /api/build` | xlsx 字节，头 `X-Modules` | 按模块分包的 zip |
+| `POST /api/import/<模块>` | xlsx 字节 | 单个模块的 zip |
+| `POST /api/inspect` | zip 字节 | 反解出的 xlsx |
+| `POST /api/ai/bo` | `{description, known}` | 业务对象 + 字段清单 |
+| `POST /api/ai/bo/apply` | `{bo}` | 填好的完整 Excel |
+| `POST /api/nlq/ask` | `{question, engine}` | SQL + 结果（engine: hybrid/local/llm） |
+| `POST /api/nlq/test-llm` | 可空 | 连通性测试（空则用已存配置） |
+
+> `engine` 参数名不是 `mode`，传错了会静默走默认值。
+
+## 开发约定
+
+几个反复踩到的，写下来省事：
+
+1. **AI 只产出结构化清单，不写 XML** — 生成器负责模板，模型负责语义。
+2. **改前端先跑 `sync_static.py --check`** — 否则你以为改了，实际 App 里还是旧的。
+3. **`getElementById` 返回 null 不报错** — 删元素后要全局搜旧 id，否则状态静默不更新。
+   （踩过：`paintAiState()` 引用了已删除的 `aiCfgLabel`，灯一直不亮）
+4. **调用模型必须传 `max_tokens`** — 不传会一直写到自然结束，生成类任务能拖到 100 秒。
+5. **降级链要区分「模型没开通」和「Key 无效」** — 前者该跳过，后者该报错，混在一起就两头不讨好。
+
+## 按模块导入（重要）
+
+系统里**每个模块是单独的导入菜单，一个 zip 只能属于一个模块**，混装会导入失败。
+所以生成结果按模块分包，`out/build/按模块/` 下每个模块一个包：
+
+| 顺序 | 包名 | 系统里点哪儿 | 包内目录 |
+|---|---|---|---|
+| ① | `001-业务对象.zip` | 管理 › 业务对象 › 导入 | `bo/` |
+| ② | `001-数据集.zip` | 管理 › 数据集 › 导入 | `data_template/` |
+| ③ | `001-筛选器.zip` | 管理 › 筛选器 › 导入 | `data_template/` |
+| ④ | `001-表单.zip` | 管理 › 表单 › 导入 | `form/` |
+| ⑤ | `001-列表.zip` | 管理 › 列表 › 导入 | `data_template/` |
+
+- **业务对象必须最先导**，表单和列表都按表名去找对象。
+- 列表 / 数据集 / 筛选器在系统里是**三个菜单**，底层都是 `data_template/`。
+  `6_数据集` 的「类型」列填 `filter` 就归到筛选器，填 `valueSource` / `default` 归到数据集。
+- 界面里每行右侧有「导入 / 导出」两个按钮：**导入**直接给该模块的单包，**导出**只发选的模块。
+  导入成功后该行打上「已导入」标记，后续模块的「建议先导入业务对象」提示会自动消失。
+- 流程定义（`workflowDefinition`）是裸 XML、由流程设计器导出，生成器不产生流程包。
+
+单条 XML 也还保留在 `out/build/bo|form|data_template/` 下，需要单独传某个文件时用。
+
+```bash
+# 用命令行也能只导一个模块
+.venv/bin/python -m pp6kit build out/模板.xlsx -m dataset
+```
+
+## Excel 结构
+
+| 表 | 作用 | 关键约束 |
+|---|---|---|
+| `0_项目设置` | 租户、模块ID、分类ID、文件前缀 | 模块ID/分类ID 空着会警告 |
+| `1_业务对象` | 对象编码、名称、物理表名 | 表名小写下划线，建议 `pp_` 前缀 |
+| `2_字段` | 字段编码、类型、长度、精度 | 物理列名留空自动生成 `xxx_` |
+| `3_表单` | 表单key、绑定对象、布局 | 表单key 小写下划线 |
+| `4_表单控件` | 控件类型、标签、取值来源、**分区** | 字段编码必须存在于 `2_字段`；分区同名的归到一个卡片 |
+| `5_列表` | 视图类型、显示列、排序 | 列填字段编码 |
+| `6_数据集` | 下拉框取值来源 | 主表名 |
+| `7_表单脚本` | JForm 脚本（JS） | 表单key 必须存在；整段写入 `extendAttr.script` |
+
+每张表的第 2 行是灰色填写说明（以 `#` 开头），读取时自动跳过，不用删。
+
+## 自动处理的事
+
+- **系统字段补齐**：`id / tenantId / ip / deleted / createBy / createTime / updateTime / version / updateBy` 缺失时自动补，不会重复补
+- **物理列名推导**：`projectName` → `project_name_`
+- **表单布局（布局 V1.0）**：按「分区」把控件分成若干组，每组一个容器（详情表单用 `card`、其余用 `fieldset`）+ 一个 `grid_layout`（表格布局V1.0）；
+  容器里同时写 `columns`（扁平单元格引用）和 `rows`（每格内嵌完整控件 JSON），控件 `parentId` 指向布局控件；
+  一行最多 2 个控件（`span=12`），富文本/附件/标记"占满整行"的单独一行（`span=24`）
+- **表单权限**：按控件自动生成 `formRights` + `permission` JSON
+- **列表列**：字段编码自动映射为物理列名 + `dataType` + 对齐方式
+- **骨架消毒**：剔除骨架里的自定义 JS（`script`）和校验规则，避免把别的表单的业务逻辑带过来
+
+## Excel 模板的字段填写规则
+
+### 选项字段（数据类型=选项）
+
+「2_字段」里数据类型选「选项」，在**「选项值」列**填候选值：
+
+```
+普通,紧急,特急          ← 顺序即界面顺序，第一项为默认
+```
+
+「关联对象/字典」列留空即可，程序按字段编码自动生成字典 key。
+生成时会把选项内嵌进 bo XML：
+
+```xml
+<dictionaryTypeList>
+  <dictionaryType typeKey="urgency" name="紧急程度" struType="1" sn="1" typeScope="GLOBAL"/>
+</dictionaryTypeList>
+<dictionaryList>
+  <dictionary typeKey="urgency" key="普通" name="普通" sn="1" disabled="false"/>
+  <dictionary typeKey="urgency" key="紧急" name="紧急" sn="2" disabled="false"/>
+</dictionaryList>
+```
+
+导入系统后字段直接就有候选值，**不用再去后台配字典**。
+
+### 内置字段（11 个）
+
+模板里**不出现**，生成 zip 时自动补齐：
+
+```
+id / tenantId / ip / deleted / createBy / createTime
+updateBy / updateTime / version / baselineVersion / isDraft
+```
+
+> 这 11 个是通过统计判定的：出现在 75% 以上业务对象里。
+> 系统和 XML 层面**没有内置/自定义的区分标志**（`type_`、`status_`、`type` 属性全是 `base`）。
+
+勾了「流程驱动=是」时额外补 4 个：`processNode / processHandler / processDefId / processInstanceId`。
+
+### 0_项目设置 为什么保留
+
+`moduleId` / `typeId` 会写进 bo XML 的 `moduleId` / `typeId` 属性，
+**必须是系统里真实存在的 18 位 ID**。留空的话对象导入后没有归属，在列表里找不到。
+其余三项（租户ID / 文件前缀 / 输出目录）都有默认值，不用改。
+
+## 不支持
+
+- 流程定义（`workflowDefinition.xml`）— 流程引擎格式独立，建议界面配置
+- 按钮脚本、数据权限矩阵、明细表内嵌子表单
+- 表单设计器的复杂布局（tabs 标签页 / 分栏嵌套）—— 分区（card / fieldset）已支持，
+  再深一层（标签页里嵌表格布局）仍需在设计器里手工调
+
+## 踩过的坑（改之前先看这个）
+
+都是实际遇到、排查过的问题，改代码时容易重新踩。
+
+### 打包与生效
+
+| 现象 | 原因 | 怎么办 |
+|---|---|---|
+| 改了界面，App 里看不到 | `pp6kit/static` 被打进了 `dist/`，改源码不生效 | `tools/sync_static.py` 同步 + **Cmd+Q 完全退出**再开 |
+| 只关窗口重开还是旧的 | WKWebView 用了缓存 | 必须完全退出进程 |
+| 改了 `.py` 不生效 | 静态脚本不管用 | 重新跑 `build/build_macos.sh` |
+
+### AI 接入
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 提示「Key 无效」但其实没问题 | 账号**某个模型没开通**（智谱返回 401/1220），旧代码当成 Key 坏掉，中断了整条降级链 | `NoAccess` 异常单独处理，跳过该模型继续试下一个 |
+| 每次提问都先卡几秒 | 反复去试一个已知没开通的模型 | `_NO_ACCESS` 进程内缓存，第二次直接跳过 |
+| 保存 Key 后点「测试连接」说没填 | 保存成功会清空输入框（「留空则不修改」），测试却读输入框 | 输入框空时回落到已保存配置 |
+| 生成对象要等 40~100 秒 | 没传 `max_tokens`，模型一直写到自然结束 | `llm.chat/chat_any` 支持 max_tokens；生成类任务改走快模型链 |
+| AI 返回的 JSON 解析失败 | 输出被 max_tokens 截断在半截 | `_repair_truncated()` 砍掉残缺元素、补齐括号 |
+
+各模型实测（同一 Key）：
+
+```
+glm-4.7-flash   429 限流（高峰期频繁）
+glm-4.6-flash   401 未开通（多数账号）
+glm-4.5-flash   OK 1.5s
+glm-4-flash     OK 0.9s   ← 生成类任务用这个
+glm-4-plus      OK 1.9s
+```
+
+### 语义层与 NL2SQL
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 查出来的状态值全是 UUID | `user_id_` 没推断出关联人员表 | 按列名 + 中文标签补 `iform_party_employee`；`org_id_` 优先按部门处理 |
+| `source_id_` 关联错了表 | `pp_i18n_resource` 主键是 `id` 不是 `id_` | `infer_relations` 校验目标表真有 `id_` 列 |
+| 语义层出现幽灵列 | 元数据里有、物理表没有 | `build_schema` 校验物理列存在 |
+| 「去除掉」生成的 SQL 正好反了 | 否定词穷举漏了「去除掉」 | 改用构词规则 `NEG_VERBS × NEG_COMPLEMENTS` |
+| 「每个项目**有**多少个」被当条件 | 模糊匹配把「有」也认了 | 只认「不能有 / 没有 / 不带有」 |
+| 查 0 行但确实有数据 | AI 写歪了条件（SQL 不报错） | 「有哪些/列出…」类问法 0 行时让模型自查（带数字条件的不猜） |
+
+### AI 生成对象 / 表单 / 列表
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 看板按「所属项目」分列，碎成几十列 | 关联对象被当成可分列字段 | 分列只认 `dic`（选项）类型，没有就不出看板 |
+| 看板按「汇报类型」而不是「项目状态」分列 | 只按类型打分，没看语义重要性 | 先看名字（state/status > stage > type/level），再看类型 |
+| 甘特图所有条都是零长度 | 开始/结束填了同一个日期字段 | 按 `start/begin` 与 `end/due/finish` 语义挑两个不同的列 |
+| AI 编造不存在的字段（如 `status`） | 模型按常理想当然 | 逐个核对字段清单，对不上的剔除并提示，不生成幽灵控件 |
+| AI 漏排某个字段 | 分组时漏了 | 自动补到最后一组——漏了等于数据录不进去 |
+| 表单分组只有第一组有名字 | 组名只标在每组第一个字段上，前端需继承 | 渲染时按 `newline` 断组，`desc` 为组名 |
+| **选项字段导入后没有候选值** | `dictionaryTypeList`/`dictionaryList` 写成了空标签 | 把「选项值」列内嵌进 bo XML |
+| **内置字段判定不出来** | `type_`/`status_`/XML `type` 全是 `base`，无区分标志 | 靠统计：出现在 75%+ 对象里的才是内置 |
+
+### 控件映射（对照线上系统 68 种控件校正）
+
+| 字段类型 | 真实控件名 | 之前错用 | 后果 |
+|---|---|---|---|
+| datetime | `datePicker` | `date` | 日期字段生成了错误控件 |
+| dic | `dictionary` | `select` | 字典字段用了值来源下拉 |
+| clob | `textarea` | `text` | 大文本变成了单行输入 |
+| number | `number` | number（缺骨架） | 数字字段退化成 text，丢精度 |
+
+> 这是 2026-10 对照线上系统 `iform_form_field` 表（68 种控件）发现的。
+> 之前骨架是从旧导出包 capture 的，恰好没覆盖这几个最常用的控件。
+
+### 其他
+
+- `date` 没有 `isoformat(sep=...)`，只有 `datetime` 有 —— 工时表这类纯日期列会崩
+- `AVG(*)` 是语法错误，聚合空表要判 `COUNT`
+- `filled = -1` 不能当「空列」处理，只有 `== 0` 才是
+- 模块包的 XML 要写**原文**，不能把单条 zip 塞进去（会 zip 套 zip，系统解不出来）
+
+## 桌面包自检
+
+窗口环境下验证「JS 能跑 + 原生桥接已注入 + 生成的文件真的落盘」：
+
+```bash
+PP6_SELFTEST=1 PP6_SELFTEST_SAVE=/tmp/e2e.zip \
+  "dist/PP6 导入包生成器.app/Contents/MacOS/PP6ImportBuilder"
+```
+
+期望输出里全为 True：
+
+```
+SELFTEST js_alive=True bridge=True pick_excel=function save_file=function \
+         desktop_flag=True demo_loaded=True stat_first=1 saved=True saved_is_zip=True
+```
+
+## 自检
+
+```bash
+.venv/bin/python tools/selftest.py PP6
+```
+
+会跑：骨架重建 → 反解 → 校验 → 出包 → XML 合法性 → ID 唯一性 → 与原包结构比对 → 新对象出包。
+全绿说明生成器与当前系统格式仍兼容。
+
+## 目录
+
+```
+pp6kit/
+  app.py       桌面应用入口（原生窗口 + WebView 兜底）
+  webui.py     本地服务与 HTTP 接口
+  static/      界面（HTML/CSS/JS，打包时内嵌）
+  resources.py 打包后的资源定位
+  spec.py      Excel 表结构的唯一真相（生成模板和读取共用）
+  reader.py    Excel -> 模型
+  model.py     中间模型 + 类型映射
+  gen_bo.py    业务对象 XML
+  gen_form.py  表单 XML（布局引擎 + 19 种控件骨架）
+  gen_tpl.py   列表 / 数据集 XML
+  ai_bo.py     一句话 -> 业务对象（AI 只出 JSON，XML 仍走模板）
+  modules.py   导入模块定义（系统里每个模块单独导入）
+  builder.py   编排 + 打包
+  inspect.py   导出包 -> Excel
+  validate.py  填错拦截
+  template.py  模板生成
+assets/
+  snippets.json  从线上导出包学到的骨架（勿手改，用 capture 重建）
+build/
+  pp6.spec             PyInstaller 配置
+  build_macos.sh       macOS 一键打包 + 自检
+  build_windows.bat    Windows 一键打包
+tools/
+  capture_snippets.py  骨架提取
+  compare.py           结构兼容性比对
+  sync_static.py       把前端改动同步进已打包的 App
+  selftest.py          端到端自检
+```

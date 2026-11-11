@@ -1,0 +1,753 @@
+{
+"objects": [
+{
+"code": "DR",
+"name": "开发需求"
+},
+{
+"code": "NEW01",
+"name": "新的项目需求-01"
+},
+{
+"code": "TR1",
+"name": "评审"
+},
+{
+"code": "TR2",
+"name": "TR2"
+},
+{
+"code": "action_item",
+"name": "行动"
+},
+{
+"code": "approval",
+"name": "审核"
+},
+{
+"code": "approval_member",
+"name": "审核成员"
+},
+{
+"code": "attribute",
+"name": "扩展属性"
+},
+{
+"code": "bom",
+"name": "BOM物料清单"
+},
+{
+"code": "bom_item",
+"name": "BOM物料清单明细条目"
+},
+{
+"code": "bom_versions",
+"name": "BOM物料清单版本"
+},
+{
+"code": "budget_account",
+"name": "预算科目"
+},
+{
+"code": "category",
+"name": "类别"
+},
+{
+"code": "chg_deleted_task",
+"name": "变更中被删除的计划任务"
+},
+{
+"code": "chg_project_plan",
+"name": "变更计划"
+},
+{
+"code": "chg_task",
+"name": "变更任务"
+},
+{
+"code": "chg_task_assignment",
+"name": "变更任务责任人"
+},
+{
+"code": "chg_task_link",
+"name": "变更任务关系"
+},
+{
+"code": "classification",
+"name": "项目类型"
+},
+{
+"code": "classification_basic_config",
+"name": "项目类型基本参数配置"
+},
+{
+"code": "classification_budget_config",
+"name": "项目类型预算参数配置"
+},
+{
+"code": "classification_expect_document",
+"name": "项目类型预期文档配置"
+},
+{
+"code": "classification_grade",
+"name": "项目类型级别表"
+},
+{
+"code": "classification_phase_config",
+"name": "项目类型阶段配置"
+},
+{
+"code": "classification_phase_item",
+"name": "项目类型阶段表"
+},
+{
+"code": "classification_plan_task_config",
+"name": "项目类型计划与任务配置参数表"
+},
+{
+"code": "classification_project_role",
+"name": "项目类型角色表"
+},
+{
+"code": "classification_project_role_config",
+"name": "项目类型角色配置"
+},
+{
+"code": "classification_report_config",
+"name": "项目类型项目汇报配置表"
+},
+{
+"code": "classification_state_config",
+"name": "项目类型项目状态参数配置"
+},
+{
+"code": "comment",
+"name": "评论"
+},
+{
+"code": "contract",
+"name": "合同"
+},
+{
+"code": "contract_invoice",
+"name": "合同发票记录"
+},
+{
+"code": "contract_invoice_detail",
+"name": "合同发票明细"
+},
+{
+"code": "contract_node",
+"name": "合同收付款计划"
+},
+{
+"code": "contract_payment",
+"name": "合同收付款记录"
+},
+{
+"code": "crmperson",
+"name": "联系人"
+},
+{
+"code": "customer",
+"name": "客户"
+},
+{
+"code": "defect",
+"name": "缺陷"
+},
+{
+"code": "delay_reason",
+"name": "任务延迟原因"
+},
+{
+"code": "dev_sprint",
+"name": "开发迭代"
+},
+{
+"code": "dev_sprint_product",
+"name": "迭代关联的产品"
+},
+{
+"code": "dev_task",
+"name": "开发任务"
+},
+{
+"code": "dev_task_assignment",
+"name": "开发任务责任人"
+},
+{
+"code": "dev_task_setting",
+"name": "开发任务设置"
+},
+{
+"code": "dev_task_template",
+"name": "开发任务模版"
+},
+{
+"code": "dev_task_template_expect_doc",
+"name": "开发任务模版预期交付文档清单"
+},
+{
+"code": "dev_task_template_task",
+"name": "开发任务模版中定义的任务清单"
+},
+{
+"code": "document_borrowing",
+"name": "文档借阅"
+},
+{
+"code": "document_flow",
+"name": "文档审批"
+},
+{
+"code": "favorite",
+"name": "收藏"
+},
+{
+"code": "fblc",
+"name": "发布流程"
+},
+{
+"code": "fblccsysc",
+"name": "发布流程（测试--要删除）"
+},
+{
+"code": "feedback",
+"name": "反馈"
+},
+{
+"code": "finance_domain",
+"name": "预算大类"
+},
+{
+"code": "i18n_resource",
+"name": "国际化"
+},
+{
+"code": "iform_bpm_inst",
+"name": "iform_bpm_inst 【流程实例】"
+},
+{
+"code": "iform_bpm_tasklist",
+"name": "流程"
+},
+{
+"code": "iform_cat_dic",
+"name": "数据字典"
+},
+{
+"code": "iform_cat_type",
+"name": "iform_cat_type【分类表】"
+},
+{
+"code": "iform_changeset",
+"name": "变更项管理"
+},
+{
+"code": "iform_changeset_item",
+"name": "变更集明细表"
+},
+{
+"code": "iform_object_role",
+"name": "对象角色"
+},
+{
+"code": "iform_party_employee",
+"name": "员工"
+},
+{
+"code": "invoice_payment",
+"name": "发票收付"
+},
+{
+"code": "issue",
+"name": "问题"
+},
+{
+"code": "labor_budget_rate",
+"name": "人工预算费率"
+},
+{
+"code": "material",
+"name": "物料"
+},
+{
+"code": "material_batch_inventory",
+"name": "物料批次入库"
+},
+{
+"code": "material_category",
+"name": "物料类型"
+},
+{
+"code": "material_mode",
+"name": "物料模式配置"
+},
+{
+"code": "material_outbound_record",
+"name": "物料出库"
+},
+{
+"code": "meeting",
+"name": "会议"
+},
+{
+"code": "meeting_member",
+"name": "会议成员"
+},
+{
+"code": "mention_member",
+"name": "评论@"
+},
+{
+"code": "module_config",
+"name": "模块配置表"
+},
+{
+"code": "mrd_requirement",
+"name": "产品需求"
+},
+{
+"code": "plan_approval",
+"name": "计划审批"
+},
+{
+"code": "plan_baseline",
+"name": "计划基线"
+},
+{
+"code": "plan_baseline_task",
+"name": "基线任务"
+},
+{
+"code": "plan_baseline_task_assignment",
+"name": "基线任务责任人"
+},
+{
+"code": "plan_baseline_task_link",
+"name": "基线任务关系"
+},
+{
+"code": "plan_change",
+"name": "计划变更"
+},
+{
+"code": "portfolio",
+"name": "项目组合"
+},
+{
+"code": "pp_config",
+"name": "平台参数配置表"
+},
+{
+"code": "pp_directory",
+"name": "文档目录表"
+},
+{
+"code": "pp_document",
+"name": "文档"
+},
+{
+"code": "pp_equipment",
+"name": "设备"
+},
+{
+"code": "pp_project_report",
+"name": "项目汇报表"
+},
+{
+"code": "pp_project_report_action_item",
+"name": "项目汇报行动项表"
+},
+{
+"code": "pp_project_report_issue_item",
+"name": "项目汇报问题项表"
+},
+{
+"code": "pp_project_report_risk_item",
+"name": "项目汇报风险项表"
+},
+{
+"code": "pp_project_report_work_item",
+"name": "项目汇报工作项表(This/Next)"
+},
+{
+"code": "pp_simple_flow",
+"name": "文档审批路径"
+},
+{
+"code": "pp_simple_flow_step",
+"name": "审批路径步骤"
+},
+{
+"code": "pp_timesheet",
+"name": "工时"
+},
+{
+"code": "pp_timesheet_type",
+"name": "工时类型配置"
+},
+{
+"code": "pp_timesheetsource",
+"name": "工时数据源"
+},
+{
+"code": "product",
+"name": "产品"
+},
+{
+"code": "product_category",
+"name": "产品分类"
+},
+{
+"code": "product_member",
+"name": "产品成员"
+},
+{
+"code": "product_role",
+"name": "产品角色"
+},
+{
+"code": "product_version",
+"name": "产品版本"
+},
+{
+"code": "program",
+"name": "项目集"
+},
+{
+"code": "program_classification",
+"name": "项目集类型"
+},
+{
+"code": "program_classification_phase",
+"name": "项目集类型阶段"
+},
+{
+"code": "program_grade",
+"name": "项目集级别"
+},
+{
+"code": "program_member",
+"name": "项目集成员"
+},
+{
+"code": "program_phase",
+"name": "项目集阶段"
+},
+{
+"code": "program_project",
+"name": "项目集包含的项目"
+},
+{
+"code": "program_role",
+"name": "项目集角色"
+},
+{
+"code": "program_state",
+"name": "项目集状态"
+},
+{
+"code": "project",
+"name": "项目"
+},
+{
+"code": "project_budget",
+"name": "项目预算"
+},
+{
+"code": "project_budget_approval",
+"name": "项目预算审批"
+},
+{
+"code": "project_budget_change",
+"name": "项目预算变更"
+},
+{
+"code": "project_budget_config",
+"name": "项目预算配置"
+},
+{
+"code": "project_budget_domain_sum",
+"name": "项目预算大类汇总"
+},
+{
+"code": "project_budget_item",
+"name": "项目预算条目"
+},
+{
+"code": "project_budget_item_attr",
+"name": "项目预算条目扩展"
+},
+{
+"code": "project_completion",
+"name": "项目结项"
+},
+{
+"code": "project_cost",
+"name": "项目成本"
+},
+{
+"code": "project_create",
+"name": "项目立项"
+},
+{
+"code": "project_doc",
+"name": "项目文档"
+},
+{
+"code": "project_expect_doc",
+"name": "项目预期文档"
+},
+{
+"code": "project_extra",
+"name": "项目额外信息"
+},
+{
+"code": "project_grade",
+"name": "项目级别"
+},
+{
+"code": "project_member",
+"name": "项目成员"
+},
+{
+"code": "project_member_record",
+"name": "项目人员记录"
+},
+{
+"code": "project_phase",
+"name": "项目阶段表"
+},
+{
+"code": "project_plan",
+"name": "计划"
+},
+{
+"code": "project_plan_configuration",
+"name": "项目计划配置"
+},
+{
+"code": "project_product",
+"name": "项目产品关联"
+},
+{
+"code": "project_role",
+"name": "项目角色"
+},
+{
+"code": "project_state",
+"name": "项目状态"
+},
+{
+"code": "qjlc",
+"name": "请加流程"
+},
+{
+"code": "quick",
+"name": "快捷工具条"
+},
+{
+"code": "recent",
+"name": "最近访问"
+},
+{
+"code": "relation",
+"name": "关联关系"
+},
+{
+"code": "requirement",
+"name": "系统需求"
+},
+{
+"code": "requirement_category",
+"name": "需求类型"
+},
+{
+"code": "review_check_item",
+"name": "评审要素"
+},
+{
+"code": "review_expect_doc",
+"name": "评审交付物"
+},
+{
+"code": "review_member",
+"name": "评审意见"
+},
+{
+"code": "risk",
+"name": "风险"
+},
+{
+"code": "risk_rating_config",
+"name": "风险等级配置表"
+},
+{
+"code": "sales_lead",
+"name": "商机"
+},
+{
+"code": "sales_lead_competition",
+"name": "商机售前分析"
+},
+{
+"code": "sales_lead_member",
+"name": "商机人员"
+},
+{
+"code": "sales_lead_operation",
+"name": "商机操作记录"
+},
+{
+"code": "share",
+"name": "分享"
+},
+{
+"code": "sjzcscd",
+"name": "sjz-测试菜单"
+},
+{
+"code": "special_date",
+"name": "特殊日表"
+},
+{
+"code": "system_calendar",
+"name": "系统日历表"
+},
+{
+"code": "system_log",
+"name": "系统日志"
+},
+{
+"code": "task",
+"name": "任务"
+},
+{
+"code": "task_assignment",
+"name": "任务责任人"
+},
+{
+"code": "task_category",
+"name": "任务类型"
+},
+{
+"code": "task_link",
+"name": "任务关系"
+},
+{
+"code": "task_relation",
+"name": "任务关联"
+},
+{
+"code": "tdbglc",
+"name": "团队变更流程"
+},
+{
+"code": "template",
+"name": "项目模板"
+},
+{
+"code": "template_plan",
+"name": "项目计划模板"
+},
+{
+"code": "template_task",
+"name": "模板任务"
+},
+{
+"code": "template_task_link",
+"name": "模板任务关系"
+},
+{
+"code": "test_case",
+"name": "测试用例"
+},
+{
+"code": "test_case_base",
+"name": "测试用例库"
+},
+{
+"code": "test_case_base_category",
+"name": "测试用例库大类"
+},
+{
+"code": "test_case_execution",
+"name": "测试用例执行"
+},
+{
+"code": "test_case_step",
+"name": "测试用例操作步骤"
+},
+{
+"code": "test_case_template",
+"name": "用例模板"
+},
+{
+"code": "test_case_template_step",
+"name": "测试用例模版的操作步骤"
+},
+{
+"code": "test_plan",
+"name": "测试计划"
+},
+{
+"code": "test_plan_member",
+"name": "测试计划成员"
+},
+{
+"code": "test_suite",
+"name": "测试用例集"
+},
+{
+"code": "test_suite_template",
+"name": "用例库测试用例集"
+},
+{
+"code": "todo",
+"name": "待办"
+},
+{
+"code": "trigger_message",
+"name": "通知消息记录"
+},
+{
+"code": "trigger_message_receiver",
+"name": "通知消息接收人、接收地址"
+},
+{
+"code": "user_group",
+"name": "用户组"
+},
+{
+"code": "user_group_member",
+"name": "用户组角色成员"
+},
+{
+"code": "user_group_role",
+"name": "用户组角色"
+},
+{
+"code": "user_reader",
+"name": "待阅"
+},
+{
+"code": "vendor",
+"name": "供应商"
+},
+{
+"code": "vendor_qualification",
+"name": "供应商资质"
+},
+{
+"code": "work",
+"name": "工作"
+},
+{
+"code": "zl",
+"name": "战略"
+}
+],
+"count": 187
+}

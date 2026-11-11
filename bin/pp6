@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# pp6kit 命令包装：bin/pp6 <子命令>
+set -euo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PY="$DIR/.venv/bin/python"
+
+if [ ! -x "$PY" ]; then
+  echo "未找到虚拟环境 $PY"
+  echo "请先执行： python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
+  exit 1
+fi
+
+exec "$PY" -m pp6kit "$@"

@@ -1,0 +1,561 @@
+/* 数据查询模式：连接 → 提问 → SQL → 结果 */
+const Q = {
+  get: (id) => document.getElementById(id),
+  templates: [],
+  last: null,
+  generatedSql: "",   // 机器给的原版 SQL，用户改动后据此提示「保存修正」
+};
+
+const qEsc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+async function qApi(path, body) {
+  const opt = body === undefined
+    ? { method: "GET" }
+    : { method: "POST", body: JSON.stringify(body) };
+  const res = await fetch(path, opt);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) throw new Error(data.error || `请求失败 ${res.status}`);
+  return data;
+}
+
+/* ---------------- 模式切换 ---------------- */
+function switchMode(mode) {
+  document.querySelectorAll(".mode").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
+  document.getElementById("mode-import").hidden = mode !== "import";
+  document.getElementById("mode-query").hidden = mode !== "query";
+  document.getElementById("mode-settings").hidden = mode !== "settings";
+  const bar = document.getElementById("actionbar");
+  if (mode !== "import") bar.hidden = true;
+  else if (window.__importHasResult) bar.hidden = false;
+  if (mode === "query") loadConfig();
+  if (mode === "settings") loadConfig();
+}
+
+/* 设置页的三个分栏 */
+document.querySelectorAll(".set-tab").forEach((tab) => {
+  tab.onclick = () => {
+    document.querySelectorAll(".set-tab").forEach((t) => t.classList.toggle("active", t === tab));
+    document.querySelectorAll("[data-set-panel]").forEach((p) => {
+      p.hidden = p.dataset.setPanel !== tab.dataset.set;
+    });
+  };
+});
+
+document.querySelectorAll(".mode").forEach((b) => {
+  b.onclick = () => switchMode(b.dataset.mode);
+});
+
+/* ---------------- 配置 ---------------- */
+let Q_PROVIDERS = [];
+let Q_CHANNEL_KEY = "";        // 当前渠道的标识，保存时带上
+
+function fillProvider(p) {
+  if (!p) return;
+  Q_CHANNEL_KEY = p.key;
+  if (p.base_url) Q.get("qBase").value = p.base_url;
+
+  // 模型：有预设列表就用下拉，用户也能改（下拉里带「自定义」输入）
+  // 自定义渠道（自建网关 / Ollama）永远给输入框——网关上有什么模型我们不可能知道，
+  // 给下拉等于把人锁死在预设的几个名字上（曾因此在 newapi 上报 model_not_found）
+  const pick = Q.get("qModelPick");
+  const inp = Q.get("qModel");
+  const models = p.models || (p.model ? [p.model] : []);
+  if (models.length && p.key !== "custom") {
+    pick.hidden = false;
+    inp.hidden = true;
+    pick.innerHTML = models
+      .map((m) => `<option value="${qEsc(m)}">${qEsc(m)}${m === p.model ? " · 默认" : ""}</option>`)
+      .join("");
+    pick.value = p.model || models[0];
+  } else {
+    pick.hidden = true;
+    inp.hidden = false;
+    inp.value = p.model || "";
+  }
+
+  const hint = Q.get("qProvHint");
+  if (p.free_note) {
+    hint.hidden = false;
+    hint.innerHTML = `${qEsc(p.free_note)}` +
+      (p.apply_url ? ` · <a href="${qEsc(p.apply_url)}" target="_blank">去申请 Key</a>` : "");
+  } else {
+    hint.hidden = true;
+  }
+}
+
+/* 当前选的模型名（下拉或手填都兼容） */
+function currentModel() {
+  const pick = Q.get("qModelPick");
+  if (!pick.hidden) return pick.value.trim();
+  return Q.get("qModel").value.trim();
+}
+
+function renderProviders(list) {
+  const sel = Q.get("qProvider");
+  sel.innerHTML = `<option value="">— 选一个免费平台，自动填好 —</option>` +
+    list.map((p) => `<option value="${qEsc(p.key)}">${qEsc(p.name)}${p.free ? " · 免费" : ""}</option>`).join("");
+  sel.onchange = () => {
+    const p = Q_PROVIDERS.find((x) => x.key === sel.value);
+    if (p) fillProvider(p);
+  };
+}
+
+async function loadConfig() {
+  try {
+    const d = await qApi("/api/nlq/config");
+    const db = d.db || {};
+    if (!Q.get("qHost").value) Q.get("qHost").value = db.host || "127.0.0.1";
+    if (!Q.get("qPort").value) Q.get("qPort").value = db.port || 3306;
+    if (!Q.get("qUser").value) Q.get("qUser").value = db.user || "root";
+    if (!Q.get("qDb").value) Q.get("qDb").value = db.database || "";
+    if (db.password_set) Q.get("qPass").placeholder = "已保存，留空则不修改";
+
+    Q_PROVIDERS = d.providers || [];
+    renderProviders(Q_PROVIDERS);
+
+    const ch = ((d.llm || {}).channels || [])[0] || {};
+    if (ch.base_url) Q.get("qBase").value = ch.base_url;
+    if (ch.model) {
+      Q.get("qModel").value = ch.model;
+      const pick = Q.get("qModelPick");
+      if (!pick.hidden) {
+        if (![...pick.options].some((o) => o.value === ch.model)) {
+          pick.insertAdjacentHTML("beforeend",
+            `<option value="${qEsc(ch.model)}">${qEsc(ch.model)} · 已保存</option>`);
+        }
+        pick.value = ch.model;
+      }
+    }
+    Q_CHANNEL_KEY = ch.key || "";
+    if (ch.key) Q.get("qProvider").value = ch.key;
+    if (ch.api_key_set) {
+      Q.get("qKey").placeholder = "已记住（留空则沿用）";
+      const box = Q.get("qLlmSaved");
+      box.hidden = false;
+      Q.get("qLlmSavedText").textContent =
+        "已记住你的 Key · " + (ch.model || "未选模型") + "，下次打开不用再填";
+      // 顶栏状态 + 查询页摘要：让用户一眼知道配没配
+      AI_READY = true;
+      AI_BRIEF = `${ch.model || "已配 Key"}`;
+      paintAiState();
+    }
+  } catch (e) {
+    /* 首次使用没有配置：状态灯保持灰，提示用户去设置 */
+    paintAiState();
+  }
+}
+
+/* 顶栏「AI 设置」按钮上那盏灯：绿=已配置，灰=没配 */
+let AI_READY = false;
+let AI_BRIEF = "";
+
+function paintAiState() {
+  // 导航项「设置」后面的小圆点
+  const dot = document.getElementById("aiDot");
+  if (dot) dot.classList.toggle("on", AI_READY);
+
+  // 设置页顶部的状态标签
+  const status = document.getElementById("setLlmStatus");
+  if (status) {
+    status.textContent = AI_READY ? `已配置 · ${AI_BRIEF}` : "未配置";
+    status.classList.toggle("on", AI_READY);
+  }
+
+  // 给 app.js（导入页）用：没配就让「生成业务对象」先引导去设置
+  window.PP6_AI_READY = AI_READY;
+  const aiHint = document.getElementById("aiHint");
+  if (aiHint) {
+    if (AI_READY) {
+      aiHint.textContent = `已接入 ${AI_BRIEF} · 字段类型会自动选：金额→数字，审批人→人员，备注→多行文本`;
+      aiHint.classList.remove("warn");
+    } else {
+      aiHint.textContent = "还没配置 AI，点右上角「设置」填一个免费的 Key 就能用";
+      aiHint.classList.add("warn");
+    }
+  }
+}
+
+window.PP6_OPEN_AI = () => openAiModal();
+
+function openAiModal() {
+  switchMode("settings");
+  loadConfig();
+}
+
+/* 查询页、导入页都能一键跳到设置 */
+document.getElementById("qOpenSettings").onclick = () => openAiModal();
+window.PP6_OPEN_AI = () => openAiModal();
+
+function dbPayload() {
+  return {
+    host: Q.get("qHost").value.trim(),
+    port: Q.get("qPort").value.trim() || "3306",
+    user: Q.get("qUser").value.trim(),
+    password: Q.get("qPass").value,
+    database: Q.get("qDb").value.trim(),
+  };
+}
+
+/* 连接统计：设置页和查询页各有一块，同步更新 */
+function renderConnStats(d) {
+  const html = `
+    <div><b>${d.tableCount}</b>业务表</div>
+    <div><b>${d.columnCount}</b>字段</div>
+    <div><b>${d.dictCount}</b>字典</div>
+    <div><b>${d.version.split("-")[0]}</b>MySQL</div>`;
+  for (const id of ["qStats", "qConnStats"]) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.hidden = false;
+    el.innerHTML = html;
+  }
+  const hint = document.getElementById("qConnHint");
+  if (hint) hint.textContent = `已连接 ${d.database} · ${d.tableCount} 张表`;
+}
+
+Q.get("qTest").onclick = async () => {
+  const btn = Q.get("qTest");
+  btn.disabled = true; btn.textContent = "连接中…";
+  try {
+    await qApi("/api/nlq/save-config", { db: dbPayload() });
+    const d = await qApi("/api/nlq/test");
+    Q.get("qPass").value = "";
+    Q.get("qPass").placeholder = "已保存，留空则不修改";
+    renderConnStats(d);
+    Q.templates = d.templates || [];
+    renderTemplates();
+    toast(`已连接 ${d.database}，读到 ${d.tableCount} 张业务表`);
+  } catch (e) {
+    toast("连接失败：" + e.message, 6000);
+  } finally {
+    btn.disabled = false; btn.textContent = "连接并读取结构";
+  }
+};
+
+/* 「保存并测试」：先测连通性，测通了才落盘。
+   不再拆成「保存」和「测试」两个按钮——拆开后用户会困惑：
+   「测试能通，保存完反而连不上」，其实是保存和测试各自读输入框、时机不同。
+   现在一步到位：测通 = 保存，测不通 = 不保存并显示原因。 */
+Q.get("qSaveLlm").onclick = async () => {
+  const btn = Q.get("qSaveLlm");
+  const box = Q.get("qLlmStatus");
+  const base = Q.get("qBase").value.trim();
+  const model = currentModel();
+  const key = Q.get("qKey").value.trim();
+  if (!base) { toast("请先选一个平台，或手填接口地址"); return; }
+  if (!model) { toast("请填写模型名（选平台会自动填好）"); return; }
+  if (!key && !AI_READY) { toast("请粘贴 API Key"); return; }
+
+  btn.disabled = true; btn.textContent = "测试中…";
+  box.hidden = false; box.textContent = "正在测试连接…";
+
+  try {
+    // 第一步：测连通性。Key 空（已保存过）则不传 channel，用已存配置测。
+    const payload = key
+      ? { channel: { key: Q_CHANNEL_KEY, base_url: base, api_key: key, model: model } }
+      : {};
+    const d = await qApi("/api/nlq/test-llm", payload);
+    if (!d.ok) {
+      box.textContent = "✗ 连接失败，未保存：" + d.error;
+      return;
+    }
+
+    // 第二步：测通了才保存
+    const prov = Q_PROVIDERS.find((x) => x.key === Q_CHANNEL_KEY);
+    const fallbacks = ((prov && prov.models) || [])
+      .filter((m) => m !== model).slice(0, 4);
+    await qApi("/api/nlq/save-config", {
+      llm: {
+        channels: [{
+          key: Q_CHANNEL_KEY, base_url: base, api_key: key,
+          model: model, fallbacks: fallbacks, enabled: true,
+        }],
+      },
+    });
+
+    // 第三步：保存成功，清空输入框、刷新状态
+    Q.get("qKey").value = "";
+    Q.get("qKey").placeholder = "已保存，留空则不修改";
+    AI_READY = true;
+    AI_BRIEF = model;
+    paintAiState();
+    box.innerHTML = `✓ 已保存并验证通过 · ${qEsc(d.model)} · ${d.seconds}s`;
+    toast("已保存并验证通过");
+  } catch (e) {
+    box.textContent = "✗ " + e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = "保存并测试";
+  }
+};
+
+
+/* ---------------- 来源标识：一眼看出是规则还是 AI ---------------- */
+const ORIGIN = {
+  rule:   { icon: "⚙", label: "规则生成", cls: "src-rule",
+            tip: "本地规则引擎生成，不调用大模型，速度快、零成本" },
+  ai:     { icon: "✦", label: "AI 生成", cls: "src-ai",
+            tip: "由大模型理解后生成" },
+  memory: { icon: "◈", label: "复用的 AI 答案", cls: "src-mem",
+            tip: "之前 AI 答对过并已保存，现在直接复用，不再调用大模型" },
+  corrected: { icon: "✎", label: "人工修正", cls: "src-mem",
+               tip: "你手工改过的 SQL，已记下并优先使用" },
+};
+
+function originBadge(d) {
+  const o = ORIGIN[d.origin] || ORIGIN.rule;
+  const model = d.origin === "ai" && d.model ? ` · ${qEsc(d.model)}` : "";
+  return `<span class="src-badge ${o.cls}" title="${qEsc(o.tip)}">` +
+         `<i>${o.icon}</i>${o.label}${model}</span>`;
+}
+
+/* 这一条是怎么来的（放 SQL 卡片标题下） */
+function renderOrigin(d) {
+  const box = Q.get("qOrigin");
+  if (!box) return;
+  let html = originBadge(d);
+
+  if (d.origin === "ai") {
+    if (d.rule_reason) {
+      html += `<span class="src-why">规则没把握：${qEsc(d.rule_reason)}</span>`;
+    }
+    if (d.learned) {
+      html += `<span class="src-learned" title="已存入示例库，下次同类问题直接复用">已记住</span>`;
+    }
+    if (d.conflict) {
+      html += `<span class="src-warn" title="${qEsc(d.conflict)}">未保存</span>`;
+    }
+  } else if (d.origin === "memory" && d.source_question) {
+    html += `<span class="src-why">来自之前问过：${qEsc(d.source_question)}</span>`;
+  } else if (d.ai_error) {
+    html += `<span class="src-why">AI 不可用（${qEsc(d.ai_error)}）</span>`;
+  }
+  if (d.uncertain) {
+    html += `<span class="src-warn" title="${qEsc(d.uncertain)}">结果待核对</span>`;
+  }
+  box.innerHTML = html;
+  box.hidden = false;
+}
+
+/* ---------------- 模板 ---------------- */
+function renderTemplates() {
+  const box = Q.get("qTemplates");
+  if (!Q.templates.length) { box.innerHTML = ""; return; }
+  box.innerHTML = Q.templates
+    .map((t, i) => `<button data-i="${i}">${qEsc(t.title)}</button>`).join("");
+  box.querySelectorAll("button").forEach((btn) => {
+    btn.onclick = () => {
+      const t = Q.templates[Number(btn.dataset.i)];
+      Q.get("qQuestion").value = t.question;
+      showSql(t.sql, t.question, true);
+      runSql(t.sql);
+    };
+  });
+}
+
+/* ---------------- 生成 / 执行 ---------------- */
+function showSql(sql, question, generated) {
+  Q.get("qSqlCard").hidden = false;
+  Q.get("qSql").value = sql;
+  Q.get("qSqlMeta").textContent = question ? "来自：" + question : "";
+  Q.get("qErr").hidden = true;
+  // 记住「机器给的原版」，用户改动后据此判断要不要亮出「保存修正」
+  if (generated) Q.generatedSql = sql;
+  if (Q.get("qSaveCorrect")) syncCorrectBtn();
+}
+
+function renderResult(d, ms) {
+  Q.get("qResultCard").hidden = false;
+  const meta = Q.get("qResultMeta");
+  const o = ORIGIN[d.origin] || ORIGIN.rule;
+  meta.innerHTML = `${d.rows.length} 行${ms ? " · " + ms + " ms" : ""}` +
+    ` <span class="src-badge ${o.cls} sm" title="${qEsc(o.tip)}">${o.icon}${o.label}</span>`;
+  if (!d.rows.length) {
+    // 0 行时给出诊断（表空？条件太严？取值写错？），别只丢一句"没有数据"
+    const hint = d.hint
+      ? `<div class="empty"><b>没有查到数据</b><div class="empty-hint">${qEsc(d.hint)}</div></div>`
+      : '<div class="empty">查询执行成功，但没有匹配的数据。</div>';
+    Q.get("qResult").innerHTML = hint;
+    Q.last = d;
+    return;
+  }
+  const head = d.columns.map((c) => `<th>${qEsc(c)}</th>`).join("");
+  const body = d.rows.map((r) => `<tr>${r.map((v) =>
+    v === null || v === ""
+      ? '<td class="null">—</td>'
+      : `<td>${qEsc(String(v).length > 80 ? String(v).slice(0, 80) + "…" : v)}</td>`
+  ).join("")}</tr>`).join("");
+  Q.get("qResult").innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  Q.last = d;
+}
+
+async function runSql(sql) {
+  const t0 = performance.now();
+  try {
+    const d = await qApi("/api/nlq/run", { sql });
+    Q.get("qErr").hidden = true;
+    showSql(d.sql, Q.get("qSqlMeta").textContent.replace(/^来自：/, ""));
+    renderResult(d, Math.round(performance.now() - t0));
+  } catch (e) {
+    Q.get("qErr").hidden = false;
+    Q.get("qErr").textContent = e.message;
+    Q.get("qResultCard").hidden = true;
+  }
+}
+
+async function ask(engine) {
+  Q.get("qRuleBox").hidden = true;
+  const question = Q.get("qQuestion").value.trim();
+  if (!question) { toast("先写一句你想查什么"); return; }
+  const btn = Q.get("qAsk");
+  btn.disabled = true; btn.textContent = "生成中…";
+  const t0 = performance.now();
+  try {
+    const d = await qApi("/api/nlq/ask", { question, engine });
+    showSql(d.sql, question, true);
+    renderOrigin(d);
+    Q.get("qSqlMeta").textContent = (question ? "来自：" + question : "") +
+      (d.note ? "　✎ " + d.note : "");   // 复用人工修正时带上他自己写的原因
+    if (d.retried) toast("第一次 SQL 执行报错，已自动修正");
+    if (d.learned) toast("这条已记下，下次同类问题规则能直接答");
+    const ruleBox = Q.get("qRuleBox");
+    if (d.ruleSql && d.ruleSql !== d.sql) {
+      ruleBox.hidden = false;
+      Q.get("qRuleSql").value = d.ruleSql;
+    } else {
+      ruleBox.hidden = true;
+    }
+    renderResult(d, Math.round(performance.now() - t0));
+  } catch (e) {
+    Q.get("qSqlCard").hidden = false;
+    Q.get("qErr").hidden = false;
+    Q.get("qErr").textContent = e.message +
+      (String(e.message).includes("API Key")
+        ? "\n\n不配模型也能用：换成像「项目的名称和项目经理」这样带上对象名和字段名的说法，会走本地规则解析。"
+        : "");
+    Q.get("qResultCard").hidden = true;
+  } finally {
+    btn.disabled = false; btn.textContent = "生成 SQL 并执行";
+  }
+}
+
+/* 复制 SQL：桌面 WebView 里 navigator.clipboard 不一定可用，退回 execCommand */
+async function copySql() {
+  const ta = Q.get("qSql");
+  const text = ta.value;
+  if (!text.trim()) { toast("还没有 SQL 可复制"); return; }
+
+  let done = false;
+
+  // 桌面壳：系统剪贴板最稳（WebView 里 clipboard API 常被禁用）
+  const api = window.pywebview && window.pywebview.api;
+  if (api && api.copy_text) {
+    try {
+      const r = await api.copy_text(text);
+      done = !!(r && r.ok);
+    } catch (_) { done = false; }
+  }
+
+  if (!done && navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      done = true;
+    } catch (_) { done = false; }
+  }
+  if (!done) {
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    try { done = document.execCommand("copy"); } catch (_) { done = false; }
+    ta.setSelectionRange(text.length, text.length);
+  }
+  if (done) {
+    toast("SQL 已复制到剪贴板");
+    const btn = Q.get("qCopySql");
+    const old = btn.textContent;
+    btn.textContent = "已复制 ✓";
+    setTimeout(() => { btn.textContent = old; }, 1400);
+  } else {
+    toast("复制失败，请手动选中后按 ⌘C / Ctrl+C");
+  }
+}
+
+Q.get("qCopySql").onclick = copySql;
+Q.get("qLlmForget").onclick = async () => {
+  if (!confirm("清除后下次需要重新填写 Key，确定吗？")) return;
+  try {
+    await qApi("/api/nlq/save-config", {
+      llm: { channels: [{ key: Q_CHANNEL_KEY, base_url: Q.get("qBase").value,
+                          api_key: "", model: currentModel(), clear_key: true }] },
+    });
+    Q.get("qLlmSaved").hidden = true;
+    Q.get("qKey").placeholder = "粘贴平台的 Key（sk-...）";
+    AI_READY = false;
+    AI_BRIEF = "";
+    paintAiState();
+    toast("已清除 Key");
+  } catch (e) { toast("清除失败：" + e.message); }
+};
+
+Q.get("qAsk").onclick = () => ask("hybrid");
+Q.get("qAskAi").onclick = () => ask("llm");
+
+Q.get("qRun").onclick = () => runSql(Q.get("qSql").value);
+
+/* 用户改了 SQL：亮出「保存修正」+ 备注输入——人改对的那条是最值钱的训练数据 */
+function syncCorrectBtn() {
+  const bar = Q.get("qFixBar");
+  if (!bar) return;
+  const now = Q.get("qSql").value.trim();
+  bar.hidden = !Q.generatedSql || !now || now === Q.generatedSql;
+}
+Q.get("qSql").addEventListener("input", syncCorrectBtn);
+
+Q.get("qSaveCorrect").onclick = async () => {
+  const question = Q.get("qQuestion").value.trim();
+  const sql = Q.get("qSql").value.trim();
+  const note = Q.get("qFixNote").value.trim();
+  if (!question || !sql) { toast("问题和 SQL 都要有"); return; }
+  const btn = Q.get("qSaveCorrect");
+  btn.disabled = true; btn.textContent = "保存中…";
+  try {
+    const d = await qApi("/api/nlq/correct", {
+      question, sql, note, original_sql: Q.generatedSql || "",
+    });
+    if (!d.ok) { toast(d.error || "没能记录"); return; }
+    Q.generatedSql = sql;
+    syncCorrectBtn();
+    toast(d.note || "已记下你的改法");
+  } catch (e) {
+    toast("保存失败：" + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = "保存修正";
+  }
+};
+
+Q.get("qSaveExample").onclick = async () => {
+  const question = Q.get("qQuestion").value.trim();
+  const sql = Q.get("qSql").value.trim();
+  if (!question || !sql) { toast("问题和 SQL 都要有"); return; }
+  try {
+    const d = await qApi("/api/nlq/example", { question, sql });
+    toast(`已存为示例（共 ${d.examples} 条），下次同类问题会更准`);
+  } catch (e) { toast("保存失败：" + e.message); }
+};
+
+Q.get("qExport").onclick = () => {
+  const d = Q.last;
+  if (!d || !d.rows.length) { toast("没有可导出的数据"); return; }
+  const csv = [d.columns, ...d.rows]
+    .map((r) => r.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(","))
+    .join("\r\n");
+  const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "查询结果-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "") + ".csv";
+  a.click();
+};
+
+/* 启动就拉一次配置：顶栏的 AI 状态灯和导入页提示都依赖它，
+   不能等用户切到查询页才加载——否则第一眼看到的永远是「未配置」。 */
+loadConfig();

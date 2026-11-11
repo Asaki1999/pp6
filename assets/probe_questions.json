@@ -1,0 +1,1498 @@
+[
+ {
+  "q": "列出所有项目",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "q": "列出所有项目及其状态、级别、项目经理",
+  "tables": [
+   "pp_project"
+  ],
+  "columns": [
+   "项目名称",
+   "项目状态"
+  ]
+ },
+ {
+  "q": "每个项目状态有多少个项目",
+  "tables": [
+   "pp_project"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "按项目类型统计项目数",
+  "tables": [
+   "pp_project"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "项目名称里带芯片的项目",
+  "tables": [
+   "pp_project"
+  ],
+  "columns": [
+   "项目名称"
+  ]
+ },
+ {
+  "q": "项目进度低于50的项目",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "q": "本月创建的项目",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "q": "今年的项目",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "q": "每个部门有多少项目",
+  "tables": [
+   "pp_project"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "每个项目经理负责多少项目",
+  "tables": [
+   "pp_project"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "列出所有客户",
+  "tables": [
+   "pp_customer"
+  ]
+ },
+ {
+  "q": "每个客户有多少合同",
+  "tables": [
+   "pp_contract"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "每个客户有多少项目",
+  "tables": [
+   "pp_project"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "列出最近创建的合同",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "q": "今年的合同",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "q": "列出最近的任务",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "任务清单",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "列出任务名称以及任务的责任人",
+  "tables": [
+   "pp_task"
+  ],
+  "columns": [
+   "任务名称"
+  ]
+ },
+ {
+  "q": "查询任务名称和任务责任人 排除任务名称为根任务的任务",
+  "tables": [
+   "pp_task"
+  ],
+  "forbid": [
+   {
+    "column": "任务名称",
+    "contains": "根任务"
+   }
+  ]
+ },
+ {
+  "q": "每个任务责任人有多少任务",
+  "tables": [
+   "pp_task"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "最近7天创建的任务",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "任务名称里带电池的任务",
+  "tables": [
+   "pp_task"
+  ],
+  "min_rows": 0
+ },
+ {
+  "q": "列出开发任务和状态",
+  "tables": [
+   "pp_dev_task"
+  ]
+ },
+ {
+  "q": "按开发任务状态统计数量",
+  "tables": [
+   "pp_dev_task"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "每个开发任务责任人有多少任务",
+  "tables": [
+   "pp_dev_task"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "列出所有风险",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "q": "列出所有风险及其等级",
+  "tables": [
+   "pp_risk"
+  ],
+  "columns": [
+   "风险等级"
+  ]
+ },
+ {
+  "q": "高风险的风险有哪些",
+  "tables": [
+   "pp_risk"
+  ],
+  "columns": [
+   "风险等级"
+  ]
+ },
+ {
+  "q": "除了高风险以外的风险",
+  "tables": [
+   "pp_risk"
+  ],
+  "forbid": [
+   {
+    "column": "风险等级",
+    "contains": "High"
+   }
+  ]
+ },
+ {
+  "q": "每个风险等级有多少个风险",
+  "tables": [
+   "pp_risk"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "列出所有未关闭的风险",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "q": "不要状态是已关闭的风险",
+  "tables": [
+   "pp_risk"
+  ],
+  "forbid": [
+   {
+    "column": "状态",
+    "contains": "closed"
+   }
+  ]
+ },
+ {
+  "q": "每个项目有多少个风险",
+  "tables": [
+   "pp_risk"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "列出所有问题",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "q": "状态为进行中的问题",
+  "tables": [
+   "pp_issue"
+  ],
+  "columns": [
+   "状态"
+  ]
+ },
+ {
+  "q": "高优先级的问题",
+  "tables": [
+   "pp_issue"
+  ],
+  "columns": [
+   "优先级"
+  ]
+ },
+ {
+  "q": "每个问题责任人有多少问题",
+  "tables": [
+   "pp_issue"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "每个问题状态有多少个问题",
+  "tables": [
+   "pp_issue"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "列出所有待办",
+  "tables": [
+   "pp_todo"
+  ]
+ },
+ {
+  "q": "每个待办责任人有多少待办",
+  "tables": [
+   "pp_todo"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "列出所有需求",
+  "tables": [
+   "pp_requirement"
+  ]
+ },
+ {
+  "q": "每个需求状态有多少个需求",
+  "tables": [
+   "pp_requirement"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "列出所有缺陷",
+  "tables": [
+   "pp_defect"
+  ]
+ },
+ {
+  "q": "每个缺陷状态有多少个缺陷",
+  "tables": [
+   "pp_defect"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "列出所有产品",
+  "tables": [
+   "pp_product"
+  ]
+ },
+ {
+  "q": "列出所有测试计划",
+  "tables": [
+   "pp_test_plan"
+  ]
+ },
+ {
+  "q": "列出所有项目阶段",
+  "tables": [
+   "pp_project_phase"
+  ]
+ },
+ {
+  "q": "每个项目阶段有多少个任务",
+  "tables": [
+   "pp_task"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "列出所有项目角色",
+  "tables": [
+   "pp_project_role"
+  ]
+ },
+ {
+  "q": "列出所有项目预算条目",
+  "tables": [
+   "pp_project_budget_item"
+  ]
+ },
+ {
+  "q": "每个项目有多少预算条目",
+  "tables": [
+   "pp_project_budget_item"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "列出所有基线任务",
+  "tables": [
+   "pp_plan_baseline_task"
+  ]
+ },
+ {
+  "q": "列出所有变更任务",
+  "tables": [
+   "pp_chg_task"
+  ]
+ },
+ {
+  "q": "列出所有反馈",
+  "tables": [
+   "pp_feedback"
+  ]
+ },
+ {
+  "q": "每个反馈状态有多少条",
+  "tables": [
+   "pp_feedback"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "列出所有开发迭代",
+  "tables": [
+   "pp_dev_sprint"
+  ]
+ },
+ {
+  "q": "每个开发迭代有多少开发任务",
+  "tables": [
+   "pp_dev_task"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "列出所有文档",
+  "tables": [
+   "pp_document"
+  ]
+ },
+ {
+  "q": "列出所有预期文档",
+  "tables": [
+   "pp_project_expect_doc"
+  ]
+ },
+ {
+  "q": "列出所有成员记录",
+  "tables": [
+   "pp_project_member"
+  ]
+ },
+ {
+  "q": "每个项目有多少成员",
+  "tables": [
+   "pp_project_member"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "上个月创建的问题",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "q": "最近30天创建的开发任务",
+  "tables": [
+   "pp_dev_task"
+  ]
+ },
+ {
+  "q": "去年创建的合同",
+  "tables": [
+   "pp_contract"
+  ],
+  "min_rows": 0
+ },
+ {
+  "q": "任务的责任人都有谁",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "哪些任务还没开始",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "进度超过80的任务",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "里程碑任务有哪些",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "关键路径上的任务",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "每个任务类别有多少任务",
+  "tables": [
+   "pp_task"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "风险责任人的分布",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "q": "本月新增的风险",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "q": "每个风险的应对类型",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "q": "问题的来源分布",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "q": "未关闭且高优先级的问题",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "q": "开发任务按优先级统计",
+  "tables": [
+   "pp_dev_task"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "每个开发迭代的任务数",
+  "tables": [
+   "pp_dev_task"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "缺陷按严重程度统计",
+  "tables": [
+   "pp_defect"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "需求清单",
+  "tables": [
+   "pp_requirement"
+  ]
+ },
+ {
+  "q": "文档目录清单",
+  "tables": [
+   "pp_directory"
+  ]
+ },
+ {
+  "q": "待办事项清单",
+  "tables": [
+   "pp_todo"
+  ]
+ },
+ {
+  "q": "每个项目有多少阶段",
+  "tables": [
+   "pp_project_phase"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "项目阶段清单",
+  "tables": [
+   "pp_project_phase"
+  ]
+ },
+ {
+  "q": "合同金额大于100万",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "q": "每个合同的付款进度",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "q": "客户所在行业分布",
+  "tables": [
+   "pp_customer"
+  ]
+ },
+ {
+  "q": "每个销售负责多少客户",
+  "tables": [
+   "pp_customer"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "产品清单",
+  "tables": [
+   "pp_product"
+  ]
+ },
+ {
+  "q": "测试计划清单",
+  "tables": [
+   "pp_test_plan"
+  ]
+ },
+ {
+  "q": "项目预算清单",
+  "tables": [
+   "pp_project_budget"
+  ]
+ },
+ {
+  "q": "每个预算大类汇总",
+  "tables": [
+   "pp_project_budget_domain_sum"
+  ]
+ },
+ {
+  "q": "项目人员角色分布",
+  "tables": [
+   "pp_project_member"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "最近访问记录",
+  "tables": [
+   "pp_recent"
+  ]
+ },
+ {
+  "q": "反馈清单",
+  "tables": [
+   "pp_feedback"
+  ]
+ },
+ {
+  "q": "帮我看看项目都有哪些",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "q": "现在跑着的项目有几个",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "q": "哪些项目延期了",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "q": "项目负责人都是谁",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "q": "手上有多少任务没做完",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "把任务按负责人分一下",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "任务都分给谁了",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "有没有超期的任务",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "风险这块现在什么情况",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "q": "问题是不是变多了",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "q": "客户都有哪些单位",
+  "tables": [
+   "pp_customer"
+  ]
+ },
+ {
+  "q": "合同签了多少单",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "q": "这个月的收入情况",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "q": "开发任务按人看看",
+  "tables": [
+   "pp_dev_task"
+  ]
+ },
+ {
+  "q": "谁会做开发任务",
+  "tables": [
+   "pp_dev_task"
+  ]
+ },
+ {
+  "q": "需求都提到谁头上了",
+  "tables": [
+   "pp_requirement"
+  ]
+ },
+ {
+  "q": "缺陷谁在管",
+  "tables": [
+   "pp_defect"
+  ]
+ },
+ {
+  "q": "测试计划有哪些",
+  "tables": [
+   "pp_test_plan"
+  ]
+ },
+ {
+  "q": "待办清单给我看下",
+  "tables": [
+   "pp_todo"
+  ]
+ },
+ {
+  "q": "文档都有哪些目录",
+  "tables": [
+   "pp_directory"
+  ]
+ },
+ {
+  "q": "项目成员都是谁",
+  "tables": [
+   "pp_project_member"
+  ]
+ },
+ {
+  "q": "每个项目挂了多少人",
+  "tables": [
+   "pp_project_member"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "项目角色有哪些种类",
+  "tables": [
+   "pp_project_role"
+  ]
+ },
+ {
+  "q": "预算都花在哪了",
+  "tables": [
+   "pp_project_budget_item"
+  ]
+ },
+ {
+  "q": "每个项目的预算总额",
+  "tables": [
+   "pp_project_budget_item"
+  ]
+ },
+ {
+  "q": "反馈都来自哪些状态",
+  "tables": [
+   "pp_feedback"
+  ]
+ },
+ {
+  "q": "迭代一共有几个",
+  "tables": [
+   "pp_dev_sprint"
+  ]
+ },
+ {
+  "q": "每个迭代的开发任务有多少",
+  "tables": [
+   "pp_dev_task"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "产品线有哪些",
+  "tables": [
+   "pp_product"
+  ]
+ },
+ {
+  "q": "哪些客户还没签合同",
+  "tables": [
+   "pp_customer"
+  ]
+ },
+ {
+  "q": "排期后状态是1的任务有多少",
+  "tables": [
+   "pp_task"
+  ],
+  "min_rows": 1
+ },
+ {
+  "q": "风险等级是高的有哪些",
+  "tables": [
+   "pp_risk"
+  ],
+  "columns": [
+   "风险等级"
+  ]
+ },
+ {
+  "q": "问题优先级为低的清单",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "q": "项目按级别分一下",
+  "tables": [
+   "pp_project"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "本周新建的任务",
+  "tables": [
+   "pp_task"
+  ],
+  "min_rows": 0
+ },
+ {
+  "q": "上上周创建的合同",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "q": "最近三个月的问题",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "q": "今天有没有新项目",
+  "tables": [
+   "pp_project"
+  ],
+  "min_rows": 0
+ },
+ {
+  "q": "列出任务名称和任务责任人 筛选的任务名称不能包含根任务",
+  "tables": [
+   "pp_task"
+  ],
+  "columns": [
+   "任务名称",
+   "任务责任人"
+  ]
+ },
+ {
+  "q": "任务的责任人是谁",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "开发任务的责任人是谁",
+  "tables": [
+   "pp_dev_task"
+  ]
+ },
+ {
+  "q": "每个项目的成员数",
+  "tables": [
+   "pp_project_member"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "每个产品的版本有多少",
+  "tables": [
+   "pp_product"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "每个阶段的任务数量",
+  "tables": [
+   "pp_task"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "优先级为高的问题",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "q": "问题名称里不要包含性能的",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "q": "风险等级不是高的风险",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "q": "任务名称不包含测试",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "查询任务名称和任务责任人，要去除掉任务名称为根任务的任务",
+  "tables": [
+   "pp_task"
+  ],
+  "columns": [
+   "任务名称",
+   "任务责任人"
+  ],
+  "forbid": [
+   {
+    "column": "任务名称",
+    "contains": "根任务"
+   }
+  ]
+ },
+ {
+  "q": "去除掉任务名称为根任务的任务",
+  "tables": [
+   "pp_task"
+  ],
+  "forbid": [
+   {
+    "column": "任务名称",
+    "contains": "根任务"
+   }
+  ]
+ },
+ {
+  "q": "排除掉状态是已关闭的风险",
+  "tables": [
+   "pp_risk"
+  ],
+  "forbid": [
+   {
+    "column": "状态",
+    "contains": "closed"
+   }
+  ]
+ },
+ {
+  "q": "剔除掉优先级为低的问题",
+  "tables": [
+   "pp_issue"
+  ],
+  "forbid": [
+   {
+    "column": "优先级",
+    "contains": "low"
+   }
+  ]
+ },
+ {
+  "q": "跳过状态是已关闭的风险",
+  "tables": [
+   "pp_risk"
+  ],
+  "forbid": [
+   {
+    "column": "状态",
+    "contains": "closed"
+   }
+  ]
+ },
+ {
+  "q": "忽略高风险",
+  "tables": [
+   "pp_risk"
+  ],
+  "forbid": [
+   {
+    "column": "风险等级",
+    "contains": "High"
+   }
+  ]
+ },
+ {
+  "q": "略过已立项的项目",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "q": "屏掉高风险",
+  "tables": [
+   "pp_risk"
+  ],
+  "forbid": [
+   {
+    "column": "风险等级",
+    "contains": "High"
+   }
+  ]
+ },
+ {
+  "q": "任务名称里不能有测试的任务",
+  "tables": [
+   "pp_task"
+  ],
+  "forbid": [
+   {
+    "column": "任务名称",
+    "contains": "测试"
+   }
+  ]
+ },
+ {
+  "q": "不看已关闭的项目",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "q": "进度最高的5个项目",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "q": "进度最低的项目有哪些",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "q": "金额最大的合同",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "q": "优先级最高的风险",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "q": "最近创建的项目是哪个",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "q": "任务数量最多的项目",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "风险数量最多的项目",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "q": "成员最多的项目",
+  "tables": [
+   "pp_project_member"
+  ]
+ },
+ {
+  "q": "提交时间最早的问题",
+  "tables": [
+   "pp_issue"
+  ]
+ },
+ {
+  "q": "工期最长的任务",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "项目的平均进度",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "q": "合同金额合计",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "q": "所有任务的总工期",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "风险的总数是多少",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "q": "每个项目任务的平均工期",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "预算合计是多少",
+  "tables": [
+   "pp_project_budget"
+  ]
+ },
+ {
+  "q": "进度大于40的项目",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "q": "金额超过100万的合同",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "q": "工期小于3天的任务",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "进度低于30的项目",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "q": "优先级大于中等的风险",
+  "tables": [
+   "pp_risk"
+  ]
+ },
+ {
+  "q": "项目状态分布占比",
+  "tables": [
+   "pp_project"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "风险等级占比",
+  "tables": [
+   "pp_risk"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "项目按进度降序",
+  "tables": [
+   "pp_project"
+  ]
+ },
+ {
+  "q": "合同按金额从大到小排序",
+  "tables": [
+   "pp_contract"
+  ]
+ },
+ {
+  "q": "任务按计划完成时间升序",
+  "tables": [
+   "pp_task"
+  ]
+ },
+ {
+  "q": "查询工时数据",
+  "tables": [
+   "pp_timesheet"
+  ],
+  "columns": [
+   "填报人",
+   "正常工时"
+  ]
+ },
+ {
+  "q": "工时明细",
+  "tables": [
+   "pp_timesheet"
+  ]
+ },
+ {
+  "q": "所有工时记录",
+  "tables": [
+   "pp_timesheet"
+  ]
+ },
+ {
+  "q": "工时按项目统计",
+  "tables": [
+   "pp_timesheet"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "每个填报人有多少条工时",
+  "tables": [
+   "pp_timesheet"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "每个项目的计划进度和实际进度差多少",
+  "tables": [
+   "pp_project"
+  ],
+  "columns": [
+   "进度偏差"
+  ]
+ },
+ {
+  "q": "进度亮红灯的项目有哪些",
+  "tables": [
+   "pp_project"
+  ],
+  "columns": [
+   "亮灯原因"
+  ]
+ },
+ {
+  "q": "每个项目的预算和实际成本对比",
+  "tables": [
+   "pp_project",
+   "pp_project_cost"
+  ],
+  "columns": [
+   "预算",
+   "实际成本"
+  ]
+ },
+ {
+  "q": "超支的项目有哪些",
+  "tables": [
+   "pp_project",
+   "pp_project_cost"
+  ],
+  "columns": [
+   "结余"
+  ]
+ },
+ {
+  "q": "每个成员的任务负载",
+  "tables": [
+   "pp_task"
+  ],
+  "columns": [
+   "任务数"
+  ]
+ },
+ {
+  "q": "高风险的未关闭项目",
+  "tables": [
+   "pp_risk"
+  ],
+  "columns": [
+   "风险等级"
+  ]
+ },
+ {
+  "q": "风险按等级分布",
+  "tables": [
+   "pp_risk"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "问题按优先级分布",
+  "tables": [
+   "pp_issue"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "缺陷按严重程度分布",
+  "tables": [
+   "pp_defect"
+  ],
+  "columns": [
+   "数量"
+  ]
+ },
+ {
+  "q": "里程碑达成情况",
+  "tables": [
+   "pp_task"
+  ],
+  "columns": [
+   "达成状态"
+  ]
+ },
+ {
+  "q": "项目健康度一页纸",
+  "tables": [
+   "pp_project"
+  ],
+  "columns": [
+   "进度偏差",
+   "灯"
+  ]
+ },
+ {
+  "q": "每个成员的工时合计",
+  "tables": [
+   "pp_timesheet"
+  ],
+  "columns": [
+   "工时合计"
+  ]
+ },
+ {
+  "q": "各项目工时汇总",
+  "tables": [
+   "pp_timesheet"
+  ],
+  "columns": [
+   "工时合计"
+  ]
+ },
+ {
+  "q": "待审批的工时",
+  "tables": [
+   "pp_timesheet"
+  ],
+  "columns": [
+   "审核状态"
+  ]
+ },
+ {
+  "q": "工时按对象类型分布",
+  "tables": [
+   "pp_timesheet"
+  ],
+  "columns": [
+   "工时合计"
+  ]
+ },
+ {
+  "q": "合同台账",
+  "tables": [
+   "pp_contract"
+  ],
+  "columns": [
+   "合同金额",
+   "收款进度%"
+  ]
+ },
+ {
+  "q": "未结清的合同",
+  "tables": [
+   "pp_contract"
+  ],
+  "columns": [
+   "未结"
+  ]
+ },
+ {
+  "q": "合同按币种汇总",
+  "tables": [
+   "pp_contract"
+  ],
+  "columns": [
+   "金额合计"
+  ]
+ },
+ {
+  "q": "合同按类别汇总",
+  "tables": [
+   "pp_contract"
+  ],
+  "columns": [
+   "金额合计"
+  ]
+ }
+]

@@ -1,0 +1,107 @@
+{
+  "_readme": [
+    "字段类型字典。verified=true 表示已用真实导出包核对过 dataTypeNew 与存储类型；",
+    "verified=false 的是按系统命名习惯推断的，生成时会给出告警。",
+    "校准方法：导出一个包含该类型字段的业务对象 zip，执行",
+    "    bin/pp6 learn <zip或目录>",
+    "工具会把真实取值写回本文件。"
+  ],
+  "types": {
+    "varchar": {
+      "label": "字符串",
+      "datatype": "varchar",
+      "length": 200,
+      "format": "yyyy-MM-dd",
+      "verified": true
+    },
+    "number": {
+      "label": "数字",
+      "datatype": "number",
+      "length": 20,
+      "verified": true,
+      "format": null
+    },
+    "datetime": {
+      "label": "日期时间",
+      "datatype": "datetime",
+      "format": "yyyy-MM-dd HH:mm:ss",
+      "verified": true,
+      "length": null
+    },
+    "clob": {
+      "label": "大文本",
+      "datatype": "clob",
+      "verified": true,
+      "length": null,
+      "format": null
+    },
+    "user": {
+      "label": "用户",
+      "datatype": "varchar",
+      "length": 64,
+      "format": "yyyy-MM-dd",
+      "verified": true
+    },
+    "department": {
+      "label": "部门",
+      "datatype": "varchar",
+      "length": 64,
+      "format": "yyyy-MM-dd",
+      "verified": true
+    },
+    "attachment": {
+      "label": "附件列表",
+      "datatype": "clob",
+      "verified": false,
+      "note": "推断：附件以 JSON 数组存于大文本"
+    },
+    "i18n": {
+      "label": "国际化",
+      "datatype": "varchar",
+      "length": 255,
+      "verified": false,
+      "note": "推断：按 varchar 存储多语言键值"
+    },
+    "dic": {
+      "label": "选项",
+      "datatype": "varchar",
+      "length": 32,
+      "format": "yyyy-MM-dd",
+      "verified": true
+    },
+    "object": {
+      "label": "对象",
+      "datatype": "varchar",
+      "length": 64,
+      "verified": true,
+      "format": null
+    },
+    "userGroupCate": {
+      "label": "用户组",
+      "datatype": "varchar",
+      "length": 64,
+      "verified": true,
+      "format": null
+    },
+    "table": {
+      "label": "表格",
+      "datatype": "clob",
+      "verified": false,
+      "note": "推断：子表以 JSON 存在大文本字段"
+    },
+    "autoNumber": {
+      "label": "自动编号",
+      "datatype": "varchar",
+      "length": 64,
+      "verified": true,
+      "format": null
+    },
+    "formula": {
+      "label": "公式",
+      "datatype": "varchar",
+      "length": 255,
+      "verified": false,
+      "note": "推断：结果按 varchar 存储"
+    }
+  }
+}

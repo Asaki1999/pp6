@@ -1,0 +1,772 @@
+"""表单 -> form/001-{key}.xml
+
+布局：**「布局 V1.0」**（线上真实表单的写法，2026-11-10 对包确认）
+
+    分区容器 (card / fieldset)
+      └── 表格布局V1.0 (grid_layout)
+            └── 控件
+
+  - 按控件的「分区」分组，一个分区一个容器 + 一个表格布局；
+    分区留空则整张表单一个容器，标题「基本信息」。
+  - 详情类表单用 card（详情页就是这个形态，卡片自带标题栏）；
+    新建/条件/导入用 fieldset（立项表单的形态，抽屉里更轻）。
+  - 表格布局的 fieldOptions **写两份**：columns（扁平单元格引用）
+    + rows（每格内嵌完整控件 JSON），控件的 parentId 指向单元格 id。
+  - 一行最多 2 个控件（span=12）；富文本/长文本/附件等占满整行（span=24）；
+    「另起一行」强制换行；「一行一列」时全部 span=24。
+"""
+from __future__ import annotations
+
+import copy
+import json
+
+from .ids import new_id, short_id
+from .model import (
+    EMPTY_OPERATORS,
+    FORM_DETAIL,
+    HIDE_OPERATORS,
+    LABEL_BY_OP,
+    Bo,
+    Form,
+    FormField,
+    form_style,
+)
+from .xmlw import DECL_STANDALONE, el, json_attr, wrap
+
+# 这些类型默认独占一行
+_FULL_ROW_TYPES = {"editor", "textarea", "tablelayout", "tabs", "card", "attachment"}
+
+# 控件图标：从项目详情表单 / 立项表单两个真实包里逐个字段统计来的，
+# 缺了会让设计器里的控件图标变成问号。
+_ICONS = {
+    "text": "SingleText",
+    "textarea": "Texts",
+    "editor": "Texts",
+    "number": "ListNumbers",
+    "datePicker": "Date",
+    "date": "Date",
+    "select": "DropDown",
+    "dictionary": "DropDown",
+    "selectObject": "CustomControl",
+    "dropSelector": "CustomControl",
+    "dropSelectOrg": "CustomControl",
+    "dropSelectGroup": "CustomControl",
+    "linkdata": "CustomControl",
+    "attachment": "Enclosure",
+    "autoNumber": "SingleText",
+    "tablelayout": "Table",
+    "tableField": "Table",
+    "label": "Textss",
+}
+
+# 分区容器：详情页用卡片（能挂工具栏、有标题栏），其余用分组框。
+_CONTAINER_BY_KIND = {FORM_DETAIL: "card", "detail_expand": "card"}
+
+# 分区留空时的标题
+_DEFAULT_GROUP = "基本信息"
+
+
+def _max_per_row(form: Form) -> int:
+    """一行放几个控件：**固定 2 个**。
+
+    这是用户 2026-10-29 明确要求的，也符合线上所有真实表单（新建/详情
+    都是两列），以及手册的抽屉宽度。
+
+    不按表单宽度自适应的原因：
+      - 手册的抽屉 45% 下，2 列是唯一舒服的选择（每列 432px，
+        扣 labelWidth 106 后输入框还有 310px）
+      - 3 列就只剩 166px，「请选择」要截断
+      - 4 列不到 80px，直接塌成竖条
+      - 展开详情虽然是 90%，但一行 3 个仍比 2 个挤；一致性更重要，
+        用户看起来也整齐（所有字段对齐成两列网格）
+
+    独占一行的类型（多行文本/附件/子表单等）不受这个限制。
+    """
+    return 2
+
+_LINK_CONFIG_LIST = {"id": "id_", "text": "name_", "typeById": "varchar", "type": "first", "structure": "list"}
+
+# 系统内置隐藏字段
+# 只补 id / version 两个系统必需的主键与版本控件。
+# 以前还会补一个「拼音」隐藏控件，但线上业务表并没有这一列（老表单才有），
+# 生成后表单上多出来一列反而要去删，所以不再生成。
+_HIDDEN_FIELDS = (("id", "主键"), ("version", "版本"))
+
+
+class Snippets:
+    """样例骨架访问器。"""
+
+    def __init__(self, data: dict) -> None:
+        self.data = data
+
+    def field_options(self, field_type: str) -> tuple[dict, bool]:
+        """返回 (骨架, 是否用了兜底)。"""
+        raw = self.data["fieldOptions"].get(field_type)
+        if raw:
+            return json.loads(raw), False
+        return json.loads(self.data["fieldOptions"].get("text", "{}")), True
+
+    def hidden_options(self, which: str) -> dict:
+        raw = self.data["fieldOptions"].get(f"_hidden_{which}") or self.data["fieldOptions"].get("_hidden", "{}")
+        return json.loads(raw)
+
+    def grid(self, kind: str) -> dict:
+        return json.loads(self.data["grid"][kind])
+
+    def layout(self, which: str) -> dict:
+        """分区容器 / 表格布局的外层参数骨架（card / fieldset / grid_layout）。"""
+        raw = (self.data.get("layout") or {}).get(which)
+        if not raw:
+            return {}
+        return copy.deepcopy(raw)
+
+    @property
+    def extend_attr(self) -> dict:
+        raw = self.data.get("formDefExtendAttr") or "{}"
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+
+
+def _span_of(field: FormField, form: Form, alone: bool = False) -> int:
+    """单元格宽度：24 制。
+
+    线上真实表单里只有两种格子：整行 24、两列各 12。
+    一行里只放一个控件时必须给 24，否则右半边整片空白。
+    """
+    if alone or form.layout == 1 or field.full_row or field.field_type in _FULL_ROW_TYPES:
+        return 24
+    return 12
+
+
+def _widget_json(field: FormField, ftype: str, options: dict, code: str,
+                 cell_id: str, field_name: str = "") -> dict:
+    """表格布局 rows 里那份「内嵌完整控件 JSON」。
+
+    线上真实表单把它和 formField 元素写了两份，缺一份导入后该格就空着。
+    这里的 id 是 7 位短 id，跟 formField 元素的 19 位 id 不是一个东西。
+    """
+    out = {
+        "field_type": ftype,
+        "name": field.name,
+        "label": field.label,
+        "icon": _ICONS.get(ftype, "SingleText"),
+        "field_options": options,
+        "code": code,
+        "parentId": cell_id,
+        "isSub": False,
+        "modelKey": field.name,
+        "id": short_id(),
+    }
+    if field.desc:
+        out["desc"] = field.desc
+    if field_name:
+        out["field_name"] = field_name
+    return out
+
+
+# 「数据字典」控件是**树形选择**（骨架里的 select_mode=leaf / display_mode=path /
+# split="/" 就是树的参数），它本身按字典层级展开，没有「听哪个控件」的概念。
+# 线上样本（项目表单包含级联关系…zip）里，品种类别/品种分类用的是
+# fieldType=select + datasource=dictionary + options_source=bo_attr + init_linkage。
+# 所以 dic 字段一旦配了级联父级，要按 select 那种形态出包，否则级联键白写。
+_CASCADE_DROP_TYPES = {"dictionary"}
+
+
+def _cascade_parent_names(form: Form) -> set[str]:
+    """被别的控件当作级联父级的控件名。"""
+    return {f.cascade_parent for f in form.fields if f.cascade_parent}
+
+
+def _inherit_cascade(form: Form, bo: Bo | None, notices: list[str]) -> None:
+    """业务对象字段配了级联、表单控件这层没填 → 表单自动继承。
+
+    线上样本（项目立项业务对象.zip + 项目表单包）两层是同一个关系：
+    属性上写一遍、控件上再写一遍。让用户在两处填同一件事，漏一处就变成
+    「属性面板里有、表单里不生效」，所以这里以业务对象为准补全。
+    """
+    if bo is None:
+        return
+    by_code = {bf.code: bf for bf in bo.fields}
+    present = {f.name for f in form.fields}
+    for ff in form.fields:
+        if ff.cascade_parent:
+            continue
+        bf = by_code.get(ff.name)
+        if bf is None or not bf.cascade_parent:
+            continue
+        if bf.cascade_parent not in present:
+            notices.append(
+                f"控件 {ff.name}（{ff.label}）：业务对象里配了级联父级 {bf.cascade_parent}，"
+                f"但表单里没有这个控件，已跳过"
+            )
+            continue
+        ff.cascade_parent = bf.cascade_parent
+        notices.append(
+            f"控件 {ff.name}（{ff.label}）：级联父级 {bf.cascade_parent} 取自业务对象字段"
+        )
+
+
+def _is_cascade_control(field: FormField, parents: set[str] | None = None) -> bool:
+    """这个控件在不在级联链上（自己是子级，或者自己是别人的父级）。
+
+    父级也要算：样本里 productCategory 和 productClassification 都是
+    select + 数据字典。父级若是树形字典控件，子级取到的值形态可能不一致。
+    """
+    if field.field_type not in _CASCADE_DROP_TYPES:
+        return False
+    return bool(field.cascade_parent) or field.name in (parents or set())
+
+
+def _effective_type(field: FormField, parents: set[str] | None = None) -> str:
+    """真正写进 XML 的控件类型（可能要跟模型里的类型不一样）。"""
+    return "select" if _is_cascade_control(field, parents) else field.field_type
+
+
+def _dict_cascade_shape(out: dict, field: FormField) -> None:
+    """把字典控件改成线上样本里「下拉 + 数据字典 + 级联」的形态。"""
+    out.pop("select_mode", None)
+    out.pop("display_mode", None)
+    out.pop("split", None)
+    for k in ("value_source", "link_attr", "link_condition", "link_linkage"):
+        out.pop(k, None)
+    out["datasource"] = "dictionary"
+    out["options_source"] = "bo_attr"
+    out["dictionary"] = field.value_source
+    # 下拉控件的占位符不该是「请输入」
+    out["placeholder"] = "请选择" if field.placeholder in ("", "请输入") else field.placeholder
+    # 样本里这三个键都在，缺了会让级联初始化不生效
+    out["init_linkage"] = True
+    out["selection"] = True
+    # 样本里级联下拉都是可搜索的（选项动辄十几二十条，不能靠滚动）
+    out["filterable"] = True
+    out.setdefault("cascadeEnabled", False)   # 根节点显式 false，与样本一致
+    out.setdefault("link_config", None)
+    out.setdefault("options", [])
+
+
+def _apply_options(base: dict, field: FormField, parents: set[str] | None = None) -> dict:
+    out = copy.deepcopy(base)
+    t = field.field_type
+
+    out["required"] = "true" if field.required else "false"
+    if field.placeholder:
+        out["placeholder"] = field.placeholder
+    if field.readonly:
+        out["disabled"] = True
+
+    if t == "select":
+        if field.value_source:
+            out["value_source"] = field.value_source
+            out["datasource"] = "valuesource"
+        else:
+            # 没给来源就清掉骨架里的示例值，否则会残留 project_grade_value 这种
+            # 别的对象的数据源——导入后下拉框能点，但列出来的是项目级别
+            out.pop("value_source", None)
+            out["datasource"] = ""
+        out.setdefault("link_config", dict(_LINK_CONFIG_LIST))
+        out.setdefault("options", [])
+        out.setdefault("multiple", False)
+    elif t == "dictionary":
+        # 字典控件：字典 key 直接放进 dictionary 键（线上真实结构），
+        # 不是 value_source——dictionary 是选项字典，不是值来源数据集
+        if field.value_source:
+            out["dictionary"] = field.value_source
+        out.setdefault("multiple", False)
+    elif t == "linkdata":
+        if field.value_source:
+            out["linkdata"] = field.value_source
+        out.setdefault("link_config", dict(_LINK_CONFIG_LIST))
+        out.setdefault("multiple", "N")
+    elif t == "dropSelector":
+        out.setdefault("selector_type", "user")
+        out.setdefault("multiple", False)
+    elif t == "dropSelectOrg":
+        out.setdefault("multiple", False)
+
+    # 级联下拉：系统只认这两个键。
+    # 线上样本（项目表单包含级联关系…zip）里，根节点是 cascadeEnabled=false +
+    # 无 cascadeParentCode；只有子节点写 true + 父控件编码。所以这里只在
+    # 填了父字段时才打开开关，不填就保持骨架里的 false，避免脏数据。
+    if field.cascade_parent:
+        out["cascadeEnabled"] = True
+        out["cascadeParentCode"] = field.cascade_parent
+    if _is_cascade_control(field, parents):
+        _dict_cascade_shape(out, field)
+
+    # 显式覆盖优先级最高
+    out.update(field.options or {})
+    return out
+
+
+def _is_dic_field(field: FormField) -> bool:
+    """这个下拉的选项是不是来自字典（层级字典才能级联）。"""
+    if field.field_type == "dictionary":
+        return True
+    return (field.options or {}).get("datasource") == "dictionary"
+
+
+# 规则里引用的「条件字段」是控件的快照，系统靠它显示「战略类别 不等于 新品」
+# 这种人话。类型/图标对不上会让条件显示成一串编码，所以给一份映射表。
+_RULE_TYPES: dict[str, tuple[str, str, str]] = {
+    "text": ("text", "string", "iform-icon-font"),
+    "textarea": ("textarea", "string", "iform-icon-font"),
+    "editor": ("editor", "text", "iform-icon-font"),
+    "number": ("number", "number", "iform-icon-number"),
+    "datePicker": ("datePicker", "date", "iform-icon-calendar"),
+    "date": ("datePicker", "date", "iform-icon-calendar"),
+    "select": ("select", "string", "iform-icon-radio"),
+    "dictionary": ("dictionary", "dic", "iform-icon-radio"),
+    "dropSelector": ("dropSelector", "string", "iform-icon-user"),
+    "dropSelectOrg": ("dropSelectOrg", "string", "iform-icon-user"),
+    "dropSelectGroup": ("dropSelectGroup", "string", "iform-icon-user"),
+    "selectObject": ("selectObject", "object", "iform-icon-link"),
+    "linkdata": ("linkdata", "object", "iform-icon-link"),
+    "autoNumber": ("autoNumber", "string", "iform-icon-font"),
+}
+
+
+def _rule_field_snapshot(field: FormField) -> dict:
+    """生成 formRules[].condition.rules[].field —— 条件字段的完整快照。"""
+    dic = _is_dic_field(field)
+    ftype, fdata, icon = _RULE_TYPES.get(field.field_type, ("text", "string", "iform-icon-font"))
+    if dic:
+        ftype, fdata, icon = "dictionary", "dic", "iform-icon-radio"
+
+    opts: dict = {
+        "isMultiple": False,
+        "isDefault": False,
+        "uniqueCheck": False,
+        "columns": [],
+        "identities": [],
+        "format": None,
+        "formula": None,
+        "cascadeEnabled": bool(field.cascade_parent),
+        "cascadeParentCode": field.cascade_parent,
+    }
+    if dic:
+        opts["optionSource"] = "BO_ATTR_DIC_TYPE"
+        opts["objectType"] = field.value_source
+        opts["dictionary"] = field.value_source
+    return {
+        "name": field.name,
+        "label": field.label,
+        "field_type": ftype,
+        "field_options": opts,
+        "field_data_type": fdata,
+        "field_object_type": field.value_source or "",
+        "icon": icon,
+        "form_rule_source": "object",
+        "form_display_label": field.label,
+    }
+
+
+def _resolve_rule_value(bo: Bo | None, source: str, value: str, form: Form,
+                        notices: list[str]) -> str:
+    """条件值允许填中文选项名，出包时换算成系统里的选项值。
+
+    我们生成的字典项，选项值是 md5 短码（630ddeea 这种），用户填不出来也记不住。
+    所以 Excel 里可以写「是」，这里换算成对应短码；换算不了就原样保留
+    （比如引用的是线上已有的共享字典，值本来就是 QT/XP 这种人工码）。
+    """
+    if not value or bo is None:
+        return value
+    from .gen_bo import dict_choice_codes
+
+    codes = dict_choice_codes(bo, source)
+    if not codes:
+        return value
+    if value in codes:
+        return codes[value]
+    if value not in codes.values():
+        notices.append(
+            f"表单 {form.key}: 隐藏规则「{source}」的条件值 {value} 既不是选项名也不是选项值，"
+            f"已按原样写入，条件可能永远不成立（可选选项名：{'、'.join(list(codes)[:6])}）"
+        )
+    return value
+
+
+def build_rules(form: Form, notices: list[str], bo: Bo | None = None) -> list[dict]:
+    """把 HideRule 列表落成 extendAttr.formRules。
+
+    线上表单里，同一个控件挂多条规则时是**并列的多条独立记录**（不是一条里塞
+    多个条件），效果是「满足任一即隐藏」，也就是 OR。所以这里一条 HideRule
+    对应一条 formRules 记录，需要 OR 就写多条。
+    """
+    by_name = {f.name: f for f in form.fields}
+    parents = _cascade_parent_names(form)
+    out: list[dict] = []
+    for rule in form.hide_rules:
+        target = by_name.get(rule.target)
+        source = by_name.get(rule.source)
+        if target is None or source is None:
+            missing = rule.target if target is None else rule.source
+            notices.append(
+                f"表单 {form.key}: 隐藏规则引用了不存在的控件 {missing}，"
+                f"已跳过「隐藏 {rule.target}」这条"
+            )
+            continue
+        op = rule.operator or "equal"
+        if op not in HIDE_OPERATORS:
+            notices.append(
+                f"表单 {form.key}: 隐藏 {rule.target} 的条件算子 {op} 不认识，已按「等于」处理"
+            )
+            op = "equal"
+        is_empty_op = op in EMPTY_OPERATORS
+        resolved = "" if is_empty_op else _resolve_rule_value(
+            bo, source.name, rule.value, form, notices)
+        out.append({
+            "id": short_id(),
+            "controlName": target.name,
+            "controlLabel": target.label,
+            # 目标控件用真正写出去的类型（dic 配了级联会出成 select），
+            # 条件字段的快照仍用字典语义（线上样本就是这么存的）
+            "controlType": _effective_type(target, parents),
+            "action": "hidden",
+            "condition": {
+                "type": "group",
+                "rules": [{
+                    "field": _rule_field_snapshot(source),
+                    # 为空/不为空 不需要值，线上样本里就是 null
+                    "value": None if is_empty_op else (resolved or None),
+                    "operator": op,
+                    "rule_condition": "and",
+                    "rule_id": short_id(),
+                    "operator_label": LABEL_BY_OP.get(op, op),
+                    "value_label": "" if is_empty_op else (rule.value_label or rule.value),
+                }],
+            },
+            "value": "true",
+            "clearOnHide": "global" if rule.clear_on_hide else "none",
+        })
+    return out
+
+
+def _rows_within(fields: list[FormField], form: Form) -> list[list[FormField]]:
+    """一组字段切成行，**每行最多 2 个**（见 ``_max_per_row``）。
+
+    规则：
+      - 普通控件两两一行
+      - 多行文本/附件/子表单等（``_FULL_ROW_TYPES``）独占一行
+      - 标了 ``newline`` 的字段强制起新行
+      - ``layout == 1`` 时每个字段各占一行
+    """
+    limit = _max_per_row(form)
+    rows: list[list[FormField]] = []
+    cur: list[FormField] = []
+    for f in fields:
+        full = f.full_row or f.field_type in _FULL_ROW_TYPES
+        if f.newline and cur:
+            rows.append(cur)
+            cur = []
+        if form.layout == 1 or full:
+            if cur:
+                rows.append(cur)
+                cur = []
+            rows.append([f])
+            continue
+        cur.append(f)
+        if len(cur) >= limit:
+            rows.append(cur)
+            cur = []
+    if cur:
+        rows.append(cur)
+    return rows
+
+
+def _plan_groups(form: Form) -> list[tuple[str, list[list[FormField]]]]:
+    """按「分区」把控件分组，每组再切行。
+
+    分区取控件的 ``group``，同名合并到同一组、顺序按首次出现；
+    全空则整张表单只有一个分区，标题「基本信息」。
+    返回 [(分区标题, 行列表)]。
+    """
+    order: list[str] = []
+    buckets: dict[str, list[FormField]] = {}
+    for f in form.fields:
+        # 先落成标题再分桶：分区留空的并到「基本信息」里，
+        # 否则会出两个都叫基本信息、却分在两处的容器
+        g = (f.group or "").strip() or _DEFAULT_GROUP
+        if g not in buckets:
+            buckets[g] = []
+            order.append(g)
+        buckets[g].append(f)
+    out: list[tuple[str, list[list[FormField]]]] = []
+    for g in order:
+        out.append((g, _rows_within(buckets[g], form)))
+    return out
+
+
+def _plan_rows(form: Form) -> list[list[FormField]]:
+    """兼容旧调用：拍平所有分区的行（不看分区边界的行合并）。"""
+    return [row for _, rows in _plan_groups(form) for row in rows]
+
+
+def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
+           tenant: str = "-999", extend_patch: dict | None = None,
+           script: str = "") -> tuple[str, list[str]]:
+    """返回 (xml 文本, 提示列表)。"""
+    notices: list[str] = []
+    _inherit_cascade(form, bo, notices)
+    # 库里有同 key 的模板 → 沿用它的 id，导入才是「更新」而不是又建一个同名表单
+    form_id = form.exist_key or new_id()
+
+    ext = snip.extend_attr
+    # 骨架来自某个具体表单，其中的自定义脚本/校验规则指向它的字段，必须剔除
+    for risky in ("script", "formRules", "verifys"):
+        ext.pop(risky, None)
+
+    # 条件隐藏：extendAttr.formRules。没规则就写空数组（跟线上一致），
+    # 有规则才打开 clearOnHide 开关。
+    ext["formRules"] = build_rules(form, notices, bo)
+    if form.hide_rules:
+        ext["formRuleClearOnHide"] = any(r.clear_on_hide for r in form.hide_rules)
+    # 隐藏字段的计数口径，线上五个真实表单都是 count，照抄
+    ext.setdefault("setHiddenField", "count")
+
+    # 手册：按钮位置右下角，仅「保存」用主要-蓝色，其余次要-灰色；
+    # 只保留 取消 / 保存并继续 / 保存 三个标准按钮
+    kept = []
+    for btn in ext.get("buttons") or []:
+        if btn.get("alias") not in ("close", "saveAndContinue", "save"):
+            continue
+        btn = dict(btn)
+        btn["style"] = "primary" if btn.get("alias") == "save" else "default"
+        attrs_ = btn.get("attrs")
+        if isinstance(attrs_, dict):
+            if btn["style"] == "primary":
+                attrs_.update({"backgroundColor": "#3388FF", "border_color": "#3388FF", "color": "#ffffff"})
+            else:
+                attrs_.update({"backgroundColor": "#ffffff00", "border_color": "#DDE1EB", "color": "#223355"})
+        kept.append(btn)
+    if kept:
+        ext["buttons"] = kept
+
+    # 手册：标签宽度按表单类型取（新建 106 / 条件专用 160），弹窗为百分比宽度
+    ext["labelWidth"] = form.resolved_label_width()
+    ext["openType"] = ext.get("openType") or "drawer"
+
+    # ---- 按表单类型套样式（PP6/搭建规范手册.pdf「表单属性的配置」）
+    # 四类表单的 class / 尺寸 / 按钮位置都不同，不能共用一套 extendAttr。
+    style = form_style(form.kind)
+    ext["customClass"] = style["customClass"]
+    ext["labelWidth"] = style["labelWidth"]
+    ext["openType"] = style["openType"]
+    ext["width"] = style["width"]
+    ext["widthUnit"] = "%"
+    ext["buttonPosition"] = style["buttonPosition"]
+    # 布局：紧凑=compact / 展开=expand（手册详情页有这两种）
+    ext["compact"] = style["layoutMode"] == "compact"
+    # 单行编辑模式（详情表单要开）
+    ext["form_item_eidt_mode"] = bool(style["singleLineEdit"])
+
+    # 表单脚本：脚本方案 PDF 说明 JForm 必须挂在 extendAttr.script 上
+    if script:
+        ext["script"] = script
+    ext.update(extend_patch or {})
+
+    form_def = wrap(
+        "formDef",
+        [el("tenantId", "", tenant, indent=3)],
+        {
+            "id": form_id,
+            "name": form.name,
+            "key": form.key,
+            "mode": "bo",
+            "status": form.status or "deploy",
+            "typeId": form.type_id,
+            "formType": form.form_type or "form",
+            "shared": "Y",
+            "isMain": "Y",
+            "version": "1",
+            "extendAttr": json_attr(ext),
+        },
+        indent=2,
+    )
+
+    groups = _plan_groups(form)
+    container_type = _CONTAINER_BY_KIND.get(form.kind, "fieldset")
+    bo_code = bo.code if bo else form.bo_code
+    bo_fields = {bf.code: bf for bf in (bo.fields if bo else [])}
+
+    body: list[str] = [form_def]
+    sn = 1
+
+    # 隐藏字段挂在根上（与线上一致：id / version 不在任何分区里）
+    hidden_names = []
+    for which, label in (_HIDDEN_FIELDS if form.auto_hidden else ()):
+        if any(f.name == which for f in form.fields):
+            continue
+        hidden_names.append(which)
+        body.append(el("formField", {
+            "id": new_id(),
+            "formId": form_id,
+            "name": which,
+            "label": label,
+            "fieldType": "hidden",
+            "fieldOptions": json_attr(snip.hidden_options(which)),
+            "sn": sn,
+        }, indent=2))
+        sn += 1
+
+    parents = _cascade_parent_names(form)
+
+    for gi, (title, rows) in enumerate(groups, start=1):
+        container_id, grid_id = new_id(), new_id()
+
+        # ---- 分区容器：card（详情）/ fieldset（新建等）
+        c_opts = snip.layout(container_type)
+        c_opts.setdefault("clearable", True)
+        c_opts.setdefault("controls", True)
+        c_opts.setdefault("selection", True)
+        c_opts.setdefault("mobile", True)
+        c_opts.setdefault("autoCollapse", True)
+        if container_type == "fieldset":
+            c_opts.setdefault("border_style", "none")
+            c_opts.setdefault("position", "left")
+            c_opts.setdefault("type", "default")
+            # 线上立项表单：首个分组不加间距，其余 top_margin=20
+            if gi > 1:
+                c_opts["is_margin"] = True
+                c_opts["top_margin"] = 20
+        c_opts["columns"] = [{"name": None, "label": None, "fields": [grid_id], "span": ""}]
+        body.append(el("formField", {
+            "id": container_id,
+            "formId": form_id,
+            "name": ("card_" if container_type == "card" else "fieldset_") + short_id(),
+            "label": title,
+            "fieldType": container_type,
+            "fieldOptions": json_attr(c_opts),
+            "sn": sn,
+        }, indent=2))
+        sn += 1
+
+        # ---- 表格布局V1.0：columns（扁平引用）+ rows（内嵌完整控件 JSON）
+        flat_cols: list[dict] = []
+        out_rows: list[dict] = []
+        leaf: list[tuple[FormField, str, dict]] = []   # (字段, 控件id, fieldOptions)
+
+        for row in rows:
+            row_id = short_id()
+            cells: list[dict] = []
+            for f in row:
+                cell_id = short_id()
+                span = _span_of(f, form, alone=(len(row) == 1))
+                ftype = _effective_type(f, parents)
+                if ftype != f.field_type:
+                    # 链上的父级自己没填父级，只说「配了级联父级」会显示成空的
+                    if f.cascade_parent:
+                        why = f"配了级联父级 {f.cascade_parent}"
+                    else:
+                        kids = [x.name for x in form.fields if x.cascade_parent == f.name]
+                        why = f"是 {'、'.join(kids)} 的级联父级" if kids else "在级联链上"
+                    notices.append(
+                        f"控件 {f.name}: {why}，"
+                        f"控件类型已按线上样本从「{f.field_type}」出成「select + 选项来源=数据字典」"
+                        f"（树形字典控件没有级联概念）"
+                    )
+                opts, fallback = snip.field_options(ftype)
+                if fallback:
+                    notices.append(
+                        f"控件 {f.name}: 样例中没有 {ftype} 类型骨架，已用 text 兜底，导入后请核对"
+                    )
+                fo = _apply_options(opts, f, parents)
+                bf = bo_fields.get(f.name)
+                cell_id_el = new_id()
+                cells.append({
+                    "id": cell_id,
+                    "span": span,
+                    "colSpan": 1,
+                    "fields": [_widget_json(f, ftype, fo, bo_code, cell_id,
+                                            bf.resolved_field_name() if bf else "")],
+                })
+                flat_cols.append({
+                    "name": None, "label": "单元格",
+                    "fields": [cell_id_el], "span": span,
+                })
+                leaf.append((f, cell_id_el, fo, ftype))
+            out_rows.append({"id": row_id, "columns": cells})
+
+        g_opts = snip.layout("grid_layout")
+        g_opts.setdefault("clearable", True)
+        g_opts.setdefault("controls", True)
+        g_opts.setdefault("selection", True)
+        g_opts.setdefault("mobile", True)
+        g_opts.setdefault("autoCollapse", True)
+        g_opts["columns"] = flat_cols
+        g_opts["rows"] = out_rows
+        body.append(el("formField", {
+            "id": grid_id,
+            "formId": form_id,
+            "parentId": container_id,
+            "name": "gridLayout_" + short_id(),
+            "label": "表格布局V1.0",
+            "desc": "",
+            "fieldType": "grid_layout",
+            "fieldOptions": json_attr(g_opts),
+            "sn": 1,
+        }, indent=2))
+
+        # ---- 控件本体：parentId 指向布局控件，sn 在布局内 1..N
+        for leaf_sn, (f, cid, fo, ftype) in enumerate(leaf, start=1):
+            body.append(el("formField", {
+                "id": cid,
+                "formId": form_id,
+                "parentId": grid_id,
+                "name": f.name,
+                "label": f.label,
+                "desc": f.desc or "",
+                "fieldType": ftype,
+                "fieldOptions": json_attr(fo),
+                "sn": leaf_sn,
+            }, indent=2))
+
+    if bo is not None:
+        body.append(el("formBo", {
+            "id": new_id(), "formId": form_id, "boId": bo_id, "boCode": bo.code,
+        }, indent=2))
+    else:
+        notices.append(f"表单 {form.key}: 未找到绑定对象 {form.bo_code}，已跳过 formBo")
+
+    def rights(name: str, label: str, field_type: str | None) -> str:
+        perm = {
+            "field_type": field_type,
+            "label": label,
+            "read": [{"type": "none", "rightsId": "", "rightsName": ""}],
+            "edit": [{"type": "all", "rightsId": "", "rightsName": ""}],
+            "required": [{"type": "none"}],
+            "hide": [{"type": "none"}],
+        }
+        return wrap("formRights", [el("tenantId", "", tenant, indent=3)], {
+            "id": new_id(),
+            "formKey": form.key,
+            "code": bo.code if bo else form.bo_code,
+            "name": name,
+            "permission": json_attr(perm),
+            "type": "field",
+            "rightsType": "form",
+            "flowKey": "",
+            "nodeId": "",
+            "parentFlowKey": "",
+        }, indent=2)
+
+    body.append(rights("_p_title", "表单标题", None))
+    for which in hidden_names:
+        body.append(rights(which, which, "hidden"))
+    for _, rows in groups:
+        for group in rows:
+            for f in group:
+                # 权限里的 field_type 要和真正写出去的控件类型一致，否则设计器里
+                # 打开字段权限会显示成另一种控件
+                body.append(rights(f.name, f.label, _effective_type(f, parents)))
+
+    xml = "\n".join([
+        DECL_STANDALONE,
+        "<form>",
+        "  <formDefs>",
+        *body,
+        "  </formDefs>",
+        "</form>",
+    ]) + "\n"
+    return xml, notices

@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PP6 导入包生成器</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Ctext x='16' y='23' font-size='20' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle'%3EP%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">P</div>
+    <div>
+      <h1>PP6 导入包生成器</h1>
+      <p>Excel 模板 → PowerProject V6 可导入 zip</p>
+    </div>
+  </div>
+  <nav class="modes">
+    <button class="mode active" data-mode="import">导入包生成</button>
+    <button class="mode" data-mode="query">数据查询</button>
+    <button class="mode" data-mode="settings">
+      设置<span class="ai-dot" id="aiDot"></span>
+    </button>
+  </nav>
+  <div class="top-actions">
+    <button class="btn ghost" id="btnInspect">反解现有导出包</button>
+    <input type="file" id="inspectInput" accept=".zip" hidden>
+  </div>
+</header>
+
+<main id="mode-settings" hidden>
+  <div class="set-layout">
+    <aside class="set-nav">
+      <button class="set-tab active" data-set="llm">大模型</button>
+      <button class="set-tab" data-set="db">数据库连接</button>
+      <button class="set-tab" data-set="about">关于</button>
+    </aside>
+
+    <section class="set-main">
+      <!-- 大模型 -->
+      <div class="card" data-set-panel="llm">
+        <div class="card-head">
+          <div>
+            <h3>大模型</h3>
+            <div class="sub">导入包生成、数据查询共用这一个 Key，配一次两边都能用</div>
+          </div>
+          <span class="set-status" id="setLlmStatus">未配置</span>
+        </div>
+
+        <div class="set-body">
+          <div class="q-saved" id="qLlmSaved" hidden>
+            <span class="dot"></span>
+            <span id="qLlmSavedText">已记住你的 Key</span>
+            <button class="link-btn" id="qLlmForget">清除</button>
+          </div>
+
+          <div class="q-form set-form">
+            <label>平台
+              <select id="qProvider">
+                <option value="">— 选一个免费平台，自动填好 —</option>
+              </select>
+            </label>
+            <div class="q-hint" id="qProvHint" hidden></div>
+
+            <label>接口地址<input id="qBase" placeholder="https://api.deepseek.com/v1"></label>
+            <label>API Key<input id="qKey" type="password" placeholder="粘贴平台的 Key（sk-...）"></label>
+            <label>模型
+              <select id="qModelPick" hidden></select>
+              <input id="qModel" placeholder="glm-4.7-flash">
+            </label>
+
+            <div class="q-row">
+              <button class="btn primary" id="qSaveLlm">保存并测试</button>
+            </div>
+            <div class="q-hint" id="qLlmStatus" hidden></div>
+          </div>
+
+          <div class="set-note">
+            <strong>不配也能用：</strong>导入包可以手填 Excel 走模板，数据查询可以只用本地规则。
+            配了之后才能用「一句话生成业务对象」和 AI 兜底查询。
+          </div>
+        </div>
+      </div>
+
+      <!-- 数据库 -->
+      <div class="card" data-set-panel="db" hidden>
+        <div class="card-head">
+          <div>
+            <h3>数据库连接</h3>
+            <div class="sub">数据查询功能要用；填完点「连接并读取结构」</div>
+          </div>
+        </div>
+        <div class="set-body">
+          <div class="q-form set-form">
+            <label>主机<input id="qHost" placeholder="127.0.0.1"></label>
+            <label>端口<input id="qPort" placeholder="3306"></label>
+            <label>用户<input id="qUser" placeholder="root"></label>
+            <label>密码<input id="qPass" type="password" placeholder="留空则不修改"></label>
+            <label>数据库<input id="qDb" placeholder="powerproject6"></label>
+            <div class="q-row">
+              <button class="btn primary" id="qTest">连接并读取结构</button>
+            </div>
+          </div>
+          <div class="q-stats set-stats" id="qStats" hidden></div>
+        </div>
+      </div>
+
+      <!-- 关于 -->
+      <div class="card" data-set-panel="about" hidden>
+        <div class="card-head"><div><h3>关于</h3><div class="sub">PP6 导入包生成器</div></div></div>
+        <div class="set-body">
+          <div class="set-kv">
+            <div><span>两个功能</span><b>导入包生成 · 数据查询</b></div>
+            <div><span>共用能力</span><b>大模型只配一次</b></div>
+            <div><span>配置位置</span><b><code>~/.pp6kit/nlq.json</code></b></div>
+          </div>
+          <div class="set-note">
+            配置文件里有你的 API Key，换机器时可以直接拷过去；共享电脑上建议用完点「清除」。
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<main id="mode-import">
+  <!-- 步骤条：只有三步，任何时候都能看到自己在哪 -->
+  <nav class="steps" id="steps">
+    <div class="step active" data-step="1"><b>1</b><span>描述或上传</span></div>
+    <div class="step-line"></div>
+    <div class="step" data-step="2"><b>2</b><span>预览并修改</span></div>
+    <div class="step-line"></div>
+    <div class="step" data-step="3"><b>3</b><span>下载导入包</span></div>
+  </nav>
+
+  <!-- ========== 第 1 步：对话即入口，说完就开始生成 ========== -->
+  <section id="stepInput">
+    <section class="ai-box ai-chat-launch" id="aiChatLaunch">
+      <div class="ai-chat-head">
+        <h3>告诉我要建什么，或者直接说哪里要改</h3>
+        <button class="link" id="aiChatClear1">清空对话</button>
+      </div>
+      <div class="sub chat-launch-sub">
+        不用先下载模板、也不用先点生成。一句话说完就出结果，不满意接着聊，改好直接出包。
+      </div>
+
+      <div class="ai-chat-log" id="aiChatLog1"></div>
+
+      <div class="ai-chat-input">
+        <textarea id="aiChatText1" rows="3"
+          placeholder="例：做一个采购申请单，记录申请单号、申请人、所属项目、物品名称、数量、单价、总金额、期望到货日期、紧急程度、备注&#10;&#10;也可以把 Excel 拖进下面的区域，或者贴一段表结构"></textarea>
+        <div class="ai-chat-foot">
+          <span class="sub" id="aiChatHint1">Enter 发送，Shift+Enter 换行</span>
+          <div class="ai-btns">
+            <button class="btn ghost" id="btnPickSheet">选择 Excel</button>
+            <button class="btn primary" id="aiChatSend1">开始生成</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ai-chat-quick">
+        <span class="sub">常用：</span>
+        <button class="chip-btn" data-q="把必填字段都标上">补必填</button>
+        <button class="chip-btn" data-q="字段太多，合并或删掉重复的">精简字段</button>
+        <button class="chip-btn" data-q="按业务归类重新分组">重新分组</button>
+        <button class="chip-btn" data-q="名称太口语化，改成正式的业务术语">规范命名</button>
+      </div>
+
+      <div class="dz-inline dz-inline-quiet" id="dzInline">
+        <div class="dz-inline-foot">
+          <span class="sub" id="aiFileTag">支持拖入 .xlsx / .xlsm（会读表头和样例数据）</span>
+          <span class="sub" id="aiHint">字段类型自动判断：金额→数字，审批人→用户，备注→大文本，关联项目→对象；
+            一串固定取值（状态/类别/部门名）→ 选项，候选值一并带上</span>
+        </div>
+        <input type="file" id="aiSheetInput" accept=".xlsx,.xlsm" hidden>
+      </div>
+    </section>
+
+    <section class="ai-box ai-box-lite">
+      <div class="ai-head">
+        <div>
+          <h3>已经有一份改好的 Excel？</h3>
+          <div class="sub">之前导出的预览表、或者你自己整理的表，直接拖进来继续出包，不用重来一遍</div>
+        </div>
+      </div>
+      <div class="reimport" id="reimport">
+        <label class="reimport-pick">
+          <input type="file" id="fileInput" accept=".xlsx,.xlsm" hidden>
+          <span>选择 Excel 文件</span>
+        </label>
+        <span class="sub" id="reimportHint">已有 <code>1_业务对象 / 2_字段</code> 等标准页签的，会直接进预览</span>
+        <button class="link" id="btnDemo">载入示例看效果</button>
+      </div>
+    </section>
+  </section>
+
+  <!-- ========== 第 2 步：预览（AI 结果） ========== -->
+  <section id="stepPreview" hidden>
+    <div class="ai-result" id="aiResult"></div>
+    <div class="panel" id="aiRelPanel" hidden>
+      <div class="rel-toolbar"><span class="sub">识别到的新对象与已有对象的关联，勾选「建立」后才会生成父子/平行关系</span></div>
+      <div id="aiRelBox"></div>
+    </div>
+
+    <!-- 结果不满意时的持续对话；首屏已经能聊，这里保留是为了改的时候不用滚回去 -->
+    <section class="ai-chat" id="aiChat">
+      <div class="ai-chat-head">
+        <h3>继续说哪里要改</h3>
+        <button class="link" id="aiChatClear">清空对话</button>
+      </div>
+      <div class="ai-chat-log" id="aiChatLog"></div>
+      <div class="ai-chat-input">
+        <textarea id="aiChatText" rows="2"
+          placeholder="例：把「申请人电话」改成必填；再加一个「预计金额」，数字，两位小数；「战略类别」改成多选"></textarea>
+      </div>
+      <div class="ai-chat-foot">
+        <span class="sub" id="aiChatHint">在现有基础上改，已经调好的字段不会被推翻</span>
+        <button class="btn primary" id="aiChatSend">发送修改</button>
+      </div>
+    </section>
+
+    <div class="step-foot">
+      <button class="btn ghost" id="btnBackInput">← 回去接着说</button>
+      <div class="ai-btns">
+        <button class="btn ghost" id="btnExportXlsx2">导出 Excel 线下改</button>
+        <button class="btn primary" id="btnToPack">下一步：生成导入包 →</button>
+      </div>
+    </div>
+  </section>
+
+  <div class="loading" id="loading" hidden>
+    <div class="spinner"></div>
+    <span id="loadingText">正在解析…</span>
+  </div>
+
+  <!-- ========== 第 3 步：出包（模板导入的预览也在这里） ========== -->
+  <section id="result" hidden>
+    <div class="file-row">
+      <div class="file-name">
+        <span class="dot"></span>
+        <strong id="fileName"></strong>
+        <span class="muted" id="fileSize"></span>
+      </div>
+      <button class="link" id="btnReset">← 返回上一步</button>
+    </div>
+
+    <div class="stats" id="stats"></div>
+    <div class="banner" id="banner" hidden></div>
+
+    <div class="card mod-card">
+      <div class="card-head">
+        <div>
+          <h3>要导出哪些模块</h3>
+          <div class="sub">
+            默认全选，出的是<b>一个整包</b>（直接上传即可）。
+            只想更新某一块时，取消勾选其它模块，会按模块单独出包。
+          </div>
+        </div>
+        <div class="mod-actions">
+          <button class="link" id="modAll">全选</button>
+          <button class="link" id="modNone">全不选</button>
+        </div>
+      </div>
+      <div class="mod-list" id="modList"></div>
+      <div class="pack-bar">
+        <span class="sub" id="packHint">已选全部模块 → 出整包</span>
+        <button class="btn primary" id="btnPack">下载导入包 zip</button>
+      </div>
+    </div>
+
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-panel="objects">业务对象</button>
+      <button class="tab" data-panel="relations">所属关系 <span class="badge" id="relBadge">0</span></button>
+      <button class="tab" data-panel="fields">字段体检 <span class="badge" id="fieldBadge">0</span></button>
+      <button class="tab" data-panel="forms">表单预览</button>
+      <button class="tab" data-panel="lists">列表 / 数据集</button>
+      <button class="tab" data-panel="issues">校验结果 <span class="badge" id="issueBadge">0</span></button>
+    </nav>
+
+    <div class="panel" data-panel="objects"></div>
+    <div class="panel" data-panel="relations" hidden>
+      <div class="rel-toolbar">
+        <span class="sub">识别到的新对象与已有对象的关联，勾选「建立」后才会生成父子/平行关系</span>
+        <button class="btn ghost" id="btnConfirmedExcel" hidden>下载已确认 Excel</button>
+      </div>
+      <div id="relBox"></div>
+    </div>
+    <div class="panel" data-panel="fields" hidden></div>
+    <div class="panel" data-panel="forms" hidden></div>
+    <div class="panel" data-panel="lists" hidden></div>
+    <div class="panel" data-panel="issues" hidden></div>
+  </section>
+</main>
+
+<main id="mode-query" hidden>
+  <div class="q-layout">
+    <aside class="q-side">
+      <div class="card" id="qConnCard">
+        <div class="card-head"><div><h3>连接状态</h3><div class="sub">数据库和大模型都在「设置」里配</div></div></div>
+        <div class="set-body" style="padding:14px 18px">
+          <div class="q-stats set-stats" id="qConnStats" hidden></div>
+          <div class="q-hint" id="qConnHint">还没连接数据库</div>
+          <button class="btn ghost" id="qOpenSettings" style="margin-top:10px">打开设置</button>
+        </div>
+      </div>
+    </aside>
+
+    <section class="q-main">
+      <div class="card">
+        <div class="card-head">
+          <div><h3>用一句话描述你要查什么</h3>
+            <div class="sub">例：每个项目状态有多少个项目 · 查出所有已立项的项目及其负责人</div></div>
+        </div>
+        <div class="q-ask">
+          <textarea id="qQuestion" rows="3" placeholder="例如：列出执行中的项目，按创建时间倒序"></textarea>
+          <div class="q-askbtns">
+            <button class="btn primary" id="qAsk">生成 SQL 并执行</button>
+            <button class="btn ghost" id="qAskAi" title="直接交给大模型，跳过规则">用 AI 重答</button>
+          </div>
+        </div>
+        <div class="q-tpl" id="qTemplates"></div>
+      </div>
+
+      <div class="card" id="qSqlCard" hidden>
+        <div class="card-head">
+          <div><h3>SQL</h3><div class="sub" id="qSqlMeta"></div></div>
+          <div class="q-sql-actions">
+            <button class="btn ghost" id="qCopySql">复制 SQL</button>
+            <button class="btn ghost" id="qSaveExample">存为示例</button>
+            <button class="btn ghost" id="qRun">重新执行</button>
+          </div>
+        </div>
+        <div class="q-origin" id="qOrigin" hidden></div>
+        <textarea id="qSql" rows="7" spellcheck="false"></textarea>
+        <div class="q-fixbar" id="qFixBar" hidden>
+          <input id="qFixNote" type="text" maxlength="200"
+                 placeholder="为什么这么改？（可选，比如「我们只看未关闭的」）">
+          <button class="btn" id="qSaveCorrect">保存修正</button>
+        </div>
+        <div class="q-err" id="qErr" hidden></div>
+        <div class="q-hint" id="qRuleBox" hidden>
+          <div>规则引擎原来的答案（AI 认为不对，可对比）：</div>
+          <textarea id="qRuleSql" rows="3" spellcheck="false"
+                    style="width:100%;margin-top:4px;font-family:ui-monospace,monospace;font-size:11px"></textarea>
+        </div>
+      </div>
+
+      <div class="card" id="qResultCard" hidden>
+        <div class="card-head">
+          <div><h3>结果</h3><div class="sub" id="qResultMeta"></div></div>
+          <button class="btn ghost" id="qExport">导出 CSV</button>
+        </div>
+        <div class="tbl-wrap q-result" id="qResult"></div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<footer class="actionbar" id="actionbar" hidden>
+  <div class="actionbar-left">
+    <strong id="barSummary"></strong>
+    <span class="muted" id="barHint"></span>
+  </div>
+  <button class="btn primary" id="btnBuild">导出全部模块</button>
+</footer>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="/static/relations.js"></script>
+<script src="/static/app.js"></script>
+<script src="/static/query.js"></script>
+</body>
+</html>
