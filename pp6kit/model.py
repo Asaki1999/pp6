@@ -327,6 +327,15 @@ class BoField:
             opts["cascadeEnabled"] = True
             opts["cascadeParentCode"] = self.cascade_parent
 
+        # isDefault：库里 76% 的字段带这个开关（datetime 90% 是 true = 新建记录时
+        # 自动填当前时间；user/number 也以 true 为主）。2026-11-11 结构 diff 发现
+        # 生成的 XML 整个缺这个键——导入后新建记录时字段不带默认值，和真实系统
+        # 行为不一致。Excel「默认值」填了值 → true；datetime 默认 true；
+        # 其余保守给 false（不臆造 number=0 之类的语义）。
+        opts.setdefault(
+            "isDefault",
+            bool(self.default_value) or self.type_new == "datetime")
+
         return {
             "code": self.code,
             "fieldName": self.resolved_field_name(),
