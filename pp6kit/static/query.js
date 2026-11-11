@@ -23,6 +23,7 @@ async function qApi(path, body) {
 function switchMode(mode) {
   document.querySelectorAll(".mode").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
   document.getElementById("mode-import").hidden = mode !== "import";
+  document.getElementById("mode-patch").hidden = mode !== "patch";
   document.getElementById("mode-query").hidden = mode !== "query";
   document.getElementById("mode-settings").hidden = mode !== "settings";
   const bar = document.getElementById("actionbar");

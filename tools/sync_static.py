@@ -21,7 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "pp6kit" / "static"
-FILES = ("index.html", "app.js", "query.js", "style.css", "relations.js")
+FILES = ("index.html", "app.js", "patch.js", "query.js", "style.css", "relations.js")
 
 # 打包产物的两种形态：macOS .app 和 onedir 目录
 TARGETS = (

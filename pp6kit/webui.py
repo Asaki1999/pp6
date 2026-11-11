@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import ai_bo, ai_form, ai_list, ai_sheet, objects
+from . import patch as bo_patch
 from .builder import build, package_name
 from .model import (
     FORM_BUNDLE,
@@ -443,6 +444,73 @@ def inspect_zip(data: bytes) -> tuple[bytes, str]:
         return buf.getvalue(), f"反解-{tmp.stem}.xlsx"
     finally:
         tmp.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------- 已有包加字段
+# 「反解」是把包拆成 Excel 再重造一份；这里走的是另一条路：**在原包上打补丁**。
+# 上传一次 zip 拿 token，之后预览/出包/导 Excel 都用 token 复用，
+# 免得每次操作都把几 MB 的包重新 POST 一遍。
+
+_PATCH_DIR = work_dir() / "patch-cache"
+_PATCH_KEEP = 8
+
+
+def _patch_store(data: bytes) -> str:
+    import hashlib
+
+    _PATCH_DIR.mkdir(parents=True, exist_ok=True)
+    token = hashlib.sha1(data).hexdigest()[:20]
+    path = _PATCH_DIR / f"{token}.zip"
+    if not path.exists():
+        path.write_bytes(data)
+    # 只留最近几份，长跑的桌面壳不该把临时目录越撑越大
+    cached = sorted(_PATCH_DIR.glob("*.zip"),
+                    key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in cached[_PATCH_KEEP:]:
+        old.unlink(missing_ok=True)
+    return token
+
+
+def _patch_load(token: str) -> bytes:
+    import re
+
+    if not re.fullmatch(r"[0-9a-f]{20}", str(token or "")):
+        raise ValueError("原包缓存标识无效，请重新上传 zip")
+    path = _PATCH_DIR / f"{token}.zip"
+    if not path.is_file():
+        raise ValueError("原包缓存已过期，请重新上传 zip")
+    return path.read_bytes()
+
+
+def _patch_spec(payload: dict) -> tuple[bytes, dict]:
+    spec = dict(payload or {})
+    return _patch_load(spec.get("token")), spec
+
+
+def patch_inspect(data: bytes) -> dict:
+    snap = bo_patch.inspect_package(data)
+    snap["token"] = _patch_store(data)
+    return snap
+
+
+def patch_fields(data: bytes) -> dict:
+    return bo_patch.fields_from_excel(data)
+
+
+def patch_dry_run(payload: dict) -> dict:
+    raw, spec = _patch_spec(payload)
+    return bo_patch.dry_run(raw, spec)
+
+
+def patch_build(payload: dict) -> tuple[bytes, str]:
+    raw, spec = _patch_spec(payload)
+    body, name, _report = bo_patch.build_patch(raw, spec)
+    return body, name
+
+
+def patch_workbook(payload: dict) -> tuple[bytes, str]:
+    raw, spec = _patch_spec(payload)
+    return bo_patch.patched_workbook(raw, spec)
 
 
 # ---------------------------------------------------------------- 按模块导入
@@ -1387,6 +1455,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, template_bytes(),
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                        "PP6-填写模板.xlsx")
+        elif path == "/api/patch/fields-template":
+            self._send(200, bo_patch.fields_template_bytes(),
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       "PP6-新增字段表.xlsx")
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -1423,6 +1495,20 @@ class Handler(BaseHTTPRequestHandler):
                 body, name = inspect_zip(self._body())
                 self._send(200, body,
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", name)
+            elif self.path == "/api/patch/inspect":
+                self._json(patch_inspect(self._body()))
+            elif self.path == "/api/patch/fields":
+                self._json(patch_fields(self._body()))
+            elif self.path == "/api/patch/dry-run":
+                self._json(patch_dry_run(json.loads(self._body())))
+            elif self.path == "/api/patch/build":
+                body, name = patch_build(json.loads(self._body()))
+                self._send(200, body, "application/zip", name)
+            elif self.path == "/api/patch/workbook":
+                body, name = patch_workbook(json.loads(self._body()))
+                self._send(200, body,
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           name)
             elif self.path == "/api/objects/refresh":
                 # 手工刷新：连目标库重新拉一遍对象清单
                 try:

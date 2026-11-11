@@ -287,6 +287,59 @@ bin/pp6 dbmap        # 生成 docs/数据库结构图谱.md
 
 11 个绕过尝试全部拦截（多语句、写操作、系统库、危险函数、导出文件）。
 
+## 给已有包加字段（增量补丁，不是重新生成）
+
+顶部「已有包加字段」这一栏解决的是另一种需求：**手上已经有一份能导入的 zip，
+只想给里面的业务对象补几个字段**。原包可能是系统「推送工作区」导出的，也可能是
+本工具以前出的整包。
+
+### 为什么不用「反解现有导出包」
+
+反解会把 zip 拆成 Excel、再由生成器**重新造一份包**。对原生推送包来说这是有损的：
+对象角色、操作日志模板、字典展示样式、表单权限这些我们没建模的内容会丢。
+
+增量补丁走的是另一条路 —— **只改被点名的 `bo/*.xml`**：
+
+- 在 `bodefentity` 最后一个 `<attribute/>` 后插入新字段，字段行由
+  `gen_bo._attr_line(BoField.resolved())` 生成，和从 Excel 新建出来的属性集合完全一致；
+- 选项字段同时补 `dictionaryTypeList` / `dictionaryList`（含 `attrs` 展示样式）；
+- 单行紧凑格式的原生 XML 仍保持单行，多行格式的生成器产物仍保持多行；
+- 其余条目**逐字节复制**，条目顺序、时间戳、压缩方式、Unix 权限位一并保留；
+- zip comment 沿用系统原生 `CONFIG_SYNC_NOTE:` 格式，里面是这次的改动报告。
+
+`tools/check_patch.py` 会把上面每一条都断言一遍（当前 57/57），
+包括「除插入外没有删除/替换」「新 sn 不撞已有 sn」「新包可完整解压」。
+
+### 页面怎么用
+
+1. 上传/拖入原 zip → 列出包里所有 `bo/*.xml`（重复推送的副本会标出来）；
+2. 勾要加字段的对象（可多选，同一批字段会加到每个选中的对象上）；
+3. 填字段：表格逐行加、从 Excel 粘贴（Tab 分隔）、或「下载字段表模板 → 填好 → 导入」；
+4. 「预览改动」先看报告，再「下载新 zip」。
+
+四个开关：
+
+| 开关 | 作用 |
+|---|---|
+| 重名字段 | `跳过`（默认，只加新字段）/ `覆盖`（按新定义替换同名行，保留原 sn 与物理列名） |
+| 包内容 | `保留全部条目`（默认）/ `只留 bo/ 目录`（最小增量包，导入时不会碰表单、列表） |
+| 同步改所有副本 | 包里同一对象被重复推送出多份 XML 时，一起打补丁 |
+| 每个对象单独出包 | 一次下载多个 zip，每个只含一个对象的改动 |
+
+另外还有「下载带新字段的规格 Excel」：把原包反解成完整规格表、把新字段并进
+`2_字段`（勾选「同步补表单控件」时也会加到 `4_表单控件`），适合接着调整表单/列表，
+再走主流程重新出一份完整包。
+
+> 新字段只进**业务对象**。想让它出现在表单/列表上，要么用上面的规格 Excel 重新出包，
+> 要么在系统表单设计器里手动加控件 —— 增量包本身不会动表单 XML。
+
+### 字段表模板列顺序
+
+`字段编码 / 字段名称 / 数据类型 / 选项值 / 关联对象或字典 / 长度 / 精度 / 默认值 /
+必填 / 建索引 / 物理列名 / 字段说明`。数据类型可写中文（`字符串`、`选项`、`对象`…）
+也可写代码（`varchar`、`dic`…）。字段编码必须英文小驼峰且不能与包里已有字段重名，
+物理列名留空自动生成；撞了已有物理列名会直接报错而不是悄悄改列。
+
 ## 桌面应用（发给同事用这个）
 
 `dist/PP6 导入包生成器.app` 是自带 Python 运行时的独立程序，对方无需安装任何东西：
@@ -374,13 +427,15 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m pp6kit probe              # 183 条中文问答语料回归（当前 183/183）
 .venv/bin/python -m pp6kit audit              # 规则引擎盲区审计
 .venv/bin/python -m pp6kit audit --sweep      # 全表全列扫描（查幽灵列）
-.venv/bin/python tools/selftest.py            # 端到端自检（7 项）
+.venv/bin/python tools/selftest.py            # 端到端自检（当前 3/5 基线，失败两项是原生包同名对象告警）
+.venv/bin/python tools/check_patch.py         # 增量补丁保真度（当前 57/57）
 .venv/bin/python tools/sync_static.py --check # 打包产物里的前端是否最新
 ```
 
 ## HTTP 接口
 
-都是裸字节 POST（不走 multipart），文件直接当 body。
+文件类接口都是裸字节 POST（不走 multipart），文件直接当 body；
+配置类接口用 JSON body（下面标了 `JSON`）。
 
 | 接口 | 入参 | 返回 |
 |---|---|---|
@@ -392,6 +447,12 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 | `POST /api/ai/bo/apply` | `{bo}` | 填好的完整 Excel |
 | `POST /api/nlq/ask` | `{question, engine}` | SQL + 结果（engine: hybrid/local/llm） |
 | `POST /api/nlq/test-llm` | 可空 | 连通性测试（空则用已存配置） |
+| `GET /api/patch/fields-template` | — | 新增字段表模板 xlsx |
+| `POST /api/patch/inspect` | zip 字节 | 包内对象清单 + `token`（原包按内容哈希缓存，后续不必重传） |
+| `POST /api/patch/fields` | xlsx 字节 | 从增量字段表读出的字段清单 |
+| `POST /api/patch/dry-run` | `JSON` `{token, targets, fields, mode, scope, allCopies}` | 改动报告（与真实出包同源） |
+| `POST /api/patch/build` | 同上 | 打好补丁的新 zip |
+| `POST /api/patch/workbook` | 同上 + `syncForm` | 带新字段的完整规格 Excel |
 
 > `engine` 参数名不是 `mode`，传错了会静默走默认值。
 

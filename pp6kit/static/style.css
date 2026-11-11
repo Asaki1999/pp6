@@ -1339,3 +1339,62 @@ select.ai-in { cursor: pointer; }
 .rel-type { margin-top: 10px; font-size: 12px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
 .rel-type label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 .chip.warn { background: #fff7ed; color: #c2410c; }
+
+/* ---------- 已有包加字段 ---------- */
+.patch-wrap { max-width: 1220px; margin: 0 auto; padding: 22px 24px 64px; display: grid; gap: 16px; }
+.patch-body { padding: 16px 18px 18px; display: grid; gap: 14px; }
+.patch-pick {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  border: 1px dashed var(--border-strong); border-radius: var(--radius); padding: 20px 22px;
+}
+.patch-pick.dragging { border-color: var(--accent); background: var(--accent-soft); }
+.patch-file { display: flex; align-items: center; gap: 9px; width: 100%; font-size: 13px; }
+.patch-notes {
+  background: var(--warn-soft); color: var(--warn); border-radius: 8px;
+  padding: 9px 14px; font-size: 12.5px;
+}
+.patch-obj-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 11px; }
+.patch-obj { border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px; background: var(--surface); }
+.patch-obj.on { border-color: var(--accent); background: var(--accent-soft); }
+.patch-obj-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; cursor: pointer; }
+.patch-obj-title { display: flex; align-items: baseline; gap: 8px; }
+.patch-obj-title code { font-size: 12px; color: var(--muted); }
+.patch-obj-meta { width: 100%; color: var(--muted); font-size: 11.5px; }
+.patch-tag { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+.patch-tag.warn { background: var(--warn-soft); color: var(--warn); }
+.patch-obj details { margin-top: 7px; font-size: 12px; color: var(--muted); }
+.patch-obj summary { cursor: pointer; }
+.patch-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; max-height: 140px; overflow: auto; }
+.patch-chips code { font-size: 11px; background: var(--bg); border: 1px solid var(--border); padding: 1px 6px; border-radius: 5px; }
+.patch-check { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); }
+.patch-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.patch-table { width: 100%; min-width: 980px; border-collapse: collapse; font-size: 12.5px; }
+.patch-table th, .patch-table td { border-bottom: 1px solid var(--border); padding: 6px 5px; }
+.patch-table th { text-align: left; color: var(--muted); font-weight: 500; white-space: nowrap; }
+.patch-table th em { color: var(--danger); font-style: normal; }
+.patch-table input {
+  width: 100%; min-width: 68px; border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 7px; font-size: 12px; background: var(--surface); color: var(--text);
+}
+.patch-table input.num { width: 58px; min-width: 58px; }
+.patch-table td.center { text-align: center; }
+.patch-table td.center input { width: auto; min-width: 0; accent-color: var(--accent); }
+.patch-paste { display: grid; gap: 7px; }
+.patch-paste label { font-size: 12.5px; color: var(--muted); }
+.patch-paste textarea {
+  width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px;
+  font-family: var(--mono); font-size: 12px; background: var(--surface); color: var(--text);
+}
+.patch-paste-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.patch-opts { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; }
+.patch-opts > label:not(.patch-check) { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.patch-opts select {
+  border: 1px solid var(--border-strong); border-radius: 8px; padding: 6px 9px;
+  background: var(--surface); color: var(--text);
+}
+.patch-bar { border-top: 1px solid var(--border); padding-top: 14px; }
+.patch-report {
+  margin: 0; white-space: pre-wrap; word-break: break-word; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 8px; padding: 14px;
+  font-family: var(--mono); font-size: 12px; max-height: 340px; overflow: auto;
+}
