@@ -3,33 +3,94 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PP6 导入包生成器</title>
+<title>导入包生成 · PP6 Studio</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Ctext x='16' y='23' font-size='20' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle'%3EP%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
-<header class="topbar">
-  <div class="brand">
-    <div class="logo">P</div>
-    <div>
-      <h1>PP6 导入包生成器</h1>
-      <p>Excel 模板 → PowerProject V6 可导入 zip</p>
+<div class="app-shell">
+
+  <!-- ============ 左侧工作区导航（固定） ============ -->
+  <aside class="sidebar">
+    <div class="side-brand">
+      <div class="logo">P</div>
+      <div class="side-brand-text">
+        <strong>PP6 <em>Studio</em></strong>
+        <small>导入包生成器</small>
+      </div>
+      <span class="side-ver">V6</span>
     </div>
-  </div>
-  <nav class="modes">
-    <button class="mode active" data-mode="import">导入包生成</button>
-    <button class="mode" data-mode="patch">已有包加字段</button>
-    <button class="mode" data-mode="query">数据查询</button>
-    <button class="mode" data-mode="settings">
-      设置<span class="ai-dot" id="aiDot"></span>
-    </button>
-  </nav>
-  <div class="top-actions">
-    <button class="btn ghost" id="btnInspect">反解现有导出包</button>
-    <input type="file" id="inspectInput" accept=".zip" hidden>
-  </div>
-</header>
+
+    <div class="side-scroll">
+      <div class="side-label">工作区</div>
+      <nav class="modes" aria-label="工作区导航">
+        <button class="mode active" data-mode="import" title="导入包生成 (1)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3v11m0 0 4-4m-4 4-4-4"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+          </svg>
+          <span class="mode-label">导入包生成</span><kbd>1</kbd>
+        </button>
+        <button class="mode" data-mode="patch" title="已有包加字段 (2)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="18" height="18" rx="3"/><path d="M12 8v8M8 12h8"/>
+          </svg>
+          <span class="mode-label">已有包加字段</span><kbd>2</kbd>
+        </button>
+        <button class="mode" data-mode="query" title="数据查询 (3)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6"/><path d="M4.5 11.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6"/>
+          </svg>
+          <span class="mode-label">数据查询</span><kbd>3</kbd>
+        </button>
+        <button class="mode" data-mode="settings" title="设置 (4)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 7h8M17 7h3M4 17h3M12 17h8"/><circle cx="14.5" cy="7" r="2.5"/><circle cx="9.5" cy="17" r="2.5"/>
+          </svg>
+          <span class="mode-label">设置<span class="ai-dot" id="aiDot"></span></span><kbd>4</kbd>
+        </button>
+      </nav>
+
+      <div class="side-label side-label-2">导入目标</div>
+      <div class="side-path">
+        <span>系统管理</span><i>›</i><span>发布管理</span><i>›</i><span>导入同步包</span>
+      </div>
+      <div class="side-tip">生成的 zip 由系统后台直接导入，无需手工改 XML。</div>
+
+      <div class="side-label side-label-2">快捷键</div>
+      <div class="side-keys">
+        <div><kbd>1</kbd>–<kbd>4</kbd><span>切换工作区</span></div>
+        <div><kbd>⌘K</kbd><span>回到生成页</span></div>
+      </div>
+    </div>
+
+    <div class="side-foot">
+      <div class="side-env"><span class="env-dot"></span><span>本地运行 · 数据不出本机</span></div>
+      <div class="side-foot-sub">PowerProject V6 同步包工作台</div>
+    </div>
+  </aside>
+
+  <!-- ============ 右侧：上下文栏 / 工作区 / 底部状态 ============ -->
+  <div class="shell-main">
+
+    <header class="topbar">
+      <div class="ctx">
+        <nav class="ctx-crumb"><span>工作区</span><i>/</i><b id="ctxCrumb">导入包生成</b></nav>
+        <div class="ctx-row">
+          <h2 class="ctx-title" id="ctxTitle">导入包生成</h2>
+          <span class="ctx-desc" id="ctxDesc">描述需求或上传 Excel，生成系统可导入的同步包</span>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span class="ai-pill" id="ctxAiPill" title="大模型配置状态">
+          <span class="ai-dot" id="ctxAiDot"></span><span id="ctxAiText">AI 未配置</span>
+        </span>
+        <button class="btn ghost" id="btnInspect">反解现有导出包</button>
+        <input type="file" id="inspectInput" accept=".zip" hidden>
+      </div>
+    </header>
+
+    <div class="workspace" id="workspace">
 
 <main id="mode-settings" hidden>
   <div class="set-layout">
@@ -113,7 +174,7 @@
         <div class="card-head"><div><h3>关于</h3><div class="sub">PP6 导入包生成器</div></div></div>
         <div class="set-body">
           <div class="set-kv">
-            <div><span>两个功能</span><b>导入包生成 · 数据查询</b></div>
+            <div><span>四个工作区</span><b>导入包生成 · 已有包加字段 · 数据查询 · 设置</b></div>
             <div><span>共用能力</span><b>大模型只配一次</b></div>
             <div><span>配置位置</span><b><code>~/.pp6kit/nlq.json</code></b></div>
           </div>
@@ -483,13 +544,33 @@
   </div>
 </main>
 
-<footer class="actionbar" id="actionbar" hidden>
-  <div class="actionbar-left">
-    <strong id="barSummary"></strong>
-    <span class="muted" id="barHint"></span>
-  </div>
-  <button class="btn primary" id="btnBuild">导出全部模块</button>
-</footer>
+    </div><!-- /workspace -->
+
+    <div class="bottom-dock">
+      <footer class="actionbar" id="actionbar" hidden>
+        <div class="actionbar-left">
+          <strong id="barSummary"></strong>
+          <span class="muted" id="barHint"></span>
+        </div>
+        <button class="btn primary" id="btnBuild">导出全部模块</button>
+      </footer>
+      <footer class="statusbar">
+        <div class="status-left">
+          <span class="status-led"></span>
+          <span id="statusText">就绪</span>
+          <span class="status-sep">·</span>
+          <span id="statusMode">导入包生成</span>
+        </div>
+        <div class="status-right">
+          <span>本地服务</span><span class="status-sep">·</span>
+          <span>PP6 Studio</span><span class="status-sep">·</span>
+          <span id="statusClock"></span>
+        </div>
+      </footer>
+    </div>
+
+  </div><!-- /shell-main -->
+</div><!-- /app-shell -->
 
 <div class="toast" id="toast" hidden></div>
 

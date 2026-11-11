@@ -20,18 +20,68 @@ async function qApi(path, body) {
 }
 
 /* ---------------- 模式切换 ---------------- */
+/* 上下文栏 / 状态栏跟着工作区走，避免「切了页面但标题还是上一个」 */
+const MODE_META = {
+  import:   { title: "导入包生成",   desc: "描述需求或上传 Excel，生成系统可导入的同步包" },
+  patch:    { title: "已有包加字段", desc: "在原有 zip 上打最小补丁，除新增字段外字节不变" },
+  query:    { title: "数据查询",     desc: "用一句话查数据库，生成 SQL 并查看结果" },
+  settings: { title: "设置",         desc: "大模型、数据库连接与本地配置" },
+};
+
 function switchMode(mode) {
   document.querySelectorAll(".mode").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
   document.getElementById("mode-import").hidden = mode !== "import";
   document.getElementById("mode-patch").hidden = mode !== "patch";
   document.getElementById("mode-query").hidden = mode !== "query";
   document.getElementById("mode-settings").hidden = mode !== "settings";
+  // 底部 dock 只放状态栏：主操作统一留在卡片里，
+  // 避免切换工作区时操作条忽隐忽现、工作区高度跟着跳。
   const bar = document.getElementById("actionbar");
-  if (mode !== "import") bar.hidden = true;
-  else if (window.__importHasResult) bar.hidden = false;
+  if (bar) bar.hidden = true;
+
+  const meta = MODE_META[mode] || MODE_META.import;
+  const put = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
+  put("ctxTitle", meta.title);
+  put("ctxCrumb", meta.title);
+  put("ctxDesc", meta.desc);
+  put("statusMode", meta.title);
+  put("statusText", "就绪");
+  document.title = `${meta.title} · PP6 Studio`;
+
+  const ws = document.getElementById("workspace");
+  if (ws) ws.scrollTop = 0;
+  window.__currentMode = mode;
+
   if (mode === "query") loadConfig();
   if (mode === "settings") loadConfig();
 }
+
+/* 键盘：1–4 直达工作区，⌘/Ctrl+K 回生成页；输入时不抢按键 */
+document.addEventListener("keydown", (e) => {
+  const t = e.target;
+  const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" ||
+                       t.tagName === "SELECT" || t.isContentEditable);
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    switchMode("import");
+    return;
+  }
+  if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+  const hit = { "1": "import", "2": "patch", "3": "query", "4": "settings" }[e.key];
+  if (hit) { e.preventDefault(); switchMode(hit); }
+});
+
+/* 状态栏时钟：本地运行，不请求网络 */
+function paintClock() {
+  const el = document.getElementById("statusClock");
+  if (el) el.textContent = new Date().toLocaleTimeString("zh-CN",
+    { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+paintClock();
+setInterval(paintClock, 30000);
 
 /* 设置页的三个分栏 */
 document.querySelectorAll(".set-tab").forEach((tab) => {
@@ -163,6 +213,17 @@ function paintAiState() {
     status.classList.toggle("on", AI_READY);
   }
 
+  // 顶栏右侧的 AI 状态胶囊
+  const pill = document.getElementById("ctxAiPill");
+  const pillDot = document.getElementById("ctxAiDot");
+  const pillText = document.getElementById("ctxAiText");
+  if (pill) {
+    pill.classList.toggle("on", AI_READY);
+    pill.title = AI_READY ? `已接入 ${AI_BRIEF}` : "到「设置」里填一个免费的 Key 就能用 AI";
+  }
+  if (pillDot) pillDot.classList.toggle("on", AI_READY);
+  if (pillText) pillText.textContent = AI_READY ? "AI 已配置" : "AI 未配置";
+
   // 给 app.js（导入页）用：没配就让「生成业务对象」先引导去设置
   window.PP6_AI_READY = AI_READY;
   const aiHint = document.getElementById("aiHint");
@@ -171,7 +232,7 @@ function paintAiState() {
       aiHint.textContent = `已接入 ${AI_BRIEF} · 字段类型会自动选：金额→数字，审批人→人员，备注→多行文本`;
       aiHint.classList.remove("warn");
     } else {
-      aiHint.textContent = "还没配置 AI，点右上角「设置」填一个免费的 Key 就能用";
+      aiHint.textContent = "还没配置 AI，点左侧「设置」填一个免费的 Key 就能用";
       aiHint.classList.add("warn");
     }
   }

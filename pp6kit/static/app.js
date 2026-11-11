@@ -65,6 +65,14 @@ function toast(msg, ms = 3200) {
   el.hidden = false;
   clearTimeout(el._t);
   el._t = setTimeout(() => { el.hidden = true; }, ms);
+
+  // 状态栏同步显示最近一次操作，操作完自动回到「就绪」
+  const status = $("#statusText");
+  if (status) {
+    status.textContent = msg.length > 52 ? `${msg.slice(0, 52)}…` : msg;
+    clearTimeout(status._t);
+    status._t = setTimeout(() => { status.textContent = "就绪"; }, ms);
+  }
 }
 
 function humanSize(bytes) {
@@ -1097,6 +1105,9 @@ function goStep(n) {
     el.classList.toggle("active", cur === n);
     el.classList.toggle("done", cur < n);
   });
+  // 页面滚动已交给 .workspace，window.scrollTo 作为兼容兜底保留
+  const ws = $("#workspace");
+  if (ws) ws.scrollTo({ top: 0, behavior: "smooth" });
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
