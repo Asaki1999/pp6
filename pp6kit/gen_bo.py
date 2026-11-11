@@ -100,6 +100,14 @@ def _dict_blocks(bo: Bo) -> tuple[str, str]:
                 "typeScope": "BO_ATTR",
             }, indent=2))
         for i, label in enumerate(f.choices, start=1):
+            # attrs 子元素：选项的展示样式（tag 形状/颜色）。原生「推送工作区」
+            # 导出的每个 dictionary 都带这段默认样式 JSON（2026-11-11 risk 包
+            # 与项目立项包逐字节核对），缺失不影响功能但会让 XML 与系统产物
+            # 不一致，选项在界面上也没有 tag 外观。
+            dic_children = el("tns:attrs", "", cdata(
+                '{"backgroundColor":"","shape":"tag","effect":"light",'
+                '"type":"custom","color":"#000000","boardColor":"","icon":""}'
+            ), indent=3)
             dics.append(el("tns:dictionary", {
                 "typeKey": key,
                 # 选项值用英文短码，对标线上真实数据；
@@ -108,7 +116,7 @@ def _dict_blocks(bo: Bo) -> tuple[str, str]:
                 "name": label,
                 "sn": i,
                 "disabled": "false",
-            }, indent=2))
+            }, dic_children, indent=2))
 
     type_list = wrap("tns:dictionaryTypeList", types, indent=1) if types \
         else el("tns:dictionaryTypeList", "", None, indent=1)
