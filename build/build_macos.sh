@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# macOS 打包：产出 dist/PP6 导入包生成器.app（内含 Python 运行时，目标机器无需安装任何东西）
+# macOS 打包：产出 dist/PP6 Studio.app（内含 Python 运行时，目标机器无需安装任何东西）
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -17,7 +17,7 @@ rm -rf build/work dist
 echo "==> 开始打包（约 1-2 分钟）"
 .venv/bin/pyinstaller build/pp6.spec --noconfirm --distpath dist --workpath build/work
 
-APP="dist/PP6 导入包生成器.app"
+APP="dist/PP6 Studio.app"
 if [ ! -d "$APP" ]; then
   echo "!! 打包失败，未找到 $APP"
   exit 1
@@ -41,4 +41,4 @@ echo "✓ 打包完成: $APP  ($SIZE, $ARCH)"
 echo ""
 echo "分发方式：把整个 .app 压缩后发给同事（微信/内网盘均可）。"
 echo "对方首次打开若提示「无法验证开发者」：右键点图标 → 打开 → 再点「打开」，"
-echo "或让其执行： xattr -dr com.apple.quarantine \"/Applications/PP6 导入包生成器.app\""
+echo "或让其执行： xattr -dr com.apple.quarantine \"/Applications/PP6 Studio.app\""

@@ -223,7 +223,7 @@ def cmd_capture(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="pp6kit", description="PowerProject 导入包生成器")
+    ap = argparse.ArgumentParser(prog="pp6kit", description="PP6 Studio — PowerProject V6 配置同步工作台")
     ap.add_argument("--snippets", default=str(DEFAULT_SNIPPETS), help="骨架文件路径")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

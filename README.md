@@ -1,6 +1,9 @@
-# pp6kit — 导入包生成器
+# PP6 Studio
 
-把 Excel 表格变成 PowerProject V6 可直接导入的 zip 包（业务对象 / 表单 / 列表 / 数据集）。
+**PowerProject V6 配置同步工作台** · 内部包名 `pp6kit` · 桌面应用 `PP6 Studio.app`
+
+把 Excel 规格表变成 PowerProject V6 可直接导入的同步包（业务对象 / 表单 / 列表 / 数据集）；
+也能反解现有导出包、在原有 zip 上加字段做最小补丁、用自然语言查数据库。
 
 ## 为什么不是"照抄模板"
 
@@ -12,12 +15,13 @@
 2. `build` 时**只替换差异部分**（字段、标签、数据源、列），骨架原样保留
 3. 系统升级后重跑 `capture`，工具自动跟上新格式
 
-## AI 能力（两个功能共用一套配置）
+## AI 能力（各工作区共用一套配置）
 
-顶部「设置」页里配一次大模型，**导入包生成**和**数据查询**都能用。
+左侧栏「设置」工作区里配一次大模型，**导入包生成**和**数据查询**都能用。
 
 ```
-导入包生成  |  数据查询  |  设置 ●     ← 圆点：绿=已配置，灰=没配
+侧栏   1 导入包生成  ·  2 已有包加字段  ·  3 数据查询  ·  4 设置 ●
+       ↑ 数字键直达                              圆点：绿=已配置，灰=没配
 ```
 
 | 功能 | 用 AI 做什么 | 不用 AI 会怎样 |
@@ -362,7 +366,7 @@ bin/pp6 dbmap        # 生成 docs/数据库结构图谱.md
 
 ## 桌面应用（发给同事用这个）
 
-`dist/PP6 导入包生成器.app` 是自带 Python 运行时的独立程序，对方无需安装任何东西：
+`dist/PP6 Studio.app` 是自带 Python 运行时的独立程序，对方无需安装任何东西：
 
 1. 把整个 `.app` 压缩后发给同事（微信 / 内网盘都行）
 2. 对方解压后拖进「应用程序」文件夹，双击打开
@@ -371,7 +375,7 @@ bin/pp6 dbmap        # 生成 docs/数据库结构图谱.md
 命令行解除隔离（可选）：
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/PP6 导入包生成器.app"
+xattr -dr com.apple.quarantine "/Applications/PP6 Studio.app"
 ```
 
 界面：拖入（或点击选择）Excel → 立即看到对象/字段/表单布局 → 校验结果 → 一键生成 zip。
@@ -384,7 +388,7 @@ xattr -dr com.apple.quarantine "/Applications/PP6 导入包生成器.app"
 ### 重新打包
 
 ```bash
-./build/build_macos.sh          # macOS → dist/PP6 导入包生成器.app
+./build/build_macos.sh          # macOS → dist/PP6 Studio.app
 build\build_windows.bat          # Windows → dist\PP6ImportBuilder\PP6ImportBuilder.exe
 ```
 
@@ -719,7 +723,7 @@ glm-4-plus      OK 1.9s
 
 ```bash
 PP6_SELFTEST=1 PP6_SELFTEST_SAVE=/tmp/e2e.zip \
-  "dist/PP6 导入包生成器.app/Contents/MacOS/PP6ImportBuilder"
+  "dist/PP6 Studio.app/Contents/MacOS/PP6ImportBuilder"
 ```
 
 期望输出里全为 True：

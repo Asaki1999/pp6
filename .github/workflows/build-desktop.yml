@@ -20,8 +20,8 @@ jobs:
             artifact: PP6ImportBuilder-windows
             folder: dist/PP6ImportBuilder
           - os: macos-latest
-            artifact: PP6-import-builder-macos
-            folder: dist/PP6 导入包生成器.app
+            artifact: PP6-Studio-macos
+            folder: 'dist/PP6 Studio.app'
 
     runs-on: ${{ matrix.os }}
 

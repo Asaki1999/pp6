@@ -20,7 +20,7 @@ from pathlib import Path
 from .desktop_api import DesktopApi
 from .webui import start_background
 
-APP_NAME = "PP6 导入包生成器"
+APP_NAME = "PP6 Studio"
 
 
 def main(argv: list[str] | None = None) -> int:

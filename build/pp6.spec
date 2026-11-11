@@ -80,12 +80,12 @@ coll = COLLECT(
 if sys.platform == "darwin":
     app = BUNDLE(
         coll,
-        name="PP6 导入包生成器.app",
+        name="PP6 Studio.app",
         icon=str(ROOT / "assets" / "app.icns") if (ROOT / "assets" / "app.icns").exists() else None,
         bundle_identifier="com.powerproject.pp6kit",
         info_plist={
-            "CFBundleName": "PP6 导入包生成器",
-            "CFBundleDisplayName": "PP6 导入包生成器",
+            "CFBundleName": "PP6 Studio",
+            "CFBundleDisplayName": "PP6 Studio",
             "CFBundleShortVersionString": "1.0.0",
             "CFBundleVersion": "1.0.0",
             "NSHighResolutionCapable": True,

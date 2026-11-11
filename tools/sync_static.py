@@ -5,7 +5,7 @@
 PyInstaller 会把 pp6kit/static 打进 dist/，之后改源码**不会**自动生效。
 忘了重新打包就会出现「代码明明改了，界面还是旧的」——排查半天。
 
-本脚本只复制 4 个纯文本文件（html/js/css），几秒完成，
+本脚本只复制 6 个纯文本文件（html/js/css），几秒完成，
 适合改界面时快速验证；改动到 .py 逻辑时才需要真正重新打包。
 
 用法：
@@ -25,7 +25,7 @@ FILES = ("index.html", "app.js", "patch.js", "query.js", "style.css", "relations
 
 # 打包产物的两种形态：macOS .app 和 onedir 目录
 TARGETS = (
-    ROOT / "dist" / "PP6 导入包生成器.app" / "Contents" / "Resources" / "pp6kit" / "static",
+    ROOT / "dist" / "PP6 Studio.app" / "Contents" / "Resources" / "pp6kit" / "static",
     ROOT / "dist" / "PP6ImportBuilder" / "_internal" / "pp6kit" / "static",
 )
 
@@ -48,7 +48,7 @@ def main(argv: list[str]) -> int:
 
     stale_total = 0
     for target in found:
-        label = target.parent.parent.parent.name if ".app" in str(target) else target.parent.name
+        label = next((p for p in target.parts if p.endswith(".app")), target.parent.name)
         print(f"\n{label}")
         for name in FILES:
             src, dst = SRC / name, target / name

@@ -3,6 +3,8 @@ chcp 65001 >nul
 setlocal
 cd /d "%~dp0.."
 
+echo PP6 Studio - PowerProject V6 配置同步工作台
+echo.
 echo ==^> 准备虚拟环境
 if not exist .venv (
     py -3 -m venv .venv
