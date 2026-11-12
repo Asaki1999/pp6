@@ -46,8 +46,10 @@ _CONTROL_BY_TYPE = {
     # 以下类型没有专用控件，退化为单行文本
     "i18n": "text",
     "formula": "text",
-    # table 是子表（dataTemplate 控件），结构复杂，暂退化 text，待专门支持
-    "table": "text",
+    # table = 子表/明细表，出 dataTemplate 控件（把列表模板嵌进表单）。
+    # 2026-11-12 拿到原生包后才支持：项目汇报表里 4 个 dataTemplate 全是这种用法。
+    # 之前退化成 text，等于子表在表单上是个文本框，整块功能废掉。
+    "table": "dataTemplate",
 }
 
 _NAME_TEMPLATE = {

@@ -50,6 +50,49 @@ def _is_banned_import_field(ff) -> bool:
     return any(k in label for k in _BANNED_IMPORT_LABELS)
 
 
+def _widget_issues(form, bo, where: str, proj: Project) -> list[Issue]:
+    """控件层面的检查，跟「表单是标准全套还是单张」无关，两种入口都要跑。
+
+    「标准全套」在 Excel 里是一条 `kind=bundle` 的记录，展开成新建/详情/
+    条件三张表是出包阶段的事。所以在 validate 里对 bundle 直接 continue
+    会漏掉控件本身的问题——而控件填错恰恰是最常见的（金额出成文本框、
+    明细表指向一个不存在的列表），且只有打开界面才发现。
+    """
+    out: list[Issue] = []
+    list_keys = {x.key for x in proj.lists}
+    for ff in form.fields:
+        # ---- 明细表：字段编码填的是列表 key，得对着 5_列表 核
+        if ff.field_type == "dataTemplate":
+            if not ff.value_source:
+                out.append(Issue(
+                    "error", where,
+                    f"明细表控件 {ff.name} 没填取值来源，"
+                    f"「取值来源」要填 5_列表 里的列表key"
+                    f"（可选：{', '.join(sorted(list_keys)[:3]) or '还没有列表'}）"))
+            elif list_keys and ff.value_source not in list_keys:
+                # 不是错误：只导表单、列表早就建在系统里是常见用法
+                # （反解单个表单包必然走到这条路）。但也得说一声，
+                # 因为列表要是真的不存在，子表就是一片空白。
+                out.append(Issue(
+                    "warn", where,
+                    f"明细表控件 {ff.name} 指向的列表 {ff.value_source} 不在本包内，"
+                    f"导入前请确认系统里已经有这个列表，否则子表是空的"
+                    f"（本包可选：{', '.join(sorted(list_keys)[:3])}）"))
+            continue
+        # ---- 字段类型是数字/日期，控件却是文本框
+        if bo is None or ff.field_type != "text":
+            continue
+        bf = bo.field_by_code(ff.name)
+        want = {"number": "number", "datetime": "datePicker"}.get(
+            bf.type_new if bf else "", "")
+        if want:
+            out.append(Issue(
+                "warn", where,
+                f"控件 {ff.name}（{bf.name}）的字段类型是 {bf.type_new}，"
+                f"控件类型却填了 text，导入后是普通文本框（建议改成 {want}）"))
+    return out
+
+
 # 单行控件：能两列就别占整行，否则右半边整片空白
 _NARROW_TYPES = {"text", "number", "datePicker", "date", "select", "dictionary",
                  "selectObject", "dropSelector", "dropSelectOrg", "autoNumber"}
@@ -122,6 +165,9 @@ def validate(proj: Project) -> list[Issue]:
     used_form: set[str] = set()
     for form in proj.forms:
         if form.kind == "bundle":
+            # 命名/覆盖这类要求是对展开后的单张表说的，这里只管控件本身
+            issues.extend(_widget_issues(
+                form, proj.bo(form.bo_code), f"表单 {form.key}", proj))
             continue
         w = f"表单 {form.key or '<空>'}"
         if not KEY_RE.match(form.key or ""):
@@ -178,6 +224,8 @@ def validate(proj: Project) -> list[Issue]:
                         "warn", w,
                         "导入表单比新建表单多标了必填："
                         + "、".join(sorted(only_in_import)[:6])))
+
+        issues.extend(_widget_issues(form, bo, w, proj))
 
         for ff in form.fields:
             if ff.field_type in CONTAINER_TYPES:

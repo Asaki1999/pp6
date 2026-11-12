@@ -34,7 +34,10 @@ from .model import (
 from .xmlw import DECL_STANDALONE, el, json_attr, wrap
 
 # 这些类型默认独占一行
-_FULL_ROW_TYPES = {"editor", "textarea", "tablelayout", "tabs", "card", "attachment"}
+_FULL_ROW_TYPES = {"editor", "textarea", "tablelayout", "tabs", "card", "attachment",
+                   # 明细表（子表）控件横向要铺满，跟原生表单一致：
+                   # 项目汇报表里 4 个 dataTemplate 全在独立的 fieldset 里各占一行
+                   "dataTemplate"}
 
 # 控件图标：从项目详情表单 / 立项表单两个真实包里逐个字段统计来的，
 # 缺了会让设计器里的控件图标变成问号。
@@ -56,6 +59,10 @@ _ICONS = {
     "autoNumber": "SingleText",
     "tablelayout": "Table",
     "tableField": "Table",
+    # 明细表控件：原生表单里这个控件没有 icon 键（它不在 grid_layout 的
+    # rows 里，只被容器的 columns 引用），但我们的 rows 会带上它，
+    # 给一个 Table 图标，设计器里不至于显示成问号。
+    "dataTemplate": "Table",
     "label": "Textss",
 }
 
@@ -284,6 +291,35 @@ def _apply_options(base: dict, field: FormField, parents: set[str] | None = None
         out.setdefault("multiple", False)
     elif t == "dropSelectOrg":
         out.setdefault("multiple", False)
+    elif t == "dataTemplate":
+        # 明细表：把已建好的列表模板嵌进表单（一对多子表）。
+        #
+        # 键集照抄原生包（项目汇报表 4 个、新建模板测试用例 1 个逐键比对）：
+        #   bind_template_key  指向 data_template/*.xml 里的 key
+        #   name               再写一遍显示名，缺了子表标题是空的
+        #   hide_label/hide_border 恒为 true（子表自带表头，不要外面再套一圈）
+        #   heightMode=fixed + heightUnit=px  固定高度模式
+        #   mappingFields/casadeFields 没有也要写空数组——省掉导入后子表不渲染
+        #   notInputCondition=conditionIsNone 不参与查询条件
+        out["bind_template_key"] = field.value_source or field.name
+        out["name"] = field.label
+        out["hide_label"] = True
+        out["hide_border"] = True
+        out["hide_border_bottom"] = True
+        out["heightMode"] = "fixed"
+        out["heightUnit"] = "px"
+        out["mappingFields"] = []
+        out["casadeFields"] = []
+        out["isAlldata"] = False
+        out["notInputCondition"] = "conditionIsNone"
+        # 内嵌在页面里的形态（原生「未关闭的问题」那一块）：上下留 10px、
+        # 不计入外边距、可折叠。这三个键原生里时有时无，写了更贴近页面形态。
+        out.setdefault("autoCollapse", True)
+        out.setdefault("top_margin", 10)
+        out.setdefault("bottom_margin", 10)
+        out.setdefault("is_margin", False)
+        # 明细表没有占位提示，留骨架里的「请输入」会在子表上方飘一行灰字
+        out.pop("placeholder", None)
 
     # 级联下拉：系统只认这两个键。
     # 线上样本（项目表单包含级联关系…zip）里，根节点是 cascadeEnabled=false +
@@ -586,6 +622,24 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
     )
 
     groups = _plan_groups(form)
+
+    # 明细表控件从所在分区里摘出来，各自单独成一个分区。
+    # 原生表单就是这么排的：项目汇报表里 7 个 fieldset 装普通控件、
+    # 4 个明细表各自成块；新建模板测试用例的明细表也不跟别的字段同框。
+    # 不拆开的话，「明细表 + 普通控件」会共用一层 grid_layout，
+    # 而 grid_layout 里放 dataTemplate 系统不渲染（见下面 direct 分支注释）。
+    _split: list[tuple[str, list[list[FormField]]]] = []
+    for _title, _rows in groups:
+        _plain = [r for r in _rows
+                  if not (len(r) == 1 and r[0].field_type == "dataTemplate")]
+        _dms = [r for r in _rows
+                if len(r) == 1 and r[0].field_type == "dataTemplate"]
+        if _plain:
+            _split.append((_title, _plain))
+        for _r in _dms:
+            # 分区标题用控件自己的标签，跟原生一致（明细表那一块就叫控件名）
+            _split.append((_r[0].label or _title, [_r]))
+    groups = _split
     container_type = _CONTAINER_BY_KIND.get(form.kind, "fieldset")
     bo_code = bo.code if bo else form.bo_code
     bo_fields = {bf.code: bf for bf in (bo.fields if bo else [])}
@@ -613,7 +667,16 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
     parents = _cascade_parent_names(form)
 
     for gi, (title, rows) in enumerate(groups, start=1):
+        # 明细表（dataTemplate）单独成容器：原生表单里它**不经过** grid_layout，
+        # 直接挂在容器的 columns 上（项目汇报表里 4 个明细表、新建模板测试用例
+        # 的 1 个，容器 columns 引用的就是控件 id 本身）。塞进 grid_layout 的
+        # rows 里系统不认，子表整块不渲染——这跟普通控件「两条链路都要写」正相反。
+        direct = (len(rows) == 1 and len(rows[0]) == 1
+                  and rows[0][0].field_type == "dataTemplate")
+
         container_id, grid_id = new_id(), new_id()
+        # 直挂模式下控件 id 要先定：容器的 columns 要引用它
+        dm_cid = new_id() if direct else ""
 
         # ---- 分区容器：card（详情）/ fieldset（新建等）
         c_opts = snip.layout(container_type)
@@ -630,7 +693,10 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
             if gi > 1:
                 c_opts["is_margin"] = True
                 c_opts["top_margin"] = 20
-        c_opts["columns"] = [{"name": None, "label": None, "fields": [grid_id], "span": ""}]
+        c_opts["columns"] = [{
+            "name": None, "label": None,
+            "fields": [dm_cid if direct else grid_id], "span": "",
+        }]
         body.append(el("formField", {
             "id": container_id,
             "formId": form_id,
@@ -641,6 +707,27 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
             "sn": sn,
         }, indent=2))
         sn += 1
+
+        if direct:
+            # 明细表：容器下只有一个控件，没有布局层
+            f = rows[0][0]
+            opts, fallback = snip.field_options("dataTemplate")
+            if fallback:
+                notices.append(
+                    f"控件 {f.name}: 样例中没有 dataTemplate 类型骨架，已用 text 兜底，导入后请核对"
+                )
+            body.append(el("formField", {
+                "id": dm_cid,
+                "formId": form_id,
+                "parentId": container_id,
+                "name": f.name,
+                "label": f.label,
+                "desc": f.desc or "",
+                "fieldType": "dataTemplate",
+                "fieldOptions": json_attr(_apply_options(opts, f, parents)),
+                "sn": 1,
+            }, indent=2))
+            continue
 
         # ---- 表格布局V1.0：columns（扁平引用）+ rows（内嵌完整控件 JSON）
         flat_cols: list[dict] = []

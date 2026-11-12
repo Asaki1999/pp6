@@ -13,16 +13,24 @@ from .ids import new_id
 from .model import PROCESS_FIELDS, Bo, BoField, Project, table_name_for
 
 # 系统必备字段（样例导出中始终存在；缺失会导致表结构不完整）
+#
+# 顺序照「推送工作区」导出包里的 sn 排列（2026-11-12 用 4 个原生包核对）：
+#   id → tenantId → ip → createBy → createTime → updateBy → updateTime
+#     → deleted → version
+# 注意 **updateBy 在 updateTime 前面**——之前写成 updateTime→updateBy，
+# 字段顺序与系统产物不一致，界面上「更新人/更新时间」两列会反过来。
 SYSTEM_FIELDS: list[dict] = [
     {"code": "id", "name": "主键", "type_new": "varchar", "length": 64, "is_index": True},
     {"code": "tenantId", "name": "租户ID", "type_new": "varchar", "length": 64, "is_index": True},
     {"code": "ip", "name": "IP地址", "type_new": "varchar", "length": 15},
-    {"code": "deleted", "name": "数据删除状态", "type_new": "varchar", "length": 20, "is_index": True},
     {"code": "createBy", "name": "创建人", "type_new": "user", "length": 64, "is_index": True},
     {"code": "createTime", "name": "创建时间", "type_new": "datetime"},
-    {"code": "updateTime", "name": "更新时间", "type_new": "datetime"},
-    {"code": "version", "name": "版本", "type_new": "number", "length": 20},
     {"code": "updateBy", "name": "更新人", "type_new": "user", "length": 64, "is_index": True},
+    {"code": "updateTime", "name": "更新时间", "type_new": "datetime"},
+    # deleted 线上是 varchar(1)，存 Y/N。之前写 20，建出来的列比系统宽 19 倍，
+    # 已有表结构对不上时导入端会按「字段已存在」跳过，不报错但列宽是错的。
+    {"code": "deleted", "name": "数据删除状态", "type_new": "varchar", "length": 1, "is_index": True},
+    {"code": "version", "name": "版本", "type_new": "number", "length": 20},
     # 下面两个是 2026-10 对照线上系统补的：
     # 实测 project/test_plan 等对象的字段里都有，缺了导入后基线/草稿功能不可用
     {"code": "baselineVersion", "name": "基线版本", "type_new": "number", "length": 20},

@@ -234,7 +234,11 @@ def _parse_form(root) -> tuple[Form, list[FormField]] | None:
             name=name,
             label=f.attrib.get("label", name),
             field_type=ftype,
-            value_source=opts.get("value_source") or opts.get("linkdata") or "",
+            # 明细表控件（dataTemplate）引用的是列表模板 key，存在
+            # bind_template_key 里，不是 value_source/linkdata——
+            # 漏了这一句，反解再出包时子表指向空列表，校验会报错
+            value_source=(opts.get("value_source") or opts.get("linkdata")
+                          or opts.get("bind_template_key") or ""),
             # 级联：系统只在打开 cascadeEnabled 时才认 cascadeParentCode
             cascade_parent=(opts.get("cascadeParentCode") or "") if opts.get("cascadeEnabled") else "",
             placeholder=opts.get("placeholder", "请输入"),

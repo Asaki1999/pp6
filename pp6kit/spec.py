@@ -127,8 +127,10 @@ COLUMNS: dict[str, list[Col]] = {
         Col("显示标签", "label", 16, True),
         Col("控件类型", "field_type", 16, True,
             choices=["text", "select", "dictionary", "dropSelector", "dropSelectOrg", "linkdata",
-                     "editor", "autoNumber", "attachment", "hidden", "number", "date"],
-            note="dictionary=数据字典树控件；要级联请填「级联父字段」，会自动出成下拉+字典形态"),
+                     "editor", "autoNumber", "attachment", "hidden", "number", "date",
+                     "dataTemplate"],
+            note="dictionary=数据字典树控件；要级联请填「级联父字段」，会自动出成下拉+字典形态；"
+                 "dataTemplate=明细表，在「取值来源」填 5_列表 的列表key，会把该列表嵌进表单"),
         Col("取值来源", "value_source", 22, note="select/linkdata 填数据集或值来源 key"),
         Col("占位提示", "placeholder", 14),
         Col("必填", "required", 8, choices=["是", "否"]),
