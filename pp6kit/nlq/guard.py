@@ -100,8 +100,9 @@ class UnsafeQuestion(SqlRejected):
 
 _SAFE_PHRASES = re.compile(
     r"(?:已|被|软|待|逻辑)删除"
-    r"|删除(?:标记|状态|时间|人|原因|记录|日志|备注)"
-    r"|(?:修改|更新|创建|编辑|变更|提交)(?:时间|日期|人|者)"
+    r"|删除(?:标记|状态|时间|人|原因|记录|日志|备注|操作)"
+    r"|(?:删除|清空|移除)(?:后|前|之前|之后|过的)"
+    r"|(?:修改|更新|创建|编辑|变更|提交)(?:时间|日期|人|者|记录|日志|历史)"
     r"|(?:数据)?清理(?:记录|日志|时间|人)"
     r"|更新记录",
     re.I,
@@ -120,6 +121,9 @@ _CN_DELETE = re.compile(
     r"(?:删除|删掉|删了|删去|删干净|删|清空|清除|清掉|清光|清理|抹掉|抹除|销毁|干掉)")
 # 「改成/设为」出现在「把/将」句里就是写意图；单独出现可能是「状态改为…的记录」，不单判
 _CN_MODIFY = re.compile(r"(?:改成|改为|设为|设置为|置为|批量修改|批量更新)")
+# 改数据的动词。只跟**数据类宾语**（数据/表/字段/记录/权限…）配时才判，
+# 不跟业务对象配——「更新项目进度」可能是查进度，而「更新所有项目的数据」一定是写。
+_CN_WRITE = re.compile(r"(?:更新|修改|调整|变更|设置|写入|录入|导入|覆盖)")
 # 把字句：宾语在前、动词在后（「把项目表删了」「把这些数据都清掉」）。
 # 只认「把/将 + … + 删除类动词」，不像通用倒装那样容易误伤——
 # 「把项目按状态分组」里没有删除类动词，不会命中。
@@ -134,6 +138,14 @@ _CN_OBJECT = re.compile(
     r"(?:项目|任务|需求|风险|合同|客户|订单|人员|员工|角色|部门|组织|附件|文档)")
 # 全量副词：只要和破坏性动词同现就拒，不看宾语是什么
 _CN_ALL = re.compile(r"(?:所有|全部|一切|批量|整库|整表|整个库|一次性|这些|那些|它们)")
+# 「批量」几乎只出现在写意图里；「所有」不行——「列出所有变更任务」是个正经查询，
+# 「变更任务」本身就是线上的一种业务对象。
+_CN_BATCH = re.compile(r"(?:批量|一次性)")
+# 直接点了物理表名/带反引号的标识符：「删除 pp_project」这种没有中文宾语，
+# 上面那些窗口规则全落空——但它就是最直白的删表指令。
+_SQL_IDENT = re.compile(r"pp_[a-z0-9_]+|`[^`]+`", re.I)
+# 动词后面紧跟这些助词再跟「的」，仍是定语（「删掉了的记录」）
+_TENSE = re.compile(r"^(?:了|掉|去|干净|完成)")
 
 # 英文问句里出现这些基本就是 DDL/DML 意图
 _EN_DDL = re.compile(
@@ -193,11 +205,26 @@ def _destructive_hit(q: str) -> str:
         window = _cut_at_punct(q[m.end(): m.end() + 12])
         if not window.strip():
             return q[m.start():]          # 「删干净」「清空」这种光杆命令，没有宾语也得拒
-        if "的" in window:
-            continue                      # 「删除的项目」是定语，放行
-        if _CN_TARGET.search(window) or _CN_OBJECT.search(window):
+        # 定语结构：「删除的项目」「删掉了的记录」→ 是查被删的数据，放行。
+        # 注意**不能**写成「窗口里含『的』就跳过」——那样
+        # 「删除所有客户的项目」也会被放过，而那是最典型的删数据指令。
+        # 只认「的」出现在定语位置上（紧跟在动词/助词后面）。
+        head = _TENSE.sub("", window)
+        if window.startswith("的") or head.startswith("的"):
+            continue
+        if _CN_TARGET.search(window) or _CN_OBJECT.search(window) or _SQL_IDENT.search(window):
             return q[m.start(): m.end() + len(window)]
         if _CN_ALL.search(q):
+            return q[m.start(): m.end() + len(window)]
+
+    # 改数据：「更新所有项目的数据」「修改权限」「导入客户表」
+    for m in _CN_WRITE.finditer(q):
+        window = _cut_at_punct(q[m.end(): m.end() + 12])
+        head = _TENSE.sub("", window)
+        if window.startswith("的") or head.startswith("的"):
+            continue
+        before = q[max(0, m.start() - 6): m.start()]
+        if _CN_TARGET.search(window) or _CN_BATCH.search(before + window):
             return q[m.start(): m.end() + len(window)]
     return ""
 
@@ -233,7 +260,8 @@ def screen_question(question: str) -> None:
         raise UnsafeQuestion(
             f"这个问题包含破坏性操作「{hit.strip()[:40]}」，已拒绝生成。"
             "本工具只生成只读查询（SELECT），不会输出删除/清空/修改表或数据的 SQL。"
-            "确需清理数据，请由 DBA 在数据库端操作并先做好备份。")
+            "如果你只是想查名字里含这类词的记录，把它用引号括起来再问一次"
+            "（如「名称包含『删除』」）；确实要清理数据，请由 DBA 在数据库端操作并先做好备份。")
 
 
 
@@ -413,22 +441,37 @@ def is_read_only(sql: str) -> bool:
     return True
 
 
-def check_readonly_config(conn) -> tuple[bool, bool] | None:
-    """读一下这条连接的账号是不是只读账号，返回 (read_only, super_read_only)。
+def check_readonly_config(conn) -> dict:
+    """报告这条连接上生效的只读状态，给界面提示用。
 
-    只读**不修改**服务端配置——这属于 DBA 的事，程序自作主张去 SET 是越权。
-    但要把结果给用户看：本工具所有 SQL 都过只读闸，可万一日后有人绕过，
-    账号级的 read_only 才是真正兜得住的最后一层。
+    三个值分别是：
+      - session：本会话的事务是否只读（我们连上时主动设的）
+      - server：服务器是否 read_only（DBA 设的，全实例生效）
+      - super：是否 super_read_only（连 SUPER 账号也写不了）
 
-    读不到（老版本 MySQL、权限不足）返回 None，不阻断任何流程。
+    只读**不修改**服务端配置——那是 DBA 的事。但要把结果给用户看：
+    本工具所有 SQL 都过只读闸，可万一哪天漏了，账号级的只读才是真兜得住的一层。
+    读不到（老版本、权限不足）时对应字段为 None，不阻断任何流程。
     """
+    out: dict = {"session": None, "server": None, "super": None}
     try:
         cur = conn.cursor()
-        cur.execute("SELECT @@read_only, @@super_read_only")
-        row = cur.fetchone()
+        try:
+            cur.execute("SELECT @@session.transaction_read_only, "
+                        "@@global.read_only, @@global.super_read_only")
+            row = cur.fetchone() or (None, None, None)
+            out["session"], out["server"], out["super"] = (
+                None if v is None else bool(int(v)) for v in row)
+        except Exception:
+            # 5.6 之前没有 transaction_read_only / super_read_only，退一步只读 read_only
+            try:
+                cur.execute("SELECT @@global.read_only")
+                row = cur.fetchone()
+                if row:
+                    out["server"] = bool(int(row[0]))
+            except Exception:
+                pass
         cur.close()
-        if not row:
-            return None
-        return bool(int(row[0] or 0)), bool(int(row[1] or 0))
     except Exception:
-        return None
+        pass
+    return out

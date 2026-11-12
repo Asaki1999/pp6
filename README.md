@@ -317,6 +317,19 @@ SQL 层的只读闸根本看不出问题——只能在问句这一层拦。
 `validate` 了，这行是冗余的——但 `run_sql` 是公开函数，哪一处忘了校验，
 写语句就落到客户库上了。
 
+**④ 连接层（真正的兜底）** — `introspect.connect()`
+
+连上之后立刻 `SET SESSION transaction_read_only = 1`：这条连接从此**物理上写不了数据**。
+前三道闸判的都是「生成的 SQL 对不对」，这一道是「就算判错了也写不进」，由数据库执行，
+代码绕不过。实测即使直接 `CREATE TABLE` 也会被拒：
+
+```
+(1792, 'Cannot execute statement in a READ ONLY transaction.')
+```
+
+老版本 MySQL / 账号没有 SET 权限时静默跳过，不会因此连不上库。
+连上之后界面会显示「只读会话 / 服务器只读 / 可写会话」，用的是可写账号会额外提示一次。
+
 **防注入**
 
 规则引擎会把人话里的值拼成 SQL 字面量（「项目经理是张三」→ `name_ = '张三'`），
@@ -326,9 +339,10 @@ SQL 层的只读闸根本看不出问题——只能在问句这一层拦。
 
 **只读账号兜底**
 
-`guard.check_readonly_config()` 会读 `@@read_only` / `@@super_read_only` 告诉你
-当前账号是不是只读账号。程序**不会**去 `SET` 改服务端配置（那是越权），
-但建议连客户库时就用只读账号——这是绕过所有代码后唯一还挡得住的一层。
+`guard.check_readonly_config()` 会读 `@@session.transaction_read_only` 与
+`@@global.read_only` / `@@global.super_read_only`，告出这条连接上到底哪一层在挡。
+程序**不会**去改服务端配置（那是越权），但建议连客户库时就用只读账号——
+那是绕过所有代码之后还挡得住的一层。
 
 ## 业务对象的编码和表名怎么来
 
@@ -599,7 +613,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ## 回归测试（每次迁功能都要跑）
 
 `tests/` 下有一套零依赖的回归用例，覆盖从 Excel 解析到 HTTP 接口的整条链路，
-当前 **272 条**，全量跑完约 8 秒。
+当前 **281 条**，全量跑完约 8 秒。
 
 ```bash
 ./.venv/bin/python tools/regress.py                    # 全量
@@ -627,7 +641,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 | `patch` | 20 | 改包：加字段、覆盖改类型、改选项值真的写进字典 |
 | `webui` | 21 | 所有 HTTP 接口的正常与错误分支、路径穿越、30MB 上限 |
 | `security` | 12 | 坏 zip、`]]>`、`<script>`、emoji、200 字段宽表 |
-| `nlq` | 100 | 自然语言转 SQL：三层安全闸（问句层拒破坏意图与注入、SQL 层拒写操作/锁定读/跨库/导出、执行层再断言）、字符串字面量转义、答案质量判定、表关系 join、选表、否定与数值条件 |
+| `nlq` | 109 | 自然语言转 SQL：三层安全闸（问句层拒破坏意图与注入、SQL 层拒写操作/锁定读/跨库/导出、执行层再断言）、字符串字面量转义、答案质量判定、表关系 join、选表、否定与数值条件 |
 
 ### 迁功能时的固定动作
 

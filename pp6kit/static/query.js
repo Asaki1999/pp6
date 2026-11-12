@@ -261,11 +261,20 @@ function dbPayload() {
 
 /* 连接统计：设置页和查询页各有一块，同步更新 */
 function renderConnStats(d) {
+  // 连接是不是只读的：本工具只发 SELECT，但「这条连接物理上写不了」才是
+  // 真正兜底的一层，用户有权在连上之后立刻知道。
+  const ro = d.readonly || {};
+  const roOk = ro.session === true || ro.server === true || ro.super === true;
+  const roText = ro.session === true ? "只读会话"
+    : (ro.super === true || ro.server === true) ? "服务器只读"
+    : ro.session === false ? "可写会话" : "未知";
   const html = `
     <div><b>${d.tableCount}</b>业务表</div>
     <div><b>${d.columnCount}</b>字段</div>
     <div><b>${d.dictCount}</b>字典</div>
-    <div><b>${d.version.split("-")[0]}</b>MySQL</div>`;
+    <div><b>${d.version.split("-")[0]}</b>MySQL</div>
+    <div title="${roOk ? "这条连接写不了数据，查询出错也伤不到库"
+                       : "这条连接能写数据，请只用只读账号连生产库"}"><b>${roText}</b></div>`;
   for (const id of ["qStats", "qConnStats"]) {
     const el = document.getElementById(id);
     if (!el) continue;
@@ -288,6 +297,11 @@ Q.get("qTest").onclick = async () => {
     Q.templates = d.templates || [];
     renderTemplates();
     toast(`已连接 ${d.database}，读到 ${d.tableCount} 张业务表`);
+    // 连生产库时这条提示比「连上了」重要得多
+    if (d.readonly && d.readonly.session === false) {
+      toast("注意：这条连接是「可写」的。建议改用只读账号连客户库——" +
+            "程序只发 SELECT，但账号级只读是唯一绕过代码后还挡得住的一层。", 9000);
+    }
   } catch (e) {
     toast("连接失败：" + e.message, 6000);
   } finally {

@@ -303,12 +303,43 @@ def _build_enums(c: Column, vals: list[str], pack: SchemaPack) -> dict[str, str]
     return out
 
 
-def connect(host: str, port: int, user: str, password: str, database: str, timeout: int = 6):
-    return pymysql.connect(
+def connect(host: str, port: int, user: str, password: str, database: str,
+            timeout: int = 6, readonly: bool = True):
+    """连库，默认**把会话设成只读事务**。
+
+    readonly=True 时连上就跑一次 `SET SESSION transaction_read_only = 1`：
+    这条连接从此写不了任何数据。为什么在连接这一层再做一次？
+    上面已经有问句闸、SQL 闸、执行闸三道，但那三道都在判「生成的 SQL 对不对」；
+    这一道是「就算判错了、或者将来有人绕过去，也写不进」。它由数据库执行，代码绕不过。
+    """
+    conn = pymysql.connect(
         host=host, port=int(port), user=user, password=password,
         database=database, charset="utf8mb4", connect_timeout=timeout,
         read_timeout=30, write_timeout=30, autocommit=True,
     )
+    if readonly:
+        set_session_readonly(conn)
+    return conn
+
+
+def set_session_readonly(conn) -> bool:
+    """把当前会话设成只读事务，成功返回 True。
+
+    两种写法都试：`transaction_read_only` 是会话变量（影响后续所有事务），
+    `SET SESSION TRANSACTION READ ONLY` 只影响下一个事务但老版本更认。
+    都失败就静默——老版本 MySQL、或者账号没有 SET 权限时，
+    不能因为「设不上只读」就让整个工具连库都连不通。
+    """
+    for stmt in ("SET SESSION transaction_read_only = 1",
+                 "SET SESSION TRANSACTION READ ONLY"):
+        try:
+            cur = conn.cursor()
+            cur.execute(stmt)
+            cur.close()
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def _rows(cur, sql: str, args=None) -> list[tuple]:

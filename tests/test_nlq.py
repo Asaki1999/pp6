@@ -1311,3 +1311,146 @@ def _():
         except guard.SqlRejected:
             continue
         raise AssertionError(f"run_sql 应当拒绝：{sql}")
+
+
+# ================================================================ 十三、绕过手法与连接层兜底
+
+@case("NLQ101", "nlq", "「的」不是免死金牌：删除所有客户的项目必须拒", "P0",
+      ["上一版用「窗口里含『的』就跳过」来放行「删除的项目」，结果「删除所有客户的项目」",
+       "这种最典型的删数据指令也被一起放过——定语判断必须看位置，不能看有没有",
+       "不测会怎样：一句「删掉全部客户的合同」顺利生成 SQL"])
+def _():
+    for q in ("删除所有客户的项目", "删掉全部客户的合同", "清空所有项目的附件",
+              "删除项目里的所有任务"):
+        _screen_rejects(q, "破坏性操作")
+
+
+@case("NLQ102", "nlq", "真正的定语结构仍然放行", "P0",
+      ["收紧定语判断后最容易伤到的就是「删除的项目」这类正经查询",
+       "不测会怎样：为了堵漏洞把「查被删掉的数据」这个常用需求一起打死"])
+def _():
+    for q in ("删除的项目有哪些", "被删掉的记录有哪些", "上周删除的项目",
+              "删除后还能恢复的项目", "已删除的项目", "删除操作记录", "删除原因统计"):
+        guard.screen_question(q)          # 不抛异常即通过
+
+
+@case("NLQ103", "nlq", "直接点物理表名的「删除 pp_project」被拒", "P0",
+      ["这种问句没有中文宾语，靠「动词+宾语」判不出来，是上一版的漏网之鱼",
+       "不测会怎样：用户明说表名要删，工具照做"])
+def _():
+    for q in ("删除 pp_project", "删除 pp_task 的全部数据", "删除`pp_project`"):
+        _screen_rejects(q, "破坏性操作")
+
+
+class _FakeCur:
+    def __init__(self, calls, row, fail):
+        self.calls, self.row, self.fail = calls, row, fail
+
+    def execute(self, sql, args=None):
+        self.calls.append(sql)
+        if any(k in sql for k in self.fail):
+            raise RuntimeError("denied")
+
+    def fetchone(self):
+        return self.row
+
+    def close(self):
+        pass
+
+
+class _FakeConn:
+    """只记录 execute 了什么、按关键字模拟失败，够验连接层的分支了。"""
+
+    def __init__(self, row=None, fail=()):
+        self.calls, self.row, self.fail = [], row, fail
+
+    def cursor(self):
+        return _FakeCur(self.calls, self.row, self.fail)
+
+
+@case("NLQ104", "nlq", "连库后把会话设成只读事务", "P0",
+      ["前几道闸判的是「SQL 对不对」，这一道是「就算判错了也写不进」，由数据库执行",
+       "实测 CREATE TABLE 被拒：(1792, 'Cannot execute statement in a READ ONLY transaction')",
+       "不测会怎样：某个调用点漏走 validate，就真能往客户库写"])
+def _():
+    from pp6kit.nlq import introspect
+
+    conn = _FakeConn()
+    assert introspect.set_session_readonly(conn) is True
+    assert conn.calls and "READ ONLY" in conn.calls[0].upper().replace("_", " "), conn.calls
+
+    # 第一条语法老版本不认 → 退回第二种写法
+    conn2 = _FakeConn(fail=("transaction_read_only",))
+    assert introspect.set_session_readonly(conn2) is True
+    assert len(conn2.calls) == 2, conn2.calls
+
+    # 都不认（老 MySQL / 无权限）→ 静默失败，不能因此连库都连不上
+    conn3 = _FakeConn(fail=("READ ONLY", "read_only"))
+    assert introspect.set_session_readonly(conn3) is False
+
+
+@case("NLQ105", "nlq", "只读状态如实报告给界面", "P1",
+      ["用户要能在连上之后立刻知道这条连接能不能写",
+       "不测会怎样：连生产库用的是可写账号，界面上却什么都没说"])
+def _():
+    st = guard.check_readonly_config(_FakeConn(row=(1, 0, 0)))
+    assert st == {"session": True, "server": False, "super": False}, st
+
+    st = guard.check_readonly_config(_FakeConn(row=(0, 1, 1)))
+    assert st == {"session": False, "server": True, "super": True}, st
+
+    # 查不到（老版本没有这些变量）→ 三个 None，但绝不能抛
+    st = guard.check_readonly_config(_FakeConn(row=None, fail=("transaction_read_only",)))
+    assert st["session"] is None and st["server"] is None, st
+
+
+@case("NLQ106", "nlq", "行数上限落在最外层（UNION / CTE / 子查询）", "P0",
+      ["LIMIT 加在子查询里等于没加：外层照样把整表拉出来",
+       "不测会怎样：界面上标着 500 条上限，实际一次拉几十万行"])
+def _():
+    for sql in ("SELECT * FROM pp_project UNION SELECT * FROM pp_contract",
+                "WITH x AS (SELECT * FROM pp_project) SELECT * FROM x",
+                "SELECT * FROM (SELECT * FROM pp_project LIMIT 99999) t"):
+        out = _passes(sql)
+        assert out.upper().rstrip().endswith("LIMIT 500"), f"上限没落到最外层：{out}"
+
+
+@case("NLQ107", "nlq", "改数据类意图也拒（更新/修改/导入 + 数据类宾语）", "P0",
+      ["用户要的是「敏感功能拒绝输出」，改数据同样敏感，不只是删",
+       "难点在「更新」遍地都是：更新时间、更新记录、最近更新的项目都是查询语义",
+       "所以只认「写动词 + 数据类宾语」，不认「写动词 + 业务对象」"])
+def _():
+    for q in ("更新所有项目的数据", "修改客户表的字段", "设置项目权限",
+              "导入项目数据", "批量更新项目", "批量修改工时"):
+        _screen_rejects(q, "破坏性操作")
+    # 同一条线另一侧：这些必须放行，否则正常查询全废
+    for q in ("更新项目进度", "最近更新的项目", "列出所有变更任务",
+              "查看变更记录", "修改记录是谁"):
+        guard.screen_question(q)
+
+
+@case("NLQ108", "nlq", "只是查名字里含「删除」的记录：加引号就能问", "P1",
+      ["关键词命中必然有误伤，「名称包含删除」和「删除所有项目」在词面上分不开",
+       "但加引号就分开了——引号里是值，引号外是指令，这是用户的逃生口",
+       "不测会怎样：用户想查名字带「删除」的项目，被拒后再也想不出该怎么问"])
+def _():
+    guard.screen_question("项目名称包含『删除』")
+    guard.screen_question("名称包含「清空」")
+    guard.screen_question("项目名称是 '删除测试'")
+    # 不加引号时按指令处理，并在文案里告诉他这个逃生口
+    msg = _screen_rejects("项目名称包含删除", "破坏性操作")
+    assert "引号" in msg, msg
+
+
+@case("NLQ109", "nlq", "值两边的引号要剥掉，且不能被当成否定动词", "P1",
+      ["用户加引号是为了区分「值」和「指令」，剥不干净就变成 LIKE '%『删除』%'，永远 0 行",
+       "更隐蔽的是「删除」正好匹配否定规则「删 + 除」，条件会被翻成 NOT LIKE——结果刚好相反",
+       "不测会怎样：逃生口给的答案方向和用户要的相反，比拒绝还糟"])
+def _():
+    sql, _note = local.build(_pack(), "项目名称包含『删除』")
+    assert "LIKE '%删除%'" in sql, sql
+    assert "NOT LIKE" not in sql, sql
+    assert "『" not in sql and "』" not in sql, sql
+    # 真正的否定说法不能被这条修复连坐
+    sql2, _note = local.build(_pack(), "名称不能包含测试")
+    assert "NOT LIKE '%测试%'" in sql2, sql2

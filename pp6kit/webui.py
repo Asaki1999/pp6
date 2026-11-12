@@ -1099,6 +1099,8 @@ def nlq_test() -> dict:
         pack = nlq_introspect.build_schema(conn, cfg["database"])
         nlq_introspect.annotate_liveness(conn, pack, list(pack.tables))
         nlq_introspect.annotate_columns(conn, pack)
+        # 连上之后要告诉用户「这条连接能不能写」——界面上没有别的地方能看到
+        readonly = nlq_guard.check_readonly_config(conn)
     finally:
         conn.close()
     key = f"{cfg.get('host')}:{cfg.get('port')}/{cfg.get('database')}"
@@ -1112,6 +1114,7 @@ def nlq_test() -> dict:
         "tableCount": len(pack.tables),
         "columnCount": sum(len(t.columns) for t in pack.tables.values()),
         "dictCount": len(pack.dictionaries),
+        "readonly": readonly,
         "tables": [
             {"name": t.name, "label": t.label, "rows": t.rows, "cols": len(t.columns)}
             for t in tables[:60]

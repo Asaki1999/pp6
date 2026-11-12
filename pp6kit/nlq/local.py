@@ -87,8 +87,15 @@ NEG_INFIX = ("不能包含", "不可包含", "不能含", "不包含", "不含",
              "不能有", "没有", "不带有", "不要有", "不是以", "不以")
 
 
+# 引号里的一定是**值**，不是指令语。否定判定要先把它们挖掉，
+# 否则「名称包含『删除』」里的「删除」会被 RE_NEG_VERB 当成否定动词
+# （「删除」正好是「删」+「除」），条件被翻成 NOT LIKE，搜索结果刚好相反。
+_QUOTED_LIT = re.compile(r"[「『\"'“][^」』\"'”]{1,40}[」』\"'”]")
+
+
 def has_negation(text: str) -> bool:
     """这段话里有否定意思吗？用「词根+补语」组合判定，不穷举具体词。"""
+    text = _QUOTED_LIT.sub("＿", text or "")
     if any(w in text for w in NEG_FIXED):
         return True
     if any(w in text for w in NEG_BARE):
@@ -566,7 +573,10 @@ def _condition(question: str, table: Table, pack: SchemaPack,
             # 「排除X为Y的」「X不能包含Y」：同一个条件要反过来写
             negated = is_negated(q, m.start(), q.find(lab))
 
-            raw = prefix_value or m.group(1).strip("「」\"'")
+            # 值两边的引号要剥干净：用户为了区分「值」和「指令」会加引号
+            # （「名称包含『删除』」），剥不干净就成了 `LIKE '%『删除』%'`，
+            # 库里没人这么命名，结果永远是 0 行。
+            raw = prefix_value or m.group(1).strip("「」『』\"'“”")
             value = re.split(r"的|有|吗|呢|记录", raw)[0].strip()
             if not value or value in STOP_VALUES:
                 # 「责任人是谁」「有哪些」：这是问法，不是筛选条件
