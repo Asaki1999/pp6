@@ -24,7 +24,7 @@
     "datetime": {
       "label": "日期时间",
       "datatype": "datetime",
-      "format": "yyyy-MM-dd HH:mm:ss",
+      "format": "yyyy-MM-dd HH:mm",
       "verified": true,
       "length": null
     },

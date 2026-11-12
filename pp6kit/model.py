@@ -244,6 +244,24 @@ class BoField:
             # 平台自建的系统字段（文本类）不带 format
             fmt = None
         opts = dict(self.options)
+        if self.type_new == "datetime" and not self.is_system:
+            # 线上实测（2026-11-12，逐个变量导入对照，13 行 / 14 行）：
+            # 自定义 datetime 字段在「对象属性」页会**整条消失**，而
+            # bo/def/manage 接口仍如实返回它，很难发现。触发条件是
+            # options.isDefault = true —— 平台把它当成"系统自动填充的时间戳"
+            # （createTime / updateTime 就是 isDefault=true 的 datetime，
+            #  前端一律隐藏），自定义的日期字段就被连坐隐藏了。
+            #   isDefault=false → 显示；=true → 消失，其余变量全部排除过。
+            # 所以日期字段默认**不**自动填值；要自动填请显式给默认值。
+            # options 同时按原生样子补全（原生业务字段都是这一套键）。
+            for k, v in (
+                ("isMultiple", False), ("isDefault", bool(self.default_value)),
+                ("uniqueCheck", False), ("optionSource", "BO_ATTR_DIC_TYPE"),
+                ("columns", []), ("identities", []), ("formula", None),
+            ):
+                opts.setdefault(k, v)
+            opts["isDefault"] = bool(self.default_value)
+            opts["format"] = "datetime-second" if (fmt or "").endswith(":ss") else "datetime-minute"
         if self.type_new in ("user", "department") and "isMultiple" in opts:
             if truthy(opts.get("isMultiple")) and not self.length:
                 length = 1000
