@@ -24,6 +24,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+import sqlglot
+from sqlglot import exp
+
 
 @dataclass
 class Verdict:
@@ -39,15 +42,53 @@ class Verdict:
 # 问句里出现这些词，SQL 里就该有对应的聚合
 COUNT_WORDS = ("多少", "几个", "数量", "条数", "统计", "总数", "分布", "占比")
 AGG_WORDS = ("平均", "均值", "总和", "合计", "最大", "最小")
-# 问句要求排序取前 N
-TOP_RE = re.compile(r"(?:前|最高|最低|最大|最小|top)\s*(\d+)", re.I)
+# 问句要求排序取前 N。
+# 中文里「进度最高的5个项目」比「前5个项目」更常用，「最X」和数字之间还常隔一个「的」，
+# 所以中间允许夹「的」——local._rank_order 里修过同一个坑，两个模块必须一致。
+TOP_RE = re.compile(
+    r"(?:前|最高|最低|最大|最小|最多|最少|最长|最短|top)\s*(?:的)?\s*(\d+)", re.I)
 # 问句点名了某个对象/角色，SQL 里就该出现对应线索
 ROLE_RE = re.compile(r"(?:项目经理|项目负责人|责任人|负责人|执行人|处理人)")
 # 「超支/超期/延期/逾期」这类语义，SQL 必须真的比较数字
 OVER_RE = re.compile(r"超支|超额|超期|延期|逾期|超出预算")
-NUM_CMP = re.compile(r"[<>]=?\s*\d|\bDATEDIFF\b|\b(TIMESTAMPDIFF|DATEDIFF|SUBDATE)\b", re.I)
+# 比较类 AST 节点：只认大小比较，不认 `=`/`<>`——
+# `WHERE state_ = 'finished'` 是字符串等值，不是「做了数值比较」。
+CMP_NODES = (exp.GT, exp.GTE, exp.LT, exp.LTE)
+# 解析不了时的兜底（极少发生）：宁可放过，也别把正确答案判成不合格
+NUM_CMP_FALLBACK = re.compile(
+    r"[<>]=?\s*\d|\bDATEDIFF\b|\b(TIMESTAMPDIFF|SUBDATE)\b", re.I)
 # 问句点名了某个对象，SQL 主表就该是它
 OBJECT_RE = re.compile(r"(?:每个|各个|各)\s*([\u4e00-\u9fa5]{2,10}?)\s*(?:有|的|负责|下)")
+
+
+def has_numeric_comparison(sql: str) -> bool:
+    """SQL 里是不是真的做了数值/时间比较？
+
+    为什么看 AST 而不是正则：「超支」最标准的写法是
+
+        WHERE actual_amount_ > plan_amount_
+
+    两列相比，**没有数字字面量**。旧的正则 `[<>]=?\\s*\\d` 只认 `> 100`，
+    于是规则答对了却被判不合格，每次都白升级到 AI（多 2-5 秒 + 一次额度），
+    违背本模块「宁可让规则答」的设计意图。
+
+    判定规则：存在 >、>=、<、<= 节点，且**至少一侧不是纯字面量**（含列引用即可）。
+      - `actual_amount_ > plan_amount_`  → 列 vs 列      → 算
+      - `actual_amount_ > 100`           → 列 vs 数字    → 算
+      - `DATEDIFF(end_date_, CURDATE()) < 0` → 函数含列  → 算
+      - `state_ = 'finished'`            → 不是大小比较  → 不算
+    """
+    if not sql:
+        return False
+    try:
+        ast = sqlglot.parse_one(sql, dialect="mysql")
+    except Exception:
+        return bool(NUM_CMP_FALLBACK.search(sql))
+    for node in ast.find_all(*CMP_NODES):
+        if node.this.find(exp.Column) is not None \
+                or node.expression.find(exp.Column) is not None:
+            return True
+    return False
 
 
 def judge(question: str, sql: str, rows: int,
@@ -95,7 +136,7 @@ def judge(question: str, sql: str, rows: int,
             bad.append(f"条件 {num} 没进 SQL")
 
     # 7) 问「超支/超期/延期」这类比较语义，SQL 里却没有任何数值比较
-    if OVER_RE.search(q) and not NUM_CMP.search(sql):
+    if OVER_RE.search(q) and not has_numeric_comparison(sql):
         bad.append("问了超支/超期，但没做数值比较")
 
     # 8) 问「项目经理/负责人」这类角色，SQL 里却没有人员表

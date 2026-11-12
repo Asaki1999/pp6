@@ -29,7 +29,7 @@ TEST_DIR = ROOT / "tests"
 
 # 模块顺序 = 清单顺序 = 从底层到端到端，出问题先看最前面的
 MODULES = ["naming", "reader", "validate", "bo", "form", "builder", "patch",
-           "webui", "security"]
+           "webui", "security", "nlq"]
 
 
 def load() -> None:

@@ -560,7 +560,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ## 回归测试（每次迁功能都要跑）
 
 `tests/` 下有一套零依赖的回归用例，覆盖从 Excel 解析到 HTTP 接口的整条链路，
-当前 **172 条**，全量跑完约 8 秒。
+当前 **257 条**，全量跑完约 8 秒。
 
 ```bash
 ./.venv/bin/python tools/regress.py                    # 全量
@@ -588,6 +588,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 | `patch` | 20 | 改包：加字段、覆盖改类型、改选项值真的写进字典 |
 | `webui` | 21 | 所有 HTTP 接口的正常与错误分支、路径穿越、30MB 上限 |
 | `security` | 12 | 坏 zip、`]]>`、`<script>`、emoji、200 字段宽表 |
+| `nlq` | 85 | 自然语言转 SQL：安全闸（锁定读/写操作/跨库/导出）、答案质量判定、表关系 join、选表、否定与数值条件 |
 
 ### 迁功能时的固定动作
 

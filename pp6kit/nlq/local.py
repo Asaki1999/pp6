@@ -280,6 +280,60 @@ _SYS_NAMES = frozenset({
 
 
 _NUMERIC = ("int", "bigint", "decimal", "double", "float", "smallint", "tinyint")
+# 部分库把数值列标成 number/numeric/real，同样不能当文本做 LIKE
+_NUMERIC_EXTRA = ("number", "numeric", "real")
+
+
+def _is_numeric_col(c: Column) -> bool:
+    """这列是数值类型吗？数值列只能做数值比较，绝不能 LIKE '%中文%'。"""
+    return (c.dtype or "").lower() in _NUMERIC + _NUMERIC_EXTRA
+
+
+# AVG / SUM 的目标列必须来自哪类语义标签
+AGG_HINTS = {
+    "AVG": ("工时", "进度", "工期", "金额"),
+    "SUM": ("工时", "金额", "预算", "成本", "工期"),
+}
+
+
+def _agg_column(question: str, table: Table, agg: str) -> Column | None:
+    """给 AVG/SUM 找一列**真的能统计**的数值列；找不到返回 None。
+
+    为什么必须有这个：`AVG(*)` / `SUM(*)` 在 MySQL 里是语法错误
+    （只有 `COUNT(*)` 合法），而 sqlglot 能解析它，所以安全闸看不出问题——
+    坏 SQL 会直接打到客户库执行失败。所以宁可不出聚合，也不能写 `(*)`。
+    """
+    qn = _norm(question)
+    # 1) 问句点名的字段（要求数值类型，且不是「是否xx」这种布尔开关）
+    for c in sorted(table.columns, key=_bind_priority):
+        if not _is_numeric_col(c) or _is_bool_flag(c):
+            continue
+        for lab in _label_variants(c, table):
+            if len(lab) >= 2 and lab in qn:
+                return c
+    # 2) 按语义关键词找，但**必须有值**——人工成本常常整列为空，
+    #    聚合它只会得到一行 NULL（工时合计应该聚合 normal_hours_）
+    hints = AGG_HINTS.get(agg, ())
+    cands = [c for c in table.columns
+             if any(h in _norm(c.label) for h in hints) and _is_numeric_col(c)]
+    cands.sort(key=lambda c: (c.filled == 0, c.filled if c.filled > 0 else 10**9))
+    return cands[0] if cands else None
+
+
+def _require_agg_column(question: str, table: Table, agg: str) -> Column:
+    """AVG/SUM 必须落到真实数值列上，拿不到就明确报「解析不了」。
+
+    不允许退化成 `AVG(*)`/`SUM(*)`——那是 MySQL 语法错误，而 sqlglot 能解析、
+    安全闸看不出问题，坏 SQL 会直接打到客户库执行失败。
+    也不允许随手换一列凑合（问「工时」却求和「金额」，数字看着合理但是错的）。
+    """
+    col = _agg_column(question, table, agg)
+    if col is None:
+        nm = {"AVG": "平均", "SUM": "合计"}.get(agg, agg)
+        raise NotUnderstood(
+            f"问的是{nm}，但「{table.label}」上没有可统计的数值列；"
+            f"试着点名具体字段（如「金额」「工时」「进度」）")
+    return col
 
 
 def _is_bool_flag(c: Column) -> bool:
@@ -532,6 +586,19 @@ def _condition(question: str, table: Table, pack: SchemaPack,
                         used.add(other.name)
                 value = target.enums.get(value, value)
 
+            # 数值列不能走文本匹配：`进度 LIKE '%高%'` 在 MySQL 里恒不匹配，
+            # 返回空表但不报错——比报错更难发现，用户以为「真的没有高进度项目」。
+            # 数值列只接受真正的数值条件；映射不出数值（「高」没有对应数字）就丢掉这个条件。
+            if _is_numeric_col(target) and not target.enums:
+                num = None if fuzzy else re.search(r"\d+(?:\.\d+)?", value)
+                if num is not None:
+                    where.append(f"{col} {'<>' if negated else '='} {num.group(0)}")
+                    used_values.add(str(orig_value))
+                    used_values.add(str(value))
+                spans.append((m.start(), m.end()))
+                used.add(c.name)
+                break
+
             if fuzzy:
                 if target.ref_table and not target.multi:
                     where.append(
@@ -652,7 +719,6 @@ def _single_agg(question: str, table: Table, alias: str) -> tuple[str, str] | No
     只处理**不分组**的情况：问句里没有「每个/各个/按…统计」。
     分组聚合由后面的分组逻辑处理。
     """
-    qn = _norm(question)
     # 有分组意图的不走单值聚合：
     #   「每个项目有多少」「按项目统计」「每个项目的工时合计」
     if re.search(r"(?:每个|各个|各|按)\s*[\u4e00-\u9fa5]{2,8}?\s*(?:有多少|统计|分组|汇总)", question):
@@ -669,29 +735,9 @@ def _single_agg(question: str, table: Table, alias: str) -> tuple[str, str] | No
     if not agg:
         return None
 
-    # 找聚合目标列：先看问句里点名的字段
-    target = None
-    for c in sorted(table.columns, key=_bind_priority):
-        for lab in _label_variants(c, table):
-            if len(lab) >= 2 and lab in qn:
-                dt = (c.dtype or "").lower()
-                if dt in ("int", "bigint", "decimal", "double", "float", "smallint", "tinyint"):
-                    target = c
-                    break
-        if target is not None:
-            break
-    if target is None:
-        # 按语义关键词找，但**必须有值**——人工成本常常整列为空，
-        # 聚合它只会得到一行 NULL（工时合计应该聚合 normal_hours_）
-        hints = {"AVG": ("工时", "进度", "工期", "金额"),
-                 "SUM": ("工时", "金额", "预算", "成本", "工期")}[agg]
-        cands = [c for c in table.columns
-                 if any(h in _norm(c.label) for h in hints)
-                 and (c.dtype or "").lower() in _NUMERIC]
-        cands.sort(key=lambda c: (c.filled == 0, c.filled if c.filled > 0 else 10**9))
-        target = cands[0] if cands else None
-    if target is None:
-        return None
+    # 找聚合目标列：问句点名的数值列 > 语义关键词暗示的数值列。
+    # 拿不到就抛 NotUnderstood（由调用方转 AI），绝不生成 AVG(*)/SUM(*) 这种非法聚合。
+    target = _require_agg_column(question, table, agg)
 
     nm = {"AVG": "平均", "SUM": "合计"}[agg]
     has_del = any(c.name == "deleted_" for c in table.columns)
@@ -1347,7 +1393,17 @@ def build(pack: SchemaPack, question: str) -> tuple[str, str]:
                     used_emp = True
             else:
                 select_parts.append(f"`{_al(gc)}`.`{gc.name}` AS `{gc.label}`")
-            select_parts.append(f"{agg}(*) AS `数量`")
+            # 聚合表达式：只有 COUNT 能用 `*`；AVG/SUM 必须带真实数值列，
+            # 否则就是 `AVG(*)`——MySQL 语法错误，而 sqlglot 能解析，安全闸看不见。
+            if agg in ("AVG", "SUM"):
+                agg_col = _require_agg_column(q, table, agg)
+                nm = "平均" if agg == "AVG" else "合计"
+                select_parts.append(
+                    f"{agg}(`{_al(agg_col)}`.`{agg_col.name}`) "
+                    f"AS `{nm}{agg_col.label}`")
+                notes.append(f"{nm}「{agg_col.label}」")
+            else:
+                select_parts.append("COUNT(*) AS `数量`")
             notes.append(f"按「{gc.label}」分组统计")
         else:
             select_parts.append("COUNT(*) AS `数量`")
@@ -1400,10 +1456,12 @@ def build(pack: SchemaPack, question: str) -> tuple[str, str]:
     has_deleted = any(c.name == "deleted_" for c in table.columns)
     where = where or (SOFT_DELETE.format(alias=alias) if has_deleted else "1=1")
 
-    # 有聚合时，非聚合列必须进 GROUP BY，否则 MySQL 直接报 1140
+    # 有聚合时，非聚合列必须进 GROUP BY，否则 MySQL 直接报 1140。
+    # 聚合表达式（COUNT/AVG/SUM/MAX/MIN）本身不能进 GROUP BY。
     group_by = ""
     if wants_count:
-        plain = [p for p in select_parts if "COUNT(" not in p]
+        plain = [p for p in select_parts
+                 if not re.search(r"\b(COUNT|AVG|SUM|MAX|MIN)\(", p)]
         if plain:
             # 去掉 " AS `别名`"，剩下的表达式整体进 GROUP BY
             # （多值外键是标量子查询，整段放进去才不会被 only_full_group_by 拦）

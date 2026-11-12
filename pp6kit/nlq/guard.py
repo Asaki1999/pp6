@@ -24,6 +24,11 @@ PARTY_TABLES = {
     "iform_object_role",      # 对象角色字典——项目角色的名字在这里，不在 pp_project_role
 }
 
+# MySQL 内建虚拟表：不在客户库里，也不承载任何数据。
+# 模型常写 `SELECT NOW() FROM DUAL`（Oracle 习惯），这类 SQL 是安全的，
+# 不该报「访问了未授权的表」。按小写比较。
+VIRTUAL_TABLES = {"dual"}
+
 # 永远不许碰的库
 FORBIDDEN_SCHEMAS = {"information_schema", "mysql", "performance_schema", "sys"}
 
@@ -70,6 +75,12 @@ def validate(sql: str, allowed_tables: set[str], max_rows: int = MAX_ROWS) -> st
     if not text:
         raise SqlRejected("SQL 为空")
 
+    # INTO OUTFILE / DUMPFILE：sqlglot 30.x 在解析阶段就会抛，
+    # 落到下面的「语法错误」分支会让用户去查语法，而真实原因是禁止导出。
+    # 这里先按关键词兜一次，保证报错文案说的是痛点。
+    if re.search(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", text, re.I):
+        raise SqlRejected("不允许导出到文件（INTO OUTFILE / DUMPFILE）")
+
     try:
         statements = [s for s in sqlglot.parse(text, dialect="mysql") if s is not None]
     except Exception as exc:
@@ -93,6 +104,19 @@ def validate(sql: str, allowed_tables: set[str], max_rows: int = MAX_ROWS) -> st
     if isinstance(ast, exp.Select) and ast.args.get("into"):
         raise SqlRejected("不允许导出到文件（INTO OUTFILE）")
 
+    # 锁定读：FOR UPDATE / FOR SHARE / LOCK IN SHARE MODE。
+    # 危险在哪：它们都是 SELECT，不受 MySQL read_only 限制，却会在客户库上
+    # **持有行锁直到连接关闭**。连接被池复用或空闲时，相关写事务会一直阻塞到
+    # innodb_lock_wait_timeout（默认 50 秒）报错——这属于「放行不该放的 SQL」。
+    # 必须用 find_all 而不是只看顶层 ast.args["locks"]：
+    # `WHERE id_ IN (SELECT ... FOR UPDATE)` 这种变体是写在子查询里的。
+    lock_nodes = list(ast.find_all(exp.Lock))
+    if lock_nodes:
+        kinds = {"FOR UPDATE" if node.args.get("update") else "FOR SHARE"
+                 for node in lock_nodes}
+        raise SqlRejected("不允许锁定读（" + "、".join(sorted(kinds))
+                          + "）：会在客户库上持有行锁，阻塞业务写入")
+
     # 表名白名单
     ctes = {c.alias_or_name.lower() for c in ast.find_all(exp.CTE)}
     referenced: set[str] = set()
@@ -103,6 +127,8 @@ def validate(sql: str, allowed_tables: set[str], max_rows: int = MAX_ROWS) -> st
         name = t.name
         if not name or name.lower() in ctes:
             continue
+        if name.lower() in VIRTUAL_TABLES:
+            continue                     # DUAL 这类虚拟表不是真实数据表
         referenced.add(name)
     unknown = {t for t in referenced if t not in allowed_tables}
     if unknown:

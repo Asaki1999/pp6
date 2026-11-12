@@ -1156,7 +1156,17 @@ def nlq_ask(payload: dict) -> dict:
                 return res
 
         # ---- hybrid：规则先跑 ----
-        res = _ask_local(conn, pack, question, allowed)
+        try:
+            res = _ask_local(conn, pack, question, allowed)
+        except nlq_local.NotUnderstood as exc:
+            # 规则引擎明确说解析不了（问句里没有任何对象名/字段名/句式线索）。
+            # 不能硬编一条错 SQL 去查生产库——有模型就交给 AI，没有就如实报错。
+            if not has_key:
+                raise
+            res = {"sql": "", "columns": [], "rows": [],
+                   "source": f"规则没看懂这个问题（{exc}），已改由 AI 分析",
+                   "origin": "rule", "origin_label": "规则生成",
+                   "question": question}
         if not has_key:
             res["source"] += "（未配置大模型，仅用规则）"
             return res

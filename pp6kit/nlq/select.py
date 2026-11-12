@@ -171,14 +171,28 @@ def _has_usable_state(t: Table) -> bool:
     return False
 
 
-def _score_table(t: Table, qn: str, ctx: dict, helpers) -> tuple[float, list[str]]:
-    """单表打分。权重含义写在这里，改权重只改这一处。"""
+def _score_table(t: Table, qn: str, ctx: dict,
+                 helpers) -> tuple[float, list[str], bool]:
+    """单表打分。权重含义写在这里，改权重只改这一处。
+
+    返回 (分数, 加分理由, 是否有语义命中)。
+
+    第三个返回值是关键：分数里混着两类东西——
+      - **语义命中**：问句真的点了这张表的对象名/别名，或点了它才有的字段，
+        或句式解析（「每个X有多少Y」「按X统计Y」）指到了它。
+      - **结构分**：有数据 +3、有 name_ + create_time_ +2。
+        它们只说明「这是一张正经业务表」，跟问句问了什么**毫无关系**。
+    只有结构分的表不能算候选，否则「今天天气怎么样」也会被当成「查需求」，
+    给出一张真实业务表的全量数据，看起来像答对了。
+    """
     score = 0.0
     why: list[str] = []
+    matched = False
 
     # 1) 对象名命中：全名最高，别名次之（越长的别名越具体）
     labels = _alias_hits(t, qn)
     if labels:
+        matched = True
         best = labels[0]
         full = _table_label(t)
         if best == full and full in qn:
@@ -191,15 +205,20 @@ def _score_table(t: Table, qn: str, ctx: dict, helpers) -> tuple[float, list[str
     # 2) 字段命中：问句点名的字段，这张表有就加分
     cols = _column_hits(t, qn, helpers)
     if cols:
+        matched = True
         score += min(len(cols), 4) * 4
         why.append("字段 " + "、".join(cols[:2]))
+    elif any(len(lab) >= 2 and lab in qn for c in t.columns for lab in helpers(c, t)):
+        # 短标签（「金额」「状态」这种两个字）不参与计分——它们太泛，会把分数拉平；
+        # 但问句确实点到了这张表才有的字段，算语义命中，不该被当成「没认出来」。
+        matched = True
 
     # 3) 缺字段扣分：问句点名的具体字段（≥4 字）这张表缺一个就扣
     missing = [lab for lab in ctx["specific"] if lab not in cols and not _has_column(t, lab, helpers)]
     if missing:
         score -= 10 * min(len(missing), 3)
 
-    # 4) 有数据加分（空表基本不可能是用户要的）
+    # 4) 有数据加分（空表基本不可能是用户要的）——结构分，不算语义命中
     if t.rows > 0:
         score += 3
     else:
@@ -218,7 +237,7 @@ def _score_table(t: Table, qn: str, ctx: dict, helpers) -> tuple[float, list[str
         score -= 15
         why.append("配置表")
 
-    # 7) 结构奖励：有 name_ + 有 create_time_ 说明是正经业务表
+    # 7) 结构奖励：有 name_ + 有 create_time_ 说明是正经业务表——结构分
     if has_name and any(c.name == "create_time_" for c in t.columns):
         score += 2
 
@@ -227,6 +246,7 @@ def _score_table(t: Table, qn: str, ctx: dict, helpers) -> tuple[float, list[str
     if target:
         group, want = target
         if want and _matches_label(t, want):
+            matched = True
             score += 30
             why.append(f"被查询对象「{want}」")
             # 同时挂到分组对象上：每个开发迭代的任务数 → pp_dev_task(dev_sprint_id_)
@@ -236,6 +256,7 @@ def _score_table(t: Table, qn: str, ctx: dict, helpers) -> tuple[float, list[str
                 score += 18
                 why.append(f"挂在「{group}」上")
         elif want and _matches_alias(t, want):
+            matched = True
             score += 18
             why.append(f"被查询对象「{want}」（别名）")
         # 分组对象只是限定范围，不该抢主表
@@ -263,18 +284,20 @@ def _score_table(t: Table, qn: str, ctx: dict, helpers) -> tuple[float, list[str
             if not (yword and _matches_label(t, yword)):
                 score -= 14
         if yword and _matches_label(t, yword):
+            matched = True
             score += 14
             why.append(f"按「{gword}」统计「{yword}」")
 
     # 13) 抬头表 vs 明细表：用户说「预算」通常要的是明细（花了什么），不是抬头
     if ctx.get("wants_detail") and not any(a.endswith("明细") or a.endswith("条目") for a in labels):
         if t.name.endswith(DETAIL_SUFFIX):
+            matched = True
             score += 10
             why.append("明细表")
         elif t.name.endswith("_budget") or t.name.endswith("_contract"):
             score -= 8
 
-    return score, why
+    return score, why, matched
 
 
 def _matches_label(t: Table, word: str) -> bool:
@@ -332,27 +355,37 @@ def choose(pack: SchemaPack, question: str, helpers,
            "wants_detail": bool(re.search(r"花在|花销|花哪|花费|明细|明细项", question)),
            "asks_state": bool(STATE_WORDS.search(question))}
 
-    scored: list[tuple[float, Table, list[str]]] = []
+    scored: list[tuple[float, Table, list[str], bool]] = []
     for t in pack.tables.values():
-        s, why = _score_table(t, qn, ctx, helpers)
-        if s > 0 or any(a in qn for a in t.aliases):
-            scored.append((s, t, why))
+        s, why, hit = _score_table(t, qn, ctx, helpers)
+        if s > 0 or hit:
+            scored.append((s, t, why, hit))
     if not scored:
         raise KeyError("没认出你要查哪个对象，试着带上对象名（如「项目」「任务」「风险」）")
 
     scored.sort(key=lambda x: (-x[0], -x[1].rows, -len(x[1].columns)))
-    best_score, best, best_why = scored[0]
+    best_score, best, best_why, _best_hit = scored[0]
 
     # ---- 口语兜底：只在「没有任何对象被点名」时生效
-    named = any(_alias_hits(t, qn) for _, t, _ in scored[:3])
+    named = any(_alias_hits(t, qn) for _, t, _, _ in scored[:3])
+    oral_hit = False
     if not named:
         for pattern, tname in ORAL_ENTITY:
             if re.search(pattern, question) and tname in pack.tables:
                 best, best_why = pack.tables[tname], [f"口语「{pattern}」"]
                 best_score = max(best_score, 1)
+                oral_hit = True
                 break
 
-    ranking = [(s, t.name) for s, t, _ in scored[:5]]
+    # ---- 「真的被问到了吗」：结构分（有数据 +3、有名称列 +2）只能用来排同分，
+    #      不能让一张**完全没被提到**的表变成候选。否则「今天天气怎么样」也会
+    #      落到需求表，给出一张真实业务表的全量数据——看起来像答对了，实则答非所问。
+    #      注意别修过头：「有哪些项目」点了对象名（别名命中）、「每个项目有多少需求」
+    #      走了句式解析，都算语义命中，照常出 SQL。
+    if not oral_hit and not any(hit for _, _, _, hit in scored):
+        raise KeyError("没认出你要查哪个对象，试着带上对象名（如「项目」「任务」「风险」）")
+
+    ranking = [(s, t.name) for s, t, _, _ in scored[:5]]
     return Choice(table=best, score=best_score, reasons=best_why, ranking=ranking)
 
 
