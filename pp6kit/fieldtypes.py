@@ -166,7 +166,13 @@ def resolve(value: str) -> str:
 
 
 def is_known(code: str) -> bool:
-    return code in all_types()
+    """能不能认出这个类型。
+
+    不能只比键名：模板下拉给的是「日期时间（datetime）」这种带括号的写法，
+    用户还会手抄「日期」「选项」。这些都能被 resolve 认出来，
+    若在这里判 False，校验会对着合法的下拉选项一路报「未知数据类型」。
+    """
+    return resolve(code) in all_types()
 
 
 def is_verified(code: str) -> bool:

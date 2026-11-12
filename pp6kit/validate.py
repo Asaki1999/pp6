@@ -228,7 +228,10 @@ def validate(proj: Project) -> list[Issue]:
         issues.extend(_widget_issues(form, bo, w, proj))
 
         for ff in form.fields:
-            if ff.field_type in CONTAINER_TYPES:
+            # 明细表控件的 name 是「5_列表」的列表key，不是对象字段编码，
+            # 按字段存在性去核对必然误报一条「可能无法保存数据」——
+            # 子表本来就是嵌另一个列表，取数由 dataTemplate 自己负责。
+            if ff.field_type in CONTAINER_TYPES or ff.field_type == "dataTemplate":
                 continue
             if bo is not None and bo.field_by_code(ff.name) is None and ff.name not in ("id", "version", "pinyin"):
                 issues.append(Issue("warn", w, f"控件 {ff.name} 在对象字段中不存在，可能无法保存数据"))

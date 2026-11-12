@@ -557,6 +557,63 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 > `engine` 参数名不是 `mode`，传错了会静默走默认值。
 
+## 回归测试（每次迁功能都要跑）
+
+`tests/` 下有一套零依赖的回归用例，覆盖从 Excel 解析到 HTTP 接口的整条链路，
+当前 **172 条**，全量跑完约 8 秒。
+
+```bash
+./.venv/bin/python tools/regress.py                    # 全量
+./.venv/bin/python tools/regress.py --list             # 只列清单（带编号）
+./.venv/bin/python tools/regress.py -m patch           # 只跑改包
+./.venv/bin/python tools/regress.py --only WEB         # 按编号前缀
+./.venv/bin/python tools/regress.py --level P0         # 只跑核心链路
+./.venv/bin/python tools/regress.py -x                 # 首个失败即停
+./.venv/bin/python tools/regress.py --report docs/测试用例清单.md   # 重写清单
+```
+
+不需要装 pytest，用的是自带 runner（`tools/regress.py`），退出码 0/1 可直接接 CI。
+用例清单见 [`docs/测试用例清单.md`](docs/测试用例清单.md)，**由注册表生成，不要手改**。
+
+### 覆盖范围
+
+| 模块 | 条数 | 守什么 |
+|---|---|---|
+| `naming` | 20 | 对象编码/物理表名与系统真实命名一致，不拼 `pp_pp_` |
+| `reader` | 23 | Excel 容错：编码留空自动生成、坏行报错、选项换行解析 |
+| `validate` | 22 | 该拦的拦住（表名大写、明细表缺来源、导入表单带系统字段），不该拦的不拦 |
+| `bo` | 21 | 字段属性、字典、系统字段、父子关系、日期字段不被平台隐藏 |
+| `form` | 18 | 布局 V1.0 契约：parentId / columns↔rows / 两份 field_options / sn 连续 |
+| `builder` | 15 | zip 顶层目录、条目编号、模块过滤、校验有错不出包 |
+| `patch` | 20 | 改包：加字段、覆盖改类型、改选项值真的写进字典 |
+| `webui` | 21 | 所有 HTTP 接口的正常与错误分支、路径穿越、30MB 上限 |
+| `security` | 12 | 坏 zip、`]]>`、`<script>`、emoji、200 字段宽表 |
+
+### 迁功能时的固定动作
+
+1. 先跑全量，确认基线是绿的（有红的先判断是不是既有问题）；
+2. 改代码；
+3. 再跑全量 —— 失败说明真改坏了，不要绕过；
+4. 新行为补成用例（见下），`--report` 更新清单；
+5. 涉及 `.py` / `assets/` / `static/` 时打包：`./build/build_macos.sh`。
+
+新增接口至少要两条：一条正常返回、一条坏输入；新增字段类型要在 `bo` 和 `form`
+各补一条，断言 XML 里的**真实属性**，不要只断言中间变量。
+
+### 用例怎么写
+
+```python
+@case("PAT21", "patch", "改字段类型后表单控件跟着变", "P1",
+      ["form/ 里的 fieldType 不再是 text"])
+def _():
+    ...   # 直接 assert，失败信息就是给人看的
+```
+
+- 编号 `模块前缀 + 两位序号`，**发布的编号不复用**，删了留空号；
+- 标题写用户能感知的行为，不写「测试某函数」；
+- `tags` 写这条用例真正守住的东西，回归失败时一眼看出影响面；
+- 只能人工确认的（连库、大模型）用 `skip("原因")`，并在验收单里写手工步骤。
+
 ## 开发约定
 
 几个反复踩到的，写下来省事：

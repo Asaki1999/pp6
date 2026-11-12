@@ -238,21 +238,27 @@ class BoField:
 
     def resolved(self) -> dict[str, Any]:
         """补齐缺省值，返回生成用的扁平参数。"""
-        cfg = _ft.specs().get(self.type_new) or _ft.specs().get("varchar") or {
+        # reader 已把「日期时间（datetime）」「选项」这类写法归一过，
+        # 但手写系统里不存在的叫法（「日期」）会原样留下来。
+        # XML 的 dataTypeNew 必须是系统认得的类型：认不出就按字符串落库，
+        # 且与 datatype 保持一致——否则会写出 dataTypeNew="日期" 这种脏类型，
+        # 导入后字段在界面上既不是日期也改不了。
+        type_new = self.type_new if _ft.is_known(self.type_new) else "varchar"
+        cfg = _ft.specs().get(type_new) or _ft.specs().get("varchar") or {
             "datatype": "varchar", "length": 200, "format": None,
         }
         datatype = self.datatype or cfg["datatype"]
         length = self.length if self.length is not None else cfg["length"]
         fmt = cfg["format"]
-        if self.type_new == "clob":
+        if type_new == "clob":
             length, fmt = None, None
-        if self.type_new == "datetime":
+        if type_new == "datetime":
             length = None
-        if self.is_system and self.type_new != "datetime":
+        if self.is_system and type_new != "datetime":
             # 平台自建的系统字段（文本类）不带 format
             fmt = None
         opts = dict(self.options)
-        if self.type_new == "datetime" and not self.is_system:
+        if type_new == "datetime" and not self.is_system:
             # 线上实测（2026-11-12，逐个变量导入对照，13 行 / 14 行）：
             # 自定义 datetime 字段在「对象属性」页会**整条消失**，而
             # bo/def/manage 接口仍如实返回它，很难发现。触发条件是
@@ -270,7 +276,7 @@ class BoField:
                 opts.setdefault(k, v)
             opts["isDefault"] = bool(self.default_value)
             opts["format"] = "datetime-second" if (fmt or "").endswith(":ss") else "datetime-minute"
-        if self.type_new in ("user", "department") and "isMultiple" in opts:
+        if type_new in ("user", "department") and "isMultiple" in opts:
             if truthy(opts.get("isMultiple")) and not self.length:
                 length = 1000
 
@@ -281,7 +287,7 @@ class BoField:
         #   多选的 attr_length_ 一律是 1000（要存逗号分隔的多个 key）
         #   单选的通常是 32 / 50 / 64 / 255
         # 所以我们没显式给的时候默认单选（false），只有明确声明多选才放宽长度。
-        if self.type_new == "dic":
+        if type_new == "dic":
             two = opts.get("isMultiple")
             multi = truthy(two) if two is not None else False
             opts["isMultiple"] = multi
@@ -298,7 +304,7 @@ class BoField:
         #                   "duplicateType":"allow","duplicateScope":"",
         #                   "queryCondition":{"condition":"AND","rules":[]}}]}
         # regulation 占位符：{yyyy} 年 / {MM} 月 / {dd} 日 / {NO} 流水号
-        if self.type_new == "autoNumber":
+        if type_new == "autoNumber":
             opts.setdefault("isMultiple", False)
             opts.setdefault("isDefault", False)
             opts.setdefault("uniqueCheck", False)
@@ -328,12 +334,12 @@ class BoField:
         #       → 界面显示「选项来源=全局选项」
         # 我们的字段都是从文档新建的独立字典，所以用 BO_ATTR_DIC_TYPE。
         object_type = self.object_type or None
-        if self.type_new == "dic":
+        if type_new == "dic":
             # 自定义字典的 objectType 就是 dict_key（对象编码_字段编码），
             # 和 dictionaryType.typeKey 保持完全一致，不加下划线
             object_type = self.dict_key() or None
             opts.setdefault("optionSource", "BO_ATTR_DIC_TYPE")
-        elif self.type_new == "object":
+        elif type_new == "object":
             opts.setdefault("optionSource", "BO_ATTR_DIC_TYPE")
             # 多选关联对象要存逗号分隔的多个 id，64 装不下。
             # 库里真实数据 project_completion.phase（多选关联「项目阶段」）
@@ -360,7 +366,7 @@ class BoField:
         # 其余保守给 false（不臆造 number=0 之类的语义）。
         opts.setdefault(
             "isDefault",
-            bool(self.default_value) or self.type_new == "datetime")
+            bool(self.default_value) or type_new == "datetime")
 
         return {
             "code": self.code,
@@ -369,7 +375,7 @@ class BoField:
             "desc": self.desc or self.name or self.code,
             "type": "base",
             "datatype": datatype,
-            "dataTypeNew": self.type_new,
+            "dataTypeNew": type_new,
             "objectType": object_type,
             "options": opts or None,
             "isnull": "Y" if self.is_null else "N",

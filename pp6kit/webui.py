@@ -198,7 +198,10 @@ def parse_excel(data: bytes) -> dict:
     from .model import table_name_for
     from .validate import Issue
 
-    notices = []
+    # 自动补齐的提示（编码/表名是按名称推出来的、对象编码被归一到唯一对象）
+    # 必须一起返回：用户填了名字就出包，但得知道「编码不是你填的那个」，
+    # 否则导入后对不上自己以为的表名，只能去库里翻。
+    notices = list(proj.auto_notes)
     for bo in proj.bos:
         if not bo.tbl_name:
             bo.tbl_name = table_name_for(bo.code)
