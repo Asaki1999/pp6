@@ -490,6 +490,10 @@ async function ask(engine) {
     renderResult(d, Math.round(performance.now() - t0));
   } catch (e) {
     Q.get("qSqlCard").hidden = false;
+    // 清空旧的 SQL：被安全闸拒掉时如果还留着上一次的结果，
+    // 很容易被当成「这次生成的」，真的复制去库里跑就麻烦了。
+    Q.get("qSql").value = "";
+    Q.get("qRuleBox").hidden = true;
     Q.get("qErr").hidden = false;
     Q.get("qErr").textContent = e.message +
       (String(e.message).includes("API Key")

@@ -281,15 +281,54 @@ bin/pp6 dbmap        # 生成 docs/数据库结构图谱.md
 
 ### 安全
 
-生成结果一律过闸，用 **sqlglot 解析成 AST 再判断**（不是正则匹配）：
+这套东西直连**客户生产库**，所以闸门做了三层，每一层单独都能兜住：
+
+**① 问句层（调用模型之前）** — `guard.screen_question()`
+
+用户问「把项目表删了」「清空所有数据」「批量删除」这类**破坏性意图**，
+或者往问句里塞 `; DROP TABLE`、`union select`、`or 1=1`、`忽略上面的指令`，
+直接拒绝，**不生成任何 SQL，也不调模型**。
+
+放在最前面不只是为了省一次 API 调用：prompt 注入一旦生效，模型会主动改写条件
+（比如偷偷去掉 `deleted_ <> 'Y'` 的过滤），那种 SQL 仍然是合法的 `SELECT`，
+SQL 层的只读闸根本看不出问题——只能在问句这一层拦。
+
+判定按「动词 + 宾语」的搭配看，不是关键词黑名单：
+「删除的项目」「删除标记」「最近修改时间」这些是定语和字段名，先掩掉再判，
+所以 `assets/probe_questions.json` 里 202 条真实问句**一条都不误伤**。
+
+**② SQL 层** — `guard.validate()`
+
+用 sqlglot 解析成 AST 再判断（不是正则匹配）：
 
 - 只放行 `SELECT` / `WITH ... SELECT`，语句数必须为 1
 - 从 AST 取真实表名（自动排除 CTE 别名）比对白名单
 - 拒绝 `information_schema` / `mysql` / `sys` 等系统库
-- 拒绝 `INTO OUTFILE`、`SLEEP`、`BENCHMARK`、`LOAD_FILE` 等
+- 拒绝 `INTO OUTFILE`、`SLEEP`、`BENCHMARK`、`LOAD_FILE`、`sys_exec` 等
+- 拒绝锁定读 `FOR UPDATE` / `FOR SHARE`（只读但会持有行锁，阻塞业务写入）
+- 拒绝 MySQL 版本注释 `/*! ... */`（里面的语句**会真的执行**）
+- 拒绝读系统变量 `@@datadir` / `@@version`（信息泄露）
 - 自动补 `LIMIT 500`（已有更大的值也压下来）
+- **放行前对序列化出来的文本再复检一次只读**——前端拿到的是文本不是 AST
 
-11 个绕过尝试全部拦截（多语句、写操作、系统库、危险函数、导出文件）。
+**③ 执行层** — `engine.run_sql()`
+
+`cursor.execute` 之前再断言一次 `guard.is_read_only()`。所有调用点其实都走过
+`validate` 了，这行是冗余的——但 `run_sql` 是公开函数，哪一处忘了校验，
+写语句就落到客户库上了。
+
+**防注入**
+
+规则引擎会把人话里的值拼成 SQL 字面量（「项目经理是张三」→ `name_ = '张三'`），
+所以拼之前一律走 `local._lit()`：单引号双写、反斜杠双写（只转引号会留下 `\'` 这个绕过口），
+`LIKE` 里的 `%` `_` 也转成字面量。不转的话，问一句「项目经理是 x' OR '1'='1」
+就能把 `WHERE` 撑开读走整表——它确实只读，只读闸拦不住。
+
+**只读账号兜底**
+
+`guard.check_readonly_config()` 会读 `@@read_only` / `@@super_read_only` 告诉你
+当前账号是不是只读账号。程序**不会**去 `SET` 改服务端配置（那是越权），
+但建议连客户库时就用只读账号——这是绕过所有代码后唯一还挡得住的一层。
 
 ## 业务对象的编码和表名怎么来
 
@@ -560,7 +599,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ## 回归测试（每次迁功能都要跑）
 
 `tests/` 下有一套零依赖的回归用例，覆盖从 Excel 解析到 HTTP 接口的整条链路，
-当前 **257 条**，全量跑完约 8 秒。
+当前 **272 条**，全量跑完约 8 秒。
 
 ```bash
 ./.venv/bin/python tools/regress.py                    # 全量
@@ -588,7 +627,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 | `patch` | 20 | 改包：加字段、覆盖改类型、改选项值真的写进字典 |
 | `webui` | 21 | 所有 HTTP 接口的正常与错误分支、路径穿越、30MB 上限 |
 | `security` | 12 | 坏 zip、`]]>`、`<script>`、emoji、200 字段宽表 |
-| `nlq` | 85 | 自然语言转 SQL：安全闸（锁定读/写操作/跨库/导出）、答案质量判定、表关系 join、选表、否定与数值条件 |
+| `nlq` | 100 | 自然语言转 SQL：三层安全闸（问句层拒破坏意图与注入、SQL 层拒写操作/锁定读/跨库/导出、执行层再断言）、字符串字面量转义、答案质量判定、表关系 join、选表、否定与数值条件 |
 
 ### 迁功能时的固定动作
 

@@ -201,6 +201,15 @@ def build_messages(pack: SchemaPack, question: str, examples: list[dict] | None 
 
 
 def run_sql(conn, sql: str, max_rows: int = guard.MAX_ROWS) -> tuple[list[str], list[list]]:
+    """执行查询。**执行前再断言一次只读**。
+
+    所有调用点其实都先走 `guard.validate` 了，这行是冗余的——但冗余得值：
+    `run_sql` 是公开函数，probe / audit / 未来的新功能都可能直接调它，
+    哪一处忘了校验，写语句就落到客户库上了。多花一次 AST 解析（毫秒级），
+    换掉「某个调用点漏判＝生产事故」的可能性。
+    """
+    if not guard.is_read_only(sql):
+        raise guard.SqlRejected("拒绝执行：这条 SQL 不是纯只读查询")
     cur = conn.cursor()
     t0 = time.time()
     cur.execute(sql)

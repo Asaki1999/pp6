@@ -604,26 +604,26 @@ def _condition(question: str, table: Table, pack: SchemaPack,
                     where.append(
                         f"{col} {'NOT IN' if negated else 'IN'} "
                         f"(SELECT `id_` FROM `{target.ref_table}` "
-                        f"WHERE `name_` LIKE '%{value}%')"
+                        f"WHERE `name_` LIKE {_like(value)})"
                     )
                 else:
-                    where.append(f"{col} {'NOT LIKE' if negated else 'LIKE'} '%{value}%'")
+                    where.append(f"{col} {'NOT LIKE' if negated else 'LIKE'} {_like(value)}")
             elif negated and not target.ref_table and not target.dic_type:
-                where.append(f"{col} NOT LIKE '%{value}%'")
+                where.append(f"{col} NOT LIKE {_like(value)}")
             elif target.ref_table == EMPLOYEE_TABLE:
                 where.append(f"{col} {'NOT IN' if negated else 'IN'} "
-                             f"(SELECT `id_` FROM `{EMPLOYEE_TABLE}` WHERE `name_` = '{value}')")
+                             f"(SELECT `id_` FROM `{EMPLOYEE_TABLE}` WHERE `name_` = {_lit(value)})")
             elif target.ref_table == ORG_TABLE:
                 where.append(f"{col} {'NOT IN' if negated else 'IN'} "
-                             f"(SELECT `id_` FROM `{ORG_TABLE}` WHERE `name_` = '{value}')")
+                             f"(SELECT `id_` FROM `{ORG_TABLE}` WHERE `name_` = {_lit(value)})")
             elif target.ref_table:
                 where.append(f"{col} {'NOT IN' if negated else 'IN'} "
-                             f"(SELECT `id_` FROM `{target.ref_table}` WHERE `name_` = '{value}')")
+                             f"(SELECT `id_` FROM `{target.ref_table}` WHERE `name_` = {_lit(value)})")
             elif target.dic_type and target.dic_type in pack.dictionaries:
                 rev = {v: k for k, v in pack.dictionaries[target.dic_type].items()}
-                where.append(f"{col} {'<>' if negated else '='} '{rev.get(value, value)}'")
+                where.append(f"{col} {'<>' if negated else '='} {_lit(rev.get(value, value))}")
             else:
-                where.append(f"{col} {'NOT LIKE' if negated else 'LIKE'} '%{value}%'")
+                where.append(f"{col} {'NOT LIKE' if negated else 'LIKE'} {_like(value)}")
             spans.append((m.start(), m.end()))
             used.add(c.name)
             used_values.add(str(orig_value))
@@ -671,7 +671,7 @@ def _condition(question: str, table: Table, pack: SchemaPack,
             # 「除了高风险以外」：值前面有否定词就反过来
             pos = q.find(hit[0])
             negated = pos > 0 and is_negated(q, pos, pos)
-            where.append(f"`{alias}`.`{c.name}` {'<>' if negated else '='} '{hit[1]}'")
+            where.append(f"`{alias}`.`{c.name}` {'<>' if negated else '='} {_lit(hit[1])}")
 
         # 「风险等级不是高的」：枚举标签是单字（高/中/低）时上面那条不触发，
         # 因为要求标签至少 3 个字。这里单独处理「字段 + 不是/不为 + 单字值」。
@@ -683,7 +683,7 @@ def _condition(question: str, table: Table, pack: SchemaPack,
             # 中文短值 → 库里码（高→High），模糊匹配枚举标签
             code = next((v for k, v in c.enums.items() if short in k or k in short), None)
             if code:
-                where.append(f"`{alias}`.`{c.name}` <> '{code}'")
+                where.append(f"`{alias}`.`{c.name}` <> {_lit(code)}")
 
     # 否定：「未关闭」→ 找「已关闭」这种精确对应的枚举标签
     neg = re.search(r"(?:未|没|不)([\u4e00-\u9fa5]{1,4})", q)
@@ -693,7 +693,7 @@ def _condition(question: str, table: Table, pack: SchemaPack,
             hit = next(((lab, code) for lab, code in (c.enums or {}).items()
                         if lab.startswith("已") and lab.endswith(word)), None)
             if hit:
-                where.append(f"`{alias}`.`{c.name}` <> '{hit[1]}'")
+                where.append(f"`{alias}`.`{c.name}` <> {_lit(hit[1])}")
                 break
     return " AND ".join(where), []
 
@@ -884,6 +884,34 @@ TEAM_CHAIN = ("pp_project", "pp_project_role", "pp_project_member",
 TEAM_CHAIN_PACKED = ("pp_project", "pp_project_role", "pp_project_member")
 
 
+def _lit(value) -> str:
+    """把值转成 MySQL 字符串字面量（带引号），转义反斜杠与单引号。
+
+    为什么必须做：这些值来自**用户问句的原文**（「项目经理是张三」里的「张三」）。
+    不转义的话，问一句「项目经理是 x' OR '1'='1」就能把 WHERE 条件撑开，
+    把整张表读出来——这是真·SQL 注入，而且它不被 `guard` 的只读闸拦：
+    它确实只读，只是读的范围被注入改写了。
+    反斜杠要一起转：MySQL 默认把 `\\` 当转义符，只转单引号会留下 `\\'` 这个绕过口。
+    """
+    s = "" if value is None else str(value)
+    s = s.replace("\\", "\\\\").replace("'", "''").replace("\x00", "")
+    return f"'{s}'"
+
+
+def _like(value) -> str:
+    """LIKE 用的「%值%」字面量。
+
+    除了引号，还要把 `%` `_` 转义掉：用户写「项目名称包含 A_B」时，
+    `_` 在 LIKE 里是「任意一个字符」——不转义就成了模糊通配，
+    搜「A_B」会连「AXB」一起捞出来，结果跟他问的不是一回事。
+    MySQL 在字符串字面量里会把 `\\%` `\\_` 保留给 LIKE 用，所以这样拼是对的。
+    """
+    s = "" if value is None else str(value)
+    s = (s.replace("\\", "\\\\").replace("'", "''")
+         .replace("%", "\\%").replace("_", "\\_"))
+    return f"'%{s}%'"
+
+
 def _quoted_name(q: str) -> str:
     """问句里用引号括起来的项目名：「XX项目」/ "XX" / 'XX'。"""
     m = re.search(r"[「『\"'“]([^」』\"'”]{2,30})[」』\"'”]", q)
@@ -908,8 +936,7 @@ def _build_team_template(pack: SchemaPack, q: str) -> tuple[str, str] | None:
     ]
     notes = ["按「项目 → 项目角色 → 角色成员」三层关联，角色为空也会列出来"]
     if name:
-        safe = name.replace("'", "''")
-        where.append(f"`p`.`name_` LIKE '%{safe}%'")
+        where.append(f"`p`.`name_` LIKE {_like(name)}")
         notes.append(f"项目名包含「{name}」")
 
     # 分布：直接按角色数人，不需要 pp_project 参与

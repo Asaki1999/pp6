@@ -1129,6 +1129,9 @@ def nlq_ask(payload: dict) -> dict:
     question = (payload.get("question") or "").strip()
     if not question:
         raise ValueError("问题不能为空")
+    # 第一道闸：问句层。破坏性意图/注入片段在这里就拒，**不产生任何 SQL**，
+    # 也不去调模型——省一次调用，更重要的是不让注入有机会改写 WHERE。
+    nlq_guard.screen_question(question)
     mode = (payload.get("engine") or "hybrid").lower()
     cfg = _llm_conf()
     has_key = bool(nlq_llm.active_channels(cfg))
@@ -1348,6 +1351,12 @@ def nlq_save_example(payload: dict) -> dict:
     q = (payload.get("question") or "").strip()
     sql = (payload.get("sql") or "").strip()
     if q and sql:
+        # 示例会被 `_ask_local` 在下次同类问题时**直接取出来执行**。
+        # 这里不校验，等于允许把一条 DROP 存进"记忆"里，虽然取出时还会过 validate，
+        # 但让危险语句落进示例库本身就是隐患（也更容易被误当成"验证过的写法"）。
+        if not nlq_guard.is_read_only(sql):
+            raise nlq_guard.SqlRejected(
+                "只有只读查询（SELECT）能存为示例，这条 SQL 不是。")
         nlq_store.add_example(q, sql)
     return {"ok": True, "examples": len(nlq_store.all_examples())}
 
@@ -1788,6 +1797,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, body, "application/zip", name)
             else:
                 self._send(404, b"not found", "text/plain")
+        except nlq_guard.SqlRejected as exc:
+            # 安全闸拒绝是**预期结果**，不是程序出错：不打 traceback，
+            # 统一回 400 + blocked 标记，前端按普通错误展示原因即可。
+            self._json({"ok": False, "error": str(exc), "blocked": True}, 400)
         except Exception as exc:  # 统一错误出口，避免前端拿到空响应
             traceback.print_exc()
             self._json({"ok": False, "error": str(exc)}, 400)
