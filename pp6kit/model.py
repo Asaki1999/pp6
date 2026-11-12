@@ -174,8 +174,16 @@ def form_style(kind: str) -> dict:
 
 
 def table_name_for(code: str) -> str:
-    """手册：物理表名 = PP_ 前缀 + 编码。"""
-    return "pp_" + camel_to_snake(code)
+    """手册：物理表名 = pp_ 前缀 + 对象编码。
+
+    编码本身已经带 pp_ 的原生对象，直接沿用：实测「设备」这个对象
+    code = tblName = ``pp_equipment``，再拼一次就成了 ``pp_pp_equipment``，
+    系统里根本没有这种表名。
+    """
+    if not str(code or "").strip():
+        return ""
+    base = re.sub(r"_+", "_", camel_to_snake(code)).strip("_")
+    return base if base.lower().startswith("pp_") else "pp_" + base
 
 
 @dataclass

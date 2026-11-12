@@ -118,13 +118,26 @@ WORDS: dict[str, str] = {
     "工作": "work", "台账": "ledger", "档案": "archive", "履历": "resume",
     "经历": "experience", "环节": "step", "步骤": "step", "事项": "matter",
     "条目": "entry", "明细项": "detailItem", "子项": "subItem",
+    # —— 业务对象后缀/动作用词（对齐系统真实对象名：
+    #    project_create / requirement_category / test_case_base_category）——
+    "立项": "create", "申请": "apply", "登记": "register", "跟踪": "track",
+    "填报": "fill", "报销": "reimburse", "变更": "change",
+    "纪要": "minutes", "周报": "weeklyReport", "日报": "dailyReport",
+    "月报": "monthlyReport", "大类": "category", "小类": "subCategory",
+    "用例": "testCase", "题库": "questionBank", "规则": "rule",
+    "模板": "template", "看板": "board", "门户": "portal", "基线": "baseline",
+    "测试": "test", "测试用例": "testCase", "库": "library", "持有人": "holder",
+    "管理": "manage", "分析": "analysis", "统计": "statistics", "执行": "execute",
+    "评价": "evaluate", "考核": "assessment", "培训": "training", "知识": "knowledge",
+    "申请表": "apply", "台账表": "ledger",
 }
 
 # 去掉这些词再匹配（无实际语义的尾巴）
 _NOISE = ("表", "单据", "记录", "页面", "信息")
 
 # 「XX项表」这种后缀整体归一（项目汇报风险项表 → 风险 item）
-_SUFFIX_ITEM = ("项表", "项", "子表", "明细表", "清单表")
+# 注意别放单独的「项」：会把「项目立项」剥成「项目立」→ project_li
+_SUFFIX_ITEM = ("项表", "子表", "明细表", "清单表")
 
 _PUNCT = re.compile(r"[^\u4e00-\u9fa5A-Za-z0-9]")
 _CJK = re.compile(r"[\u4e00-\u9fa5]")
@@ -167,11 +180,15 @@ def _pinyin_words(text: str) -> list[str]:
 
 
 def to_english(name: str, camel: bool = True) -> str:
-    """中文名 → 编码，**一律用拼音**。
+    """中文名 → 编码，**一律用拼音**。用于字段编码 / 物理列名。
 
-    为什么不用中英混排（projectName 这种）：
-    同一个概念在不同人手里会写成 projectName / xiangMuMingCheng 两种，
-    后期对不上；统一拼音至少规则唯一、可预测、不会因为词典缺词而突变。
+    业务对象编码不要用这个，用 ``object_code()``：对象编码会派生物理表名，
+    系统里是 ``pp_project`` / ``pp_project_create`` 这种英文语义名，
+    拼音会得到 ``pp_xiang_mu``，线上一个都找不到。
+
+    为什么字段这一层仍用拼音：同一个概念在不同人手里会写成 projectName /
+    xiangMuMingCheng 两种，后期对不上；统一拼音至少规则唯一、可预测、
+    不会因为词典缺词而突变。
 
     「MAH持有人」→ MAHChiYouRen / mah_chi_you_ren
     「项目名称」 → xiangMuMingCheng / xiang_mu_ming_cheng
@@ -212,6 +229,86 @@ def to_english(name: str, camel: bool = True) -> str:
         # 「5G基站」→ f5GJiZhan：数字和紧跟的字母是一体的，前面补 f
         out = "f" + out
     return out
+
+
+def _snake(word: str) -> str:
+    """camelCase / PascalCase → 小写下划线（词典里的值是驼峰形式）。"""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", word).lower()
+
+
+def _english_words(text: str) -> list[str]:
+    """把中文名切成英文词：词典最长匹配，连续没命中的一段整体退拼音。"""
+    text = _PUNCT.sub("", text)
+    out: list[str] = []
+    i, n = 0, len(text)
+    top = max(len(w) for w in WORDS)
+    while i < n:
+        # 英文/数字片段原样保留（MAH、PPT、5G 这类），别被拼音吃掉
+        m = re.match(r"[A-Za-z][A-Za-z0-9]*", text[i:])
+        if m:
+            out.append(m.group(0).lower())
+            i += m.end()
+            continue
+        step = 0
+        for length in range(min(top, n - i), 0, -1):
+            hit = WORDS.get(text[i:i + length])
+            if hit:
+                out.append(_snake(hit))
+                step = length
+                break
+        if step:
+            i += step
+            continue
+        # 未命中：一路吃到下一个能命中的词之前，整段转拼音，
+        # 避免一个字一个字拆成 xiang/mu/li/xiang 这种碎片
+        j = i + 1
+        while j < n and not re.match(r"[A-Za-z]", text[j]) and not any(
+                text[j:j + ln] in WORDS for ln in range(1, min(top, n - j) + 1)):
+            j += 1
+        out.append(_pinyin_fallback(text[i:j]))
+        i = j
+    return out
+
+
+def object_code(name: str) -> str:
+    """业务对象编码：对齐线上真实对象的习惯 —— 英文小写下划线。
+
+    依据（PP6/业务对象/ 六份原生包）：
+        项目 → project           表名 pp_project
+        项目立项 → project_create 表名 pp_project_create
+        需求类型 → requirement_category
+        测试用例库大类 → test_case_base_category
+
+    为什么不直接用 ``to_english``
+    ----------------------------
+    ``to_english`` 是**拼音优先**的，专给字段编码/物理列名用（驼峰、可预测）。
+    但对象编码还会派生物理表名 ``pp_<code>``：拼音会得到 ``pp_xiang_mu``，
+    系统里一个这样的表都没有，运维看库直接懵。所以对象这一层走英文词典，
+    只有实在查不到的词才退拼音。
+    """
+    text = (name or "").strip()
+    if not text:
+        return ""
+    if not _CJK.search(text):
+        cleaned = re.sub(r"[^A-Za-z0-9_]", "", text)
+        if not cleaned:
+            return ""
+        if "_" in cleaned and not cleaned.isupper():
+            return cleaned.lower()
+        return _snake(cleaned)
+    # 括号里多是补充说明，带进编码只会让表名又长又碎
+    text = re.sub(r"[（(][^）)]*[）)]", "", text).strip() or text
+    # 「项目风险项表 / 合同记录」这类尾巴不参与命名（长后缀优先）
+    for suf in sorted(_SUFFIX_ITEM + _NOISE, key=len, reverse=True):
+        if text.endswith(suf) and len(text) > len(suf):
+            text = text[: -len(suf)]
+            break
+    words = [w for w in _english_words(text) if w]
+    out = re.sub(r"[^a-z0-9_]", "", "_".join(words))
+    out = re.sub(r"_+", "_", out).strip("_")
+    if out and not out[0].isalpha():
+        out = "bo_" + out
+    return out[:40].rstrip("_")
 
 
 def short_code(code: str, limit: int = 32) -> str:

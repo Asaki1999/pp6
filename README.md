@@ -291,6 +291,33 @@ bin/pp6 dbmap        # 生成 docs/数据库结构图谱.md
 
 11 个绕过尝试全部拦截（多语句、写操作、系统库、危险函数、导出文件）。
 
+## 业务对象的编码和表名怎么来
+
+对象编码会派生物理表名（`tblName`），表名是导入时真正建库用的名字，
+所以这一层必须按系统的命名习惯走，不能随手拼。
+
+`1_业务对象` 里**编码留空**就按对象名称自动生成，规则来自六份原生包：
+
+| 对象名称 | 生成的编码 | 物理表名 | 线上真实对象 |
+|---|---|---|---|
+| 项目 | `project` | `pp_project` | ✅ 完全一致 |
+| 项目立项 | `project_create` | `pp_project_create` | ✅ 完全一致 |
+| 需求类型 | `requirement_type` | `pp_requirement_type` | 线上叫 `requirement_category` |
+| 测试用例库大类 | `test_case_library_category` | `pp_test_case_library_category` | 线上叫 `test_case_base_category` |
+
+做法是**英文词表最长匹配**（`pp6kit/naming.py` 的 `WORDS`），连续查不到的片段才退拼音。
+和字段编码不一样：字段编码走拼音（`to_english`，`riskLevel` 这种驼峰），
+对象编码走英文语义（`object_code`），两者刻意分开。
+
+**物理表名留空也会自动补** `pp_ + 编码`，不用手填；编码本身已经带 `pp_` 的原生对象
+（实测「设备」`code = tblName = pp_equipment`）直接沿用，不会拼成 `pp_pp_equipment`。
+
+改 `WORDS` 里没有的词就继续加词条，加完重跑：
+
+```bash
+.venv/bin/python -c "from pp6kit.naming import object_code; print(object_code('质量管理'))"
+```
+
 ## 导入前改包：加字段 / 改已有字段（增量补丁，不是重新生成）
 
 顶部「已有包改字段」这一栏解决的是另一种需求：**手上已经有一份能导入的 zip，

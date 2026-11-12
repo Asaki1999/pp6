@@ -21,6 +21,7 @@ from .model import (
     Project,
     parse_json,
     split_list,
+    table_name_for,
     truthy,
 )
 
@@ -185,23 +186,30 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
         for row_no, get in SheetReader(ws, spec.COLUMNS[spec.S_BO], errors, spec.S_BO).rows():
             code = str(get("code") or "").strip()
             name = str(get("name") or "").strip()
-            # 编码留空时按对象名自动生成（用户只填名称也能出包）
+            # 编码留空时按对象名自动生成（英文小写下划线，对齐系统真实对象：
+            # 项目→project / 项目立项→project_create，而不是拼音 xiang_mu）
             if not code:
                 if not name:
                     # 名称也没有，这行是空的，跳过
                     continue
-                code = naming.to_english(name, camel=False)
+                code = naming.object_code(name)
                 if not code:
                     errors.append(f"[{spec.S_BO}] 第{row_no}行: 对象名「{name}」无法自动生成编码，请手动填写")
                     continue
                 code = naming.unique(code, taken_codes)
                 auto_notes.append(f"业务对象「{name}」未填编码，已自动生成 {code}")
             taken_codes.add(code)
+            tbl = str(get("tbl_name") or "").strip()
+            # 物理表名留空就按规范补：pp_ + 编码。表名是线上建库时真正用的名字，
+            # 让用户手填既容易拼错，也和系统里 pp_project / pp_project_create 对不上。
+            if not tbl:
+                tbl = table_name_for(code)
+                auto_notes.append(f"业务对象「{name or code}」未填物理表名，已按规范取 {tbl}")
             proj.bos.append(
                 Bo(
                     code=code,
                     name=name or code,
-                    tbl_name=str(get("tbl_name") or "").strip(),
+                    tbl_name=tbl,
                     bo_type=str(get("bo_type") or "object").strip(),
                     module_id=str(get("module_id") or "").strip(),
                     type_id=str(get("type_id") or "").strip(),

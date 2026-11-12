@@ -61,9 +61,11 @@ COLUMNS: dict[str, list[Col]] = {
         Col("说明", "note", 52, note=""),
     ],
     S_BO: [
-        Col("对象编码", "code", 18, False, note="英文小写+下划线，全局唯一。留空则按对象名称自动生成（如 采购申请→purchase_apply）"),
+        Col("对象编码", "code", 18, False, note="英文小写+下划线，全局唯一。留空则按对象名称自动生成，"
+            "对齐系统真实对象（项目→project、项目立项→project_create）"),
         Col("对象名称", "name", 16, True, note="界面展示名"),
-        Col("物理表名", "tbl_name", 20, note="留空自动 = PP_ + 对象编码（手册规定）"),
+        Col("物理表名", "tbl_name", 20, note="留空自动 = pp_ + 对象编码（手册规定）；"
+            "编码本身已带 pp_ 的原生对象沿用原值，不会拼成 pp_pp_xxx"),
         Col("对象类型", "bo_type", 12, choices=["object", "list"], note="一般填 object"),
         Col("模块ID", "module_id", 22, note="留空取项目设置里的默认模块ID"),
         Col("分类ID", "type_id", 22, note="留空取默认分类ID"),

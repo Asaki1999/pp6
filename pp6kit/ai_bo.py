@@ -195,17 +195,19 @@ def _repair_truncated(text: str) -> dict | None:
 
 
 def _norm_code(raw: str, fallback: str = "biz", name: str = "") -> str:
-    """对象/表编码：中文名转拼音（下划线风格），表名统一 PP_ 前缀由别处补。
+    """对象编码：中文名 → 英文小写下划线，对齐系统真实对象（project_create）。
 
     AI 有时会把整个标题当名字（「项目立项信息表单」→ liuxianglingshixinxibiaodan），
     所以只要给了 name，就一律以 name 为准重新生成，不采信 raw。
+    用 object_code 而不是拼音：对象编码会派生物理表名 pp_<code>，
+    拼音出来的 pp_xiang_mu 在线上一个都找不到。
     """
     from . import naming
     label = (name or "").strip()
     if label:
         # 「XX表单」「XX表」这类尾巴对编码没意义
         clean = re.sub(r"(表单|表)$", "", label).strip() or label
-        base = naming.to_english(clean, camel=False)
+        base = naming.object_code(clean)
         if base:
             return base
     s = re.sub(r"[^A-Za-z0-9_]", "_", (raw or "").strip())
