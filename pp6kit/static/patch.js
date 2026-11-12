@@ -68,9 +68,13 @@ function pHint() {
   const el = pId("patchHint");
   const n = P.selected.size;
   const f = P.fields.filter((x) => (x.code || "").trim()).length;
-  el.textContent = P.snap
-    ? `已选 ${n} 个对象 · ${f} 个新字段${n && f ? " · 可以出包了" : ""}`
-    : "先上传 zip，再选对象和字段";
+  // 空态分支并入这里作单点真相：pEmptyState() 不改 hint，避免两处互相覆盖。
+  const empty = P.snap && (P.snap.objects || []).length === 0;
+  el.textContent = empty
+    ? "包里没有可加字段的 bo/*.xml → 改用工作区 1 反解后重新出包"
+    : P.snap
+      ? `已选 ${n} 个对象 · ${f} 个新字段${n && f ? " · 可以出包了" : ""}`
+      : "先上传 zip，再选对象和字段";
 }
 
 /* ---------------- ① 上传原包 ---------------- */
@@ -103,6 +107,9 @@ async function pUploadZip(file) {
     pRenderFields();
     pId("patchReport").hidden = true;
     pHint();
+    // P0-2：消费 P.snap 已有的 entries/comment/copies（后端 patch.py 零改动）
+    pRenderPackageStruct();
+    pEmptyState();
     toast(`读到了 ${P.snap.objects.length} 份业务对象 XML，选一个开始加字段`, 4500);
   } catch (err) {
     pFail(err);
@@ -324,7 +331,8 @@ async function pBuild(btn) {
     pId("patchReport").textContent =
       `已生成 ${jobs.length} 份新 zip。\n` +
       `原包 ${P.fileName} 未改动；包里除 bo/*.xml 外的内容均按原字节保留。\n` +
-      `导入方式：系统管理 → 发布管理 → 导入同步包，直接上传新 zip。`;
+      `导入方式：系统管理 → 发布管理 → 导入同步包，直接上传新 zip。\n` +
+      `本包对齐 CONFIG_SYNC_NOTE: 注释格式（发布说明写在 zip comment 里）。`;
     toast(`已生成 ${jobs.length} 份新 zip`, 5000);
   } catch (err) { pFail(err); } finally { pBusy(btn, false); }
 }
@@ -345,6 +353,89 @@ async function pTemplate(btn) {
     if (!res.ok) throw new Error(`下载失败 ${res.status}`);
     await pDownload(res, "PP6-新增字段表.xlsx");
   } catch (err) { pFail(err); } finally { pBusy(btn, false); }
+}
+
+/* ---------------- P0-2：包结构表 + 空态（后端零改动，全部消费 P.snap） ----------------
+   复用 app.js 的 humanSize()/toast()/saveBlob()，不重复定义；
+   复用既有 .card / .card-head / .tbl-wrap / .set-note / .patch-tag.warn / .chip.warn。 */
+
+function pRenderPackageStruct() {
+  const box = pId("pp6zipPatchStruct");
+  if (!box || !P.snap) return;
+  const entries = Array.isArray(P.snap.entries) ? P.snap.entries : [];
+  const groups = {};
+  entries.forEach((e) => {
+    const k = e.kind || "(root)";
+    (groups[k] = groups[k] || []).push(e);
+  });
+
+  // 同一对象重复推送过：按 code 去重后给一个「包内 N 份副本」chip
+  const seen = new Set();
+  const copies = (P.snap.objects || []).filter((o) => {
+    if (Number(o.copies || 0) <= 1) return false;
+    const key = String(o.code || o.name || o.file);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const copyChips = copies.length
+    ? `<div class="set-note"><strong>重复副本</strong>：${copies.map((o) =>
+        `<span class="patch-tag warn">${pEsc(o.name || o.code || o.file)} · 包内 ${Number(o.copies)} 份副本</span>`).join(" ")}
+        <span class="muted">（重复推送不去重；默认只改选中的一份，可勾「同一对象的重复副本一起改」）</span></div>`
+    : "";
+
+  const seqOf = (name) => {
+    const m = /(\d{3})-/.exec(String(name || "").split("/").pop() || "");
+    return m ? m[1] : "—";
+  };
+  const groupHtml = Object.keys(groups).map((k) => {
+    const rows = groups[k].map((e) => `
+      <tr><td><code>${pEsc(e.name)}</code></td>
+          <td>${pEsc(seqOf(e.name))}</td>
+          <td>${pEsc(humanSize(Number(e.size || 0)))}</td>
+          <td>${pEsc(e.kind || "")}${k === "dataset"
+            ? ' <span class="chip warn">数据菜单手建数据集形态，本工具不产出</span>' : ""}</td></tr>`).join("");
+    return `<details open>
+      <summary><code>${pEsc(k)}/</code> · ${groups[k].length} 条</summary>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>条目名</th><th>序号</th><th>大小</th><th>目录类型 / kind</th></tr></thead>
+        <tbody>${rows}</tbody></table></div></details>`;
+  }).join("");
+
+  const staticNotes = [
+    "包内只允许 bo/ form/ data_template/ 三类裸 XML（dataset/ 为数据菜单手建数据集特例）。",
+    "多放 manifest / catalog / txt / 图标 / 说明文件 → 线上报「不支持的同步对象类型」。",
+    "外层再套一层文件夹或平铺多个 zip → 线上报「同步包文件缺少业务类型目录」。",
+  ].map((n) => `<div>· ${pEsc(n)}</div>`).join("");
+
+  box.hidden = false;
+  box.innerHTML = `
+    <div class="card">
+      <div class="card-head"><div><h3>包结构（${entries.length} 条 · 原包 ${pEsc(P.fileName || "")}）</h3>
+        <div class="sub">来自 /api/patch/inspect 已有数据，后端零改动；按顶层目录分组，可折叠</div></div></div>
+      ${groupHtml || '<div class="empty">包内没有可列出的条目。</div>'}
+      <div class="set-note"><strong>comment 原文</strong>：<code>${pEsc(P.snap.comment || "")}</code></div>
+      ${copyChips}
+      <div class="set-note">${staticNotes}</div>
+    </div>`;
+}
+
+function pEmptyState() {
+  const empty = !P.snap || (P.snap.objects || []).length === 0;
+  ["patchWorkbook", "patchDryRun", "patchBuild"].forEach((id) => {
+    const b = pId(id);
+    if (b) b.disabled = empty;
+  });
+  const notes = pId("patchNotes");
+  if (!notes) return;
+  if (empty) {
+    notes.hidden = false;                    // 高亮：空态强制显形
+    const tip = "包里没有可加字段的 bo/*.xml → 改用工作区 1 反解后重新出包。"
+      + " 多余条目会触发「不支持的同步对象类型」，外层套目录会触发「同步包文件缺少业务类型目录」。";
+    if (notes.innerHTML.indexOf("改用工作区 1 反解后重新出包") < 0) {
+      notes.innerHTML += `<div class="patch-tag warn">${pEsc(tip)}</div>`;
+    }
+  }
 }
 
 /* ---------------- 绑定 ---------------- */

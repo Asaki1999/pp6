@@ -5,8 +5,10 @@
 """
 from __future__ import annotations
 
+import base64
 import io
 import json
+import re
 import shutil
 import threading
 import traceback
@@ -1381,6 +1383,178 @@ def template_bytes() -> bytes:
     return buf.getvalue()
 
 
+# ---------------------------------------------------------------- 响应头契约（P0-4 / P0-5）
+# 两个纯函数：只从 zip 原始字节「读」结构事实，绝不写 zip、绝不参与 blob 生成。
+# 供 X-Package-Summary（/api/inspect 200 与 400）与 X-Build-Report（/api/build 200）复用。
+# 新增信息只走「zip comment（已有）+ 界面 + 响应头」三个通道，交付包内不新增任何条目。
+
+_ZIP_NOTE_PREFIX = "CONFIG_SYNC_NOTE:"
+_ZIP_LEGAL_DIRS = ("bo", "form", "data_template", "dataset")
+_ZIP_IMPORT_PATH = "系统管理 › 发布管理 › 导入同步包"
+_ZIP_COMMENT_LIMIT = 512          # UTF-8 字符数，不是字节
+_ZIP_NAME_LIMIT = 120
+_ZIP_ENTRY_LIMIT = 30
+_ZIP_HEADER_LIMIT = 8192          # base64 后单头硬上限
+
+
+def _header_json(obj: dict) -> str:
+    """dict -> ASCII 安全的 HTTP 头值（base64 of UTF-8 JSON）。
+
+    HTTP 头只能写 latin-1（见 _send 原注释），中文 / 换行 / 引号直接进头会
+    UnicodeEncodeError。编码定死：
+        base64(json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+               .encode("utf-8")).decode("ascii")
+    返回字符集仅 [A-Za-z0-9+/=]。前端必须用
+    atob -> Uint8Array -> TextDecoder("utf-8") -> JSON.parse 解码；
+    严禁 JSON.parse(atob(raw))（中文必乱码），且与既有 X-Filename 的
+    quote()/decodeURIComponent() 是两套编码，不得混用。
+    """
+    raw = json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return base64.b64encode(raw).decode("ascii")
+
+
+def _zip_report(data: bytes, error: Exception | None = None) -> dict:
+    """纯只读：从 zip 字节提取「结构事实」，供两个新增响应头复用。
+
+    绝不写 zip、绝不调用 build_zip()/inspect_zip()、绝不修改传入字节。
+    字段契约见「增量架构设计」§4.1 / §4.2 / §4.6：
+      ok / problem / message / empty / entries / entryCount / counts /
+      comment / commentTruncated / truncated / entriesTotal / summaryOnly / valid
+    """
+    result: dict = {
+        "ok": True, "problem": None, "empty": True,
+        "entries": [], "entryCount": 0, "counts": {},
+        "comment": "", "commentTruncated": False,
+        "truncated": False, "valid": False,
+    }
+    if error is not None:
+        result["ok"] = False
+        result["problem"] = "not_zip"
+        result["message"] = str(error)
+        return result
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            # comment 原文：UTF-8 replace 解码；build_zip() 会把整段生成报告挂进
+            # comment，可达数 KB，按字符截断且必须完整保留 CONFIG_SYNC_NOTE: 前缀。
+            comment = (zf.comment or b"").decode("utf-8", "replace")
+            if len(comment) > _ZIP_COMMENT_LIMIT:
+                head = _ZIP_NOTE_PREFIX if comment.startswith(_ZIP_NOTE_PREFIX) else ""
+                tail = "…（已截断）"
+                keep = max(_ZIP_COMMENT_LIMIT - len(head) - len(tail), 0)
+                comment = head + comment[len(head):len(head) + keep] + tail
+                result["commentTruncated"] = True
+            result["comment"] = comment
+
+            infos = [i for i in zf.infolist() if not i.is_dir()]
+            result["entryCount"] = len(infos)
+            counts: dict[str, int] = {}
+            entries: list[dict] = []
+            for info in infos:
+                name = info.filename[:_ZIP_NAME_LIMIT]
+                kind = name.split("/", 1)[0] if "/" in name else "(root)"
+                counts[kind] = counts.get(kind, 0) + 1
+                basename = name.rsplit("/", 1)[-1]
+                m = re.match(r"^(\d{3})-", basename)
+                seq = int(m.group(1)) if m else None
+                utf8 = True
+                if basename.lower().endswith(".xml"):
+                    try:
+                        with zf.open(info) as fp:
+                            chunk = fp.read(4096)
+                        try:
+                            chunk.decode("utf-8")
+                        except UnicodeDecodeError as ue:
+                            # 4096 边界正好切断一个多字节字符时是
+                            # "unexpected end of data"，不算真的编码错误
+                            utf8 = bool(ue.reason == "unexpected end of data"
+                                        and ue.end == len(chunk))
+                    except Exception:
+                        # 读不出来（加密 / 压缩方式不支持）也标成不可解码，
+                        # 不抛异常、不阻断响应头生成
+                        utf8 = False
+                entries.append({
+                    "name": name, "size": int(info.file_size),
+                    "kind": kind, "seq": seq, "utf8": utf8,
+                })
+            result["counts"] = counts
+
+            # D4：empty = 可反解的 bo/form/data_template XML 条数 === 0
+            usable = sum(1 for e in entries
+                         if e["kind"] in ("bo", "form", "data_template")
+                         and e["name"].lower().endswith(".xml"))
+            result["empty"] = usable == 0
+
+            # 结构事实：前端 classifyInspect() 仍按 §6.3 优先级自行复判，
+            # 这里只把「多余条目 / 套层 / 编码 / 空」如实写进 problem。
+            white = set(_ZIP_LEGAL_DIRS)
+
+            def _nested(name: str) -> bool:
+                """外层多套了一层目录：首段不是合法目录，但路径里有 /bo/ 之类。"""
+                low = name.lower()
+                if not low.endswith(".xml"):
+                    return False
+                if low.split("/", 1)[0] in white:
+                    return False
+                return any("/%s/" % d in low
+                           for d in ("bo", "form", "data_template"))
+
+            # 套层必须优先判：套层包的顶层目录同样不在白名单，先判 extra
+            # 会让 nested_dir 永远不可达，并把用户引向「删 manifest/txt」
+            # 这种根本解决不了问题的修复动作（线上原话也不同）。
+            nested = any(_nested(e["name"]) for e in entries)
+            extra = any(e["kind"] not in white and not _nested(e["name"])
+                        for e in entries)
+            bad_utf8 = any(not e["utf8"] for e in entries)
+            if nested:
+                result["problem"] = "nested_dir"
+            elif extra:
+                result["problem"] = "extra_entries"
+            elif bad_utf8:
+                result["problem"] = "encoding"
+            elif result["empty"]:
+                result["problem"] = "empty"
+            else:
+                result["problem"] = None
+
+            legal = re.compile(
+                r"^(bo|form|data_template|dataset)/\d{3}-[a-z0-9_]+\.xml$")
+            result["valid"] = bool(
+                not result["empty"] and result["problem"] is None
+                and all(legal.match(e["name"]) for e in entries)
+            )
+
+            # §4.6 阶梯截断：30 条 -> 10 条 -> 仅统计，
+            # 硬保证 base64 后 <= 8192 字节；截断对前端可见。
+            shown = entries[:_ZIP_ENTRY_LIMIT]
+            if len(entries) > len(shown):
+                result["truncated"] = True
+                result["entriesTotal"] = len(entries)
+            result["entries"] = shown
+
+            def _size() -> int:
+                packed = json.dumps(result, ensure_ascii=False,
+                                    separators=(",", ":")).encode("utf-8")
+                return len(base64.b64encode(packed))
+
+            if _size() > _ZIP_HEADER_LIMIT:
+                result["entries"] = entries[:10]
+                result["truncated"] = True
+                result["entriesTotal"] = len(entries)
+                if _size() > _ZIP_HEADER_LIMIT:
+                    result["entries"] = []
+                    result["summaryOnly"] = True
+    except (zipfile.BadZipFile, OSError, ValueError) as exc:
+        result["ok"] = False
+        result["problem"] = "not_zip"
+        result["message"] = str(exc)
+    except Exception as exc:                      # 绝不因读结构失败而阻断路由
+        result["ok"] = False
+        result["problem"] = "other"
+        result["message"] = str(exc)
+    return result
+
+
 # ---------------------------------------------------------------- HTTP
 
 
@@ -1391,7 +1565,8 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     # --- 工具
-    def _send(self, status: int, body: bytes, ctype: str, filename: str | None = None) -> None:
+    def _send(self, status: int, body: bytes, ctype: str, filename: str | None = None,
+              extra: dict | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -1403,12 +1578,16 @@ class Handler(BaseHTTPRequestHandler):
                 f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename)}",
             )
             self.send_header("X-Filename", quote(filename))
+        # 纯附加：默认 None -> 所有既有调用零变化；extra 值均为 ASCII 安全的 base64
+        for key, value in (extra or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
-    def _json(self, payload: dict, status: int = 200) -> None:
+    def _json(self, payload: dict, status: int = 200,
+              extra: dict | None = None) -> None:
         self._send(status, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                   "application/json; charset=utf-8")
+                   "application/json; charset=utf-8", extra=extra)
 
     def _body(self) -> bytes:
         length = int(self.headers.get("Content-Length") or 0)
@@ -1469,7 +1648,38 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/build":
                 body, name = build_zip(self._body(), _codes(self.headers),
                                        _relations_header(self.headers))
-                self._send(200, body, "application/zip", name)
+                # X-Build-Report 的数据从「返回的 zip 字节」实测读取，不是推测；
+                # build_zip() 本身一行未动，blob / X-Filename / Content-* 全不变。
+                extra = None
+                try:
+                    report = _zip_report(body)
+                    # Q1 口径未确认：4 个数量列固定 bo/form/data_template/dataset，
+                    # 缺的补 0，禁止臆造线上列名。
+                    report["counts"] = {
+                        k: int(report["counts"].get(k, 0))
+                        for k in ("bo", "form", "data_template", "dataset")
+                    }
+                    report.update({
+                        "ok": True,
+                        "packageName": name,
+                        "status": "待导入",
+                        "time": datetime.now().isoformat(timespec="seconds"),
+                        "importPath": _ZIP_IMPORT_PATH,
+                    })
+                    report["valid"] = bool(
+                        report["valid"] and report["comment"].startswith(_ZIP_NOTE_PREFIX))
+                    # 附加字段可能把头撑过 8KB：逐级降 entries -> 仅统计
+                    if len(_header_json(report)) > _ZIP_HEADER_LIMIT and report.get("entries"):
+                        report["entries"] = report["entries"][:10]
+                        report["truncated"] = True
+                        report["entriesTotal"] = report["entryCount"]
+                    if len(_header_json(report)) > _ZIP_HEADER_LIMIT:
+                        report["entries"] = []
+                        report["summaryOnly"] = True
+                    extra = {"X-Build-Report": _header_json(report)}
+                except Exception:
+                    extra = None                  # 头是纯附加，任何异常都不阻断下载
+                self._send(200, body, "application/zip", name, extra=extra)
             elif self.path == "/api/confirmed-excel":
                 from urllib.parse import parse_qs, urlparse
                 qs = parse_qs(urlparse(self.path).query)
@@ -1492,9 +1702,24 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/nlq/correct":
                 self._json(nlq_save_correction(json.loads(self._body())))
             elif self.path == "/api/inspect":
-                body, name = inspect_zip(self._body())
+                # 局部 try/except：成功 200 + 原 blob + 原 X-Filename + X-Package-Summary；
+                # 失败 400 + 原 JSON body 逐字不变 + X-Package-Summary(ok:false)，
+                # 后 return，避免落到全局 except 丢头。inspect_zip() 一行未动。
+                raw = b""
+                try:
+                    raw = self._body()
+                    summary = _zip_report(raw)
+                    body, name = inspect_zip(raw)
+                except Exception as exc:
+                    traceback.print_exc()
+                    self._json(
+                        {"ok": False, "error": str(exc)}, 400,
+                        extra={"X-Package-Summary": _header_json(_zip_report(raw, exc))})
+                    return
                 self._send(200, body,
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", name)
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           name,
+                           extra={"X-Package-Summary": _header_json(summary)})
             elif self.path == "/api/patch/inspect":
                 self._json(patch_inspect(self._body()))
             elif self.path == "/api/patch/fields":

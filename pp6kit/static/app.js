@@ -39,7 +39,16 @@ const CTRL_LABEL = {
   hidden: "隐藏",
 };
 
-const state = { file: null, data: null, formIndex: 0, desktop: false, picked: new Set(), imported: new Set(), aiData: null, aiFile: null };
+const state = {
+  file: null, data: null, formIndex: 0, desktop: false,
+  picked: new Set(), imported: new Set(), aiData: null, aiFile: null,
+
+  // ↓ P0-1 / P0-4 / P0-5：第 7 tab 两态 + 反解 / 出包状态机
+  packageMode: "predict",      // "predict" | "actual"
+  buildReport: null,           // X-Build-Report 解码对象 | null
+  inspectSummary: null,        // X-Package-Summary 解码对象 | null
+  zipPhase: { build: "idle", inspect: "idle" },
+};
 
 /* 桌面壳（pywebview）会注入 window.pywebview.api，同时置 PP6_DESKTOP 供自检读取 */
 const native = () => (window.pywebview && window.pywebview.api) || null;
@@ -102,6 +111,17 @@ async function handleFile(file, { fromAi = false } = {}) {
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || "解析失败");
     state.data = data;
+    // 换一份 Excel 就清掉上一次的实测包结构，避免第 7 tab 残留旧包清单。
+    // 所有写入 state.data 的路径（手动上传 / 载入示例 / applyAiBo thenBuild /
+    // AI sheet apply）都汇聚到 handleFile()，这里是唯一重置点。
+    state.buildReport = null;
+    state.inspectSummary = null;
+    state.packageMode = "predict";
+    state.zipPhase = { build: "idle", inspect: "idle" };
+    const staleBuild = $("#pp6zipBuildReport");
+    if (staleBuild) { staleBuild.hidden = true; staleBuild.innerHTML = ""; }
+    const staleInspect = $("#pp6zipInspectCard");
+    if (staleInspect) { staleInspect.hidden = true; staleInspect.innerHTML = ""; }
     renderAll();
     // 直接从 AI 预览下来的 Excel → 进第 3 步；手动传的也进第 3 步，
     // 因为「结果」区里就是模块勾选 + 下载，这是流程的终点
@@ -154,8 +174,25 @@ function renderAll() {
   const warnCount = d.warnCount;
   const banner = $("#banner");
   if (errCount) {
+    // P0-5：保留原结论，补「哪类错误 / 影响哪个模块 / 去哪个页签修」三要素。
+    // 模块与页签一律从真实 issues[]（error 级第一条）推导，推不出就降级，
+    // 绝不写死假模块名 / 假页签名。
+    const firstErr = (d.issues || []).find((i) => i.level === "error");
+    let where = "";
+    let tab = "校验结果";
+    if (firstErr) {
+      where = String(firstErr.where || "").trim();
+      const msg = String(firstErr.message || "").trim();
+      const hit = ["1_业务对象", "2_字段", "3_表单", "4_表单控件",
+                   "5_列表", "6_数据集", "7_表单脚本", "8_隐藏规则"]
+        .find((t) => where.indexOf(t) >= 0 || msg.indexOf(t) >= 0);
+      if (hit) tab = hit;
+    }
     banner.className = "banner error";
-    banner.innerHTML = `<strong>${errCount} 个错误</strong>：必须先修好才能生成，详见「校验结果」。`;
+    banner.innerHTML = `<strong>${errCount} 个错误</strong>：必须先修好才能生成，详见「校验结果」。`
+      + `<div class="sub">哪类：校验错误（${esc(firstErr ? String(firstErr.message).slice(0, 60) : "结构 / 引用错误")}）`
+      + ` · 影响 ${esc(where || "详见『校验结果』页签")} · 去「${esc(tab)}」修；`
+      + `不要往包里加 manifest、txt、图标。</div>`;
     banner.hidden = false;
   } else if (warnCount) {
     banner.className = "banner warn";
@@ -193,6 +230,9 @@ function renderAll() {
   renderModules();
 
   updateBar();
+  // P0-1：第 7 tab 两态同渲染；predict 用 state.data，actual 用 state.buildReport。
+  // 放在 updateBar() 之后，不动 updateBar / #btnPack 文案与行为。
+  renderPackage(state.data, state.packageMode);
 }
 
 /* 底部按钮与提示随勾选变化 */
@@ -600,10 +640,16 @@ async function pickFile(kind) {
 async function buildZip(codes, trigger) {
   if (!state.file) return;
   const list = codes || Array.from(state.picked);
-  if (!list.length) { toast("先勾选要导出的模块"); return; }
+  if (!list.length) {
+    // 空态：恢复三连，而不是只禁用按钮 / 只丢一句 toast
+    setZipPhase("build", "empty");
+    toast("先勾选要导出的模块。恢复：①「载入示例看效果」② 回到第 1 步描述需求 ③ 去 1_业务对象 填一行", 6000);
+    return;
+  }
   const btn = trigger || $("#btnPack") || $("#btnBuild");
   const label = btn ? btn.textContent : "";
   if (btn) { btn.disabled = true; btn.textContent = "正在生成…"; }
+  setZipPhase("build", "busy");
   try {
     const buf = await state.file.arrayBuffer();
     const headers = { "X-Modules": JSON.stringify(list) };
@@ -620,13 +666,42 @@ async function buildZip(codes, trigger) {
     }
     const blob = await res.blob();
     const name = decodeURIComponent(res.headers.get("X-Filename") || "pp6-import.zip");
+    const report = decodeHeaderJson(res.headers.get("X-Build-Report"));
+    if (report) {
+      // 头可解码：回填实测包结构 + 交付报告卡片；下载照常发生。
+      state.buildReport = report;
+      state.packageMode = "actual";
+      setZipPhase("build", "ok", { report, name });
+    }
+    // 头缺失 / 解码失败（legacy）：仅下载 + 改动前逐字一致的 toast，
+    // packageMode 保持 predict，不渲染交付报告卡片。
     if (await saveBlob(blob, name)) {
       toast(list.length === 1
         ? `已导出「${MOD_LABEL[list[0]] || list[0]}」：${name}`
         : `已导出 ${list.length} 个模块：${name}`);
     }
   } catch (err) {
-    toast("生成失败：" + err.message, 6000);
+    // 异常三要素：哪类错误 / 影响哪个模块 / 去哪个页签修。
+    // 「影响哪个模块」「去哪个页签」必须从真实 state.data.issues[] 推导，
+    // 拼不出时降级为「详见『校验结果』页签」，不编造假模块名 / 假页签名。
+    const d = state.data || {};
+    const firstErr = (d.issues || []).find((i) => i.level === "error");
+    let where = "";
+    let tab = "校验结果";
+    if (firstErr) {
+      where = String(firstErr.where || "").trim();
+      const msg = String(firstErr.message || "").trim();
+      const hit = ["1_业务对象", "2_字段", "3_表单", "4_表单控件",
+                   "5_列表", "6_数据集", "7_表单脚本", "8_隐藏规则"]
+        .find((t) => where.indexOf(t) >= 0 || msg.indexOf(t) >= 0);
+      if (hit) tab = hit;
+      if (!where && msg) where = msg.slice(0, 40);
+    }
+    const category = firstErr ? "校验错误" : "出包错误";
+    const whereText = where ? `影响 ${where}` : "详见『校验结果』页签";
+    setZipPhase("build", "error", { category, module: whereText, tab, message: err.message });
+    toast(`生成失败（${category} / ${whereText}）：${err.message}。去「${tab}」修，不要往包里加 manifest、txt、图标。`, 6000);
+    // 不清空 state.data / state.buildReport / #aiResult（A5）
   } finally {
     btn.disabled = false;
     btn.textContent = label;
@@ -670,17 +745,45 @@ async function inspectZip(file) {
     return;
   }
   setLoading(true, "正在反解导出包…");
+  setZipPhase("inspect", "busy");
   try {
     const buf = await file.arrayBuffer();
     const res = await fetch("/api/inspect", { method: "POST", body: buf });
+    // 先读头再判 res.ok：失败响应（400）同样带 X-Package-Summary。
+    const summary = decodeHeaderJson(res.headers.get("X-Package-Summary"));
+    state.inspectSummary = summary;
+    if (summary === null) {
+      // legacy：头缺失 / 坏 base64 / 非 JSON -> 逐字走改动前行为，不报错、不阻断。
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "反解失败");
+      }
+      const blob = await res.blob();
+      const name = decodeURIComponent(res.headers.get("X-Filename") || "inspect.xlsx");
+      if (await saveBlob(blob, name)) toast("已反解为 Excel：" + name);
+      setZipPhase("inspect", "legacy");
+      return;
+    }
+    let parsedErr = null;
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || "反解失败");
+      parsedErr = new Error(err.error || "反解失败");
+    }
+    const cls = classifyInspect(res, summary, parsedErr);
+    if (cls.skipDownload) {
+      // 空 / 异常态：跳过 saveBlob()（D4，不下载误导性的空 xlsx），
+      // 渲染分类卡片（实际条目名 + 恢复动作）+ 带恢复动作的 toast。
+      setZipPhase("inspect", cls.kind === "empty" ? "empty" : "error",
+                  { classify: cls, summary });
+      toast(`反解失败（${cls.title}）：${cls.message} ${cls.recovery}`, 6500);
+      return;
     }
     const blob = await res.blob();
     const name = decodeURIComponent(res.headers.get("X-Filename") || "inspect.xlsx");
     if (await saveBlob(blob, name)) toast("已反解为 Excel：" + name);
+    setZipPhase("inspect", "ok", { classify: cls, summary });
   } catch (err) {
+    // 真·异常（网络断 / 解码意外）：沿用改动前的通用文案。
     toast("反解失败：" + err.message, 6000);
   } finally {
     setLoading(false);
@@ -1332,6 +1435,414 @@ async function apiPostBlob(path, payload, extraHeaders) {
     throw new Error(err.error || "请求失败");
   }
   return res.blob();
+}
+
+/* ================================================ P0-1 / P0-4 / P0-5 新增函数块
+   只新增下列命名，禁止覆盖 / 重命名任何现有 renderXxx() / buildZip() / inspectZip()。
+   两态共用同一个 renderPackage() + 同一段 renderPackageTable() 模板；
+   复用既有 CSS 类，style.css 零改动。                                       */
+
+const PP6ZIP_IMPORT_PATH = "系统管理 › 发布管理 › 导入同步包";
+const PP6ZIP_NOTE_FORMAT = "CONFIG_SYNC_NOTE:<发布说明>";
+const PP6ZIP_LEGAL_RE = /^(bo|form|data_template|dataset)\/\d{3}-[a-z0-9_]+\.xml$/;
+const PP6ZIP_TIPS = [
+  "导入后到「系统管理 › 发布管理 › 导入同步包」历史表核对：4 个数量列（bo / form / data_template / dataset，口径待复核）与状态「成功」。",
+  "常见失败原因：包里多放了 manifest / catalog / txt / 图标 / 说明文件 → 线上报「不支持的同步对象类型」。",
+  "外层再套一层文件夹、或平铺多个 zip → 线上报「同步包文件缺少业务类型目录」。",
+  "序号重号会出现 Duplicate name 警告并静默丢内容；重复推送不去重，导入端按 id 处理。",
+  "不要往包里加 manifest、txt、图标；也不要把里面的文件拆出来单独传。",
+];
+
+/**
+ * base64(UTF-8 JSON) -> object；头缺失 / 解码失败一律返回 null（降级）。
+ * 关键：atob 输出是 latin-1 二进制串，必须经 TextDecoder("utf-8")
+ * 解码后再交给 JSON.parse；直接把 atob 结果喂给 JSON.parse 会让中文乱码（严禁）。
+ */
+function decodeHeaderJson(raw) {
+  if (!raw) return null;
+  try {
+    const bin = atob(raw);
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    return JSON.parse(new TextDecoder("utf-8").decode(bytes));
+  } catch (_) {
+    return null;                 // 降级：不抛、不阻断、不报错给用户
+  }
+}
+
+/**
+ * 反解分类（§6.3 六类优先级，先命中先返回）。
+ * @returns {{kind, skipDownload, title, message, recovery, summary}}
+ */
+function classifyInspect(res, summary, err) {
+  const base = { summary: summary || null };
+  if (summary === null) {
+    return Object.assign(base, {
+      kind: "legacy", skipDownload: false,
+      title: "", message: "", recovery: "",
+    });
+  }
+  const entries = Array.isArray(summary.entries) ? summary.entries : [];
+  const white = ["bo", "form", "data_template", "dataset"];
+  const names = entries.map((e) => e.name || "");
+  const listText = names.length
+    ? "实际读到：" + names.slice(0, 30).join("、")
+      + (summary.truncated && !summary.summaryOnly && summary.entriesTotal > names.length
+        ? ` …（仅显示前 ${names.length} 条，共 ${summary.entriesTotal} 条）` : "")
+    : "实际读到 0 个条目";
+
+  // 1 非 zip / 损坏
+  if (!res.ok || summary.ok === false) {
+    return Object.assign(base, {
+      kind: "not_zip", skipDownload: true,
+      title: "这不是一个有效的 zip 包（或包已损坏）",
+      message: (summary.message || (err && err.message) || "无法打开为 zip 包。") + "。" + listText,
+      recovery: "确认选的是 .zip；重新从系统「发布 ZIP」下载（.crdownload 直接改名 .zip）；或到工作区 2「已有包加字段」验证能否打开。",
+    });
+  }
+  /* 是否「外层多套了一层」：首段不是合法目录，但路径里出现 /bo/ 之类。
+     必须与后端的 _nested() 同口径，否则会出现「后端说套层、前端说多余条目」。 */
+  const isNestedName = (name) => {
+    const low = String(name || "").toLowerCase();
+    if (!low.endsWith(".xml")) return false;
+    if (white.indexOf(low.split("/", 1)[0]) >= 0) return false;
+    return /(^|\/)(bo|form|data_template)\//.test(low);
+  };
+  // 2 外层被套了一层（必须先判：套层包的顶层目录同样不在白名单里）
+  const nested = entries.filter((e) => isNestedName(e.name));
+  if (nested.length) {
+    return Object.assign(base, {
+      kind: "nested_dir", skipDownload: true,
+      title: "包外层被套了一层文件夹（线上原话：同步包文件缺少业务类型目录）",
+      message: "服务端按最外层目录名识别业务类型，多套一层就找不到 bo/ form/ data_template/。" + listText,
+      recovery: "解压后把 bo/ form/ data_template/ 直接放在 zip 最外层重新压缩，不要再套一层文件夹。",
+    });
+  }
+  // 3 多余条目（排除已判为套层的条目，避免同一批文件报两次）
+  const extras = entries.filter((e) => white.indexOf(e.kind) < 0 && !isNestedName(e.name));
+  if (extras.length) {
+    return Object.assign(base, {
+      kind: "extra_entries", skipDownload: true,
+      title: "包里有系统不认的多余条目（线上原话：不支持的同步对象类型）",
+      message: "顶层只认 bo/ form/ data_template/（数据菜单手建数据集为 dataset/ 特例）。" + listText,
+      recovery: "只保留 bo/ form/ data_template/ 三类裸 XML；删掉 manifest / txt / 图标 / 说明文件 / __MACOSX；不要往包里加任何新文件。",
+    });
+  }
+  // 4 XML 编码错误
+  const badXml = entries.filter((e) => e.utf8 === false);
+  if (badXml.length) {
+    return Object.assign(base, {
+      kind: "encoding", skipDownload: true,
+      title: "包内 XML 不是合法 UTF-8 编码",
+      message: "这些条目无法按 UTF-8 解码：" + badXml.map((e) => e.name).join("、") + "。" + listText,
+      recovery: "把 XML 另存为 UTF-8 无 BOM 后重新打包；或走工作区 1 反解后重新出包。",
+    });
+  }
+  // 5 空包
+  if (summary.empty === true) {
+    return Object.assign(base, {
+      kind: "empty", skipDownload: true,
+      title: "包内没有可反解的 bo/form/data_template XML",
+      message: "没有下载会误导人的空 xlsx。" + listText,
+      recovery: "去工作区 1 重新出包（空模板 / 全不选会被拦）；只是想给线上对象补字段请改用工作区 2「已有包加字段」。",
+    });
+  }
+  // 6 正常
+  return Object.assign(base, {
+    kind: "ok", skipDownload: false,
+    title: "反解完成", message: "", recovery: "",
+  });
+}
+
+/** 统一状态机入口（§6.1）：写 state.zipPhase、切 #banner、调对应 render。 */
+function setZipPhase(op, phase, payload) {
+  state.zipPhase[op] = phase;
+  const p = payload || {};
+  const banner = $("#banner");
+  if (op === "build") {
+    if (phase === "ok") {
+      if (banner) {
+        banner.className = "banner ok";
+        banner.innerHTML = `<strong>交付包已生成</strong>：状态「待导入」，按下方「交付报告」的验收提示自查后到 ${esc(PP6ZIP_IMPORT_PATH)} 导入。`;
+        banner.hidden = false;
+      }
+      renderBuildReport(p.report, p.name);
+      renderPackage(p.report, "actual");
+    } else if (phase === "error") {
+      if (banner) {
+        banner.className = "banner error";
+        banner.innerHTML = `<strong>生成失败（${esc(p.category || "出包错误")} / ${esc(p.module || "详见『校验结果』页签")}）</strong>：`
+          + `${esc(p.message || "请核对后重试")}。去「${esc(p.tab || "校验结果")}」修；`
+          + `不要往包里加 manifest、txt、图标。`;
+        banner.hidden = false;
+      }
+    } else if (phase === "empty") {
+      if (banner) {
+        banner.className = "banner warn";
+        banner.innerHTML = `<strong>还没有可导出的内容</strong>：先勾选要导出的模块；`
+          + `恢复动作：①「载入示例看效果」② 回到第 1 步描述需求 ③ 去 <code>1_业务对象</code> 填一行。`;
+        banner.hidden = false;
+      }
+    }
+    // busy / idle 不动 banner，保留 renderAll() 的校验结论
+  } else if (op === "inspect") {
+    if (phase === "ok" || phase === "empty" || phase === "error") {
+      renderInspectCard({ classify: p.classify, summary: p.summary });
+    } else {
+      const card = $("#pp6zipInspectCard");
+      if (card) { card.hidden = true; card.innerHTML = ""; }
+    }
+  }
+}
+
+/** 归一化：把两种 data 收敛成同一个 PackageVM（D1 单一算法）。 */
+function normalizePackageVM(data, mode) {
+  const isActual = mode === "actual";
+  const d = data || {};
+  const vm = {
+    mode: isActual ? "actual" : "predict",
+    title: isActual ? "实测包结构" : "预计包结构",
+    note: isActual ? "实测包结构 · 来自本次下载" : "预计，出包后回填实测",
+    dirs: [],
+    modules: [],                 // predict 态逐模块占位行（§5.1：说明列来自 modules[]）
+    entries: null,
+    comment: { text: "", isRaw: false, truncated: false },
+    counts: { bo: 0, form: 0, data_template: 0, dataset: 0 },
+    countsNote: "口径待复核",
+    importPath: PP6ZIP_IMPORT_PATH,
+    tips: PP6ZIP_TIPS.slice(),
+    truncated: false, entriesTotal: 0, summaryOnly: false, entryCount: 0,
+  };
+  if (isActual) {
+    const c = d.counts || {};
+    vm.counts = {
+      bo: Number(c.bo || 0), form: Number(c.form || 0),
+      data_template: Number(c.data_template || 0), dataset: Number(c.dataset || 0),
+    };
+    vm.dirs = [
+      { kind: "bo", count: vm.counts.bo, label: "业务对象", source: "X-Build-Report.counts", notes: [] },
+      { kind: "form", count: vm.counts.form, label: "表单", source: "X-Build-Report.counts", notes: [] },
+      { kind: "data_template", count: vm.counts.data_template, label: "列表 / 数据集 / 筛选器", source: "X-Build-Report.counts", notes: [] },
+      { kind: "dataset", count: vm.counts.dataset, label: "数据集（手建形态，本工具不产出）", source: "X-Build-Report.counts", notes: [] },
+    ];
+    vm.entries = Array.isArray(d.entries) ? d.entries : [];
+    vm.comment = { text: String(d.comment || ""), isRaw: true, truncated: !!d.commentTruncated };
+    vm.truncated = !!d.truncated;
+    vm.entriesTotal = Number(d.entriesTotal || d.entryCount || 0);
+    vm.summaryOnly = !!d.summaryOnly;
+    vm.entryCount = Number(d.entryCount || 0);
+  } else {
+    // predict 唯一真相来源：modules[].folder / count / zipped；
+    // entries 必须为 null，绝不伪造 001-xxx.xml / 假 size / 假 comment 原文。
+    const mods = Array.isArray(d.modules) ? d.modules : [];
+    const byFolder = {};
+    mods.forEach((m) => {
+      const k = m.folder || m.code || "other";
+      if (!byFolder[k]) {
+        byFolder[k] = { kind: k, count: 0, label: m.label || k,
+                        source: "modules[].folder / count", notes: [] };
+      }
+      byFolder[k].count += Number(m.count || 0);
+      byFolder[k].label = m.label || k;
+      if (!m.zipped && byFolder[k].notes.indexOf("不进包（zipped=false，裸 XML）") < 0) {
+        byFolder[k].notes.push("不进包（zipped=false，裸 XML）");
+      }
+    });
+    vm.dirs = Object.keys(byFolder).map((k) => byFolder[k]);
+    vm.modules = mods.map((m) => ({
+      folder: m.folder || m.code || "other",
+      label: m.label || m.folder || m.code || "",
+      count: Number(m.count || 0),
+      items: Array.isArray(m.items) ? m.items.slice(0, 3) : [],
+      zipped: m.zipped !== false,
+    }));
+    const c = (k) => Number((byFolder[k] && byFolder[k].count) || 0);
+    vm.counts = { bo: c("bo"), form: c("form"), data_template: c("data_template"), dataset: 0 };
+    vm.comment = { text: PP6ZIP_NOTE_FORMAT, isRaw: false, truncated: false };
+    vm.entries = null;
+  }
+  return vm;
+}
+
+/** 第 7 tab 单一 HTML 模板；vm.entries === null 时渲染占位行而非假文件名。 */
+function renderPackageTable(vm) {
+  const countRow = `
+    <div class="stats">
+      <div class="stat ${vm.counts.bo ? "" : "zero"}"><div class="n">${vm.counts.bo}</div><div class="k">bo</div></div>
+      <div class="stat ${vm.counts.form ? "" : "zero"}"><div class="n">${vm.counts.form}</div><div class="k">form</div></div>
+      <div class="stat ${vm.counts.data_template ? "" : "zero"}"><div class="n">${vm.counts.data_template}</div><div class="k">data_template</div></div>
+      <div class="stat ${vm.counts.dataset ? "" : "zero"}"><div class="n">${vm.counts.dataset}</div><div class="k">dataset</div></div>
+    </div>
+    <div class="set-note">4 个数量列固定为 bo / form / data_template / dataset（<b>${esc(vm.countsNote)}</b>）。
+      <code>dataset/</code> 是「数据菜单手建数据集」形态，本工具不产出，恒为 0。
+      ${vm.mode === "predict"
+        ? "当前是预计值，唯一真相来源是 modules[].count；与 #stats 同源、口径不同时以模块数为准。"
+        : "当前是出包后实测值，来自 X-Build-Report（从返回的 zip 字节读取）。"}</div>`;
+
+  const dirRows = (vm.dirs || []).map((g) => `
+    <tr><td><code>${esc(g.kind)}/</code></td><td>${Number(g.count)}</td>
+        <td>${esc(g.label || "")}${(g.notes || []).length
+          ? ` <span class="chip warn">${esc(g.notes.join("、"))}</span>` : ""}</td>
+        <td class="sub">${esc(g.source || "")}</td></tr>`).join("")
+    || `<tr><td colspan="4" class="sub">（还没有模块数据，先解析一份 Excel）</td></tr>`;
+
+  let entryRows;
+  if (vm.entries === null) {
+    // D1 硬禁令：predict 态只给占位行，绝不出现伪造的 001-xxx.xml / 假 size。
+    // 逐模块一行（§5.1：说明列 = label · 预计 count 项 · items.slice(0,3)），
+    // 与 actual 态共用同一段模板。
+    const placeholders = (vm.modules || []).length
+      ? vm.modules
+      : (vm.dirs || []).map((g) => ({ folder: g.kind, label: g.label,
+                                      count: g.count, items: [], zipped: true }));
+    entryRows = placeholders.map((m) => `
+      <tr><td><code>${esc(m.folder)}/</code></td>
+          <td class="sub">（出包后显示实际条目名）</td>
+          <td>—</td><td>—</td>
+          <td class="sub">${esc(m.label)} · 预计 ${Number(m.count)} 项${(m.items || []).length
+            ? " · " + esc(m.items.join("、")) : ""}${m.zipped === false
+            ? " · 不进包（zipped=false，裸 XML）" : ""}</td></tr>`).join("")
+      || `<tr><td colspan="5" class="sub">（出包后显示实际条目名）</td></tr>`;
+  } else {
+    entryRows = vm.entries.map((e) => `
+      <tr><td><code>${esc(e.kind || "")}</code></td>
+          <td><code>${esc(e.name || "")}</code></td>
+          <td>${e.seq == null ? "—" : e.seq}</td>
+          <td>${esc(humanSize(Number(e.size || 0)))}</td>
+          <td class="sub">${e.utf8 === false ? '<span class="chip warn">XML 非 UTF-8</span> ' : ""}${PP6ZIP_LEGAL_RE.test(e.name || "") ? "命名合规" : "命名不合规"}</td></tr>`).join("")
+      || `<tr><td colspan="5" class="sub">${vm.summaryOnly
+            ? "清单过大，仅显示统计摘要（不报错、不阻断）"
+            : "（本次包内没有条目）"}</td></tr>`;
+  }
+  const truncNote = vm.truncated && !vm.summaryOnly
+    ? ` <span class="chip warn">仅显示前 ${(vm.entries || []).length} 条，共 ${vm.entriesTotal || vm.entryCount} 条</span>` : "";
+  const commentNote = vm.comment.isRaw
+    ? (vm.comment.truncated
+        ? ' <span class="muted">（原文过长，已截断；CONFIG_SYNC_NOTE: 前缀完整保留）</span>'
+        : "")
+    : ' <span class="chip warn">格式说明，非原文，出包后回填实测</span>';
+  const tips = (vm.tips || []).map((t) => `<li>${esc(t)}</li>`).join("");
+
+  return `
+    <div class="card">
+      <div class="card-head"><div><h3>${esc(vm.title)}</h3>
+        <div class="sub">${esc(vm.note)}</div></div></div>
+      ${countRow}
+      <div class="set-note"><strong>目录分布</strong>（${esc(vm.countsNote)}）</div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>目录</th><th>条数</th><th>说明</th><th>来源</th></tr></thead>
+        <tbody>${dirRows}</tbody></table></div>
+      <div class="set-note"><strong>entry 清单</strong>${truncNote}</div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>目录</th><th>条目名</th><th>序号</th><th>大小</th><th>说明 / 来源</th></tr></thead>
+        <tbody>${entryRows}</tbody></table></div>
+      <div class="set-note"><strong>comment</strong>：<code>${esc(vm.comment.text)}</code>${commentNote}</div>
+      <div class="set-note"><strong>导入路径</strong>：${esc(vm.importPath)}</div>
+      <div class="set-note"><strong>验收提示</strong><ul>${tips}</ul></div>
+    </div>`;
+}
+
+/** 第 7 tab「同步包结构」唯一渲染入口（两态共用同一模板）。 */
+function renderPackage(data, mode) {
+  const panel = $('.panel[data-panel="package"]');
+  if (!panel) return;
+  panel.innerHTML = renderPackageTable(normalizePackageVM(data, mode));
+}
+
+/** 反解摘要 / 空态 / 异常分类卡片（容器在 #stepInput 内，goStep(1) 后可见）。 */
+function renderInspectCard(payload) {
+  const box = $("#pp6zipInspectCard");
+  if (!box) return;
+  const cls = payload && payload.classify ? payload.classify : null;
+  const s = payload && payload.summary ? payload.summary : null;
+  if (!cls || cls.kind === "legacy" || !s) {
+    box.hidden = true; box.innerHTML = ""; return;
+  }
+  const entries = Array.isArray(s.entries) ? s.entries : [];
+  const names = entries.map((e) => e.name || "");
+  const badNames = names.filter((n) => !PP6ZIP_LEGAL_RE.test(n));
+  const seqs = entries.map((e) => e.seq).filter((x) => typeof x === "number");
+  const dup = seqs.length !== new Set(seqs).size;
+  const sorted = [...seqs].sort((a, b) => a - b);
+  const gap = sorted.some((v, i) => i > 0 && v !== sorted[i - 1] + 1);
+  let verdict;
+  if (!names.length) verdict = "没有条目，无法判定";
+  else if (badNames.length) verdict = `有 ${badNames.length} 条不符合 ^(bo|form|data_template)/\\d{3}-[a-z0-9_]+\\.xml$（dataset/ 为特例）`;
+  else if (dup || gap) verdict = "序号存在重号或不连续（Duplicate name 警告会静默丢内容）";
+  else verdict = "命名合规、序号跨目录连续无重号";
+
+  const counts = s.counts || {};
+  const dirText = Object.keys(counts).length
+    ? Object.keys(counts).map((k) => `${esc(k)}/ ${Number(counts[k])}`).join(" · ")
+    : "（无）";
+  const rows = entries.map((e) => `
+    <tr><td>${esc(e.kind || "")}</td><td><code>${esc(e.name || "")}</code></td>
+        <td>${e.seq == null ? "—" : e.seq}</td>
+        <td>${esc(humanSize(Number(e.size || 0)))}</td>
+        <td>${e.utf8 === false
+          ? '<span class="chip warn">非 UTF-8</span>'
+          : (PP6ZIP_LEGAL_RE.test(e.name || "") ? "合规" : "不合规")}</td></tr>`).join("");
+  const isOk = cls.kind === "ok";
+  const headCls = isOk ? "banner ok" : (cls.kind === "empty" ? "banner warn" : "banner error");
+  const recovery = cls.recovery
+    ? `<div class="set-note"><strong>恢复动作</strong>：${esc(cls.recovery)}</div>` : "";
+  const extraOk = isOk
+    ? `<div class="set-note">反解会拆成 Excel 重造包，原生包未建模内容（对象角色 / 日志模板 / 字典样式 / 权限）会丢；补字段请改用工作区 2「已有包加字段」。</div>`
+    : "";
+  box.hidden = false;
+  box.innerHTML = `
+    <div class="card">
+      <div class="card-head"><div><h3>反解摘要</h3>
+        <div class="sub">${isOk ? "已下载 Excel；下面是上传包的实测结构" : "未下载 Excel（避免误导性的空 xlsx）"}</div></div></div>
+      <div class="${headCls}">${isOk
+        ? `<strong>${esc(cls.title)}</strong>：包内 ${Number(s.entryCount || 0)} 个条目，命名合规结论见下表。`
+        : `<strong>${esc(cls.title)}</strong>：${esc(cls.message || "")}`}</div>
+      <div class="tbl-wrap"><table><tbody>
+        <tr><th>条目数</th><td>${Number(s.entryCount || 0)}${s.truncated && !s.summaryOnly
+          ? ` <span class="chip warn">仅显示前 ${entries.length} 条，共 ${s.entriesTotal || s.entryCount} 条</span>` : ""}${s.summaryOnly
+          ? ' <span class="chip warn">清单过大，仅显示统计摘要</span>' : ""}</td></tr>
+        <tr><th>目录分布</th><td>${dirText} <span class="muted">（口径待复核）</span></td></tr>
+        <tr><th>comment 原文</th><td><code>${esc(s.comment || "")}</code>${s.commentTruncated
+          ? ' <span class="muted">（已截断，CONFIG_SYNC_NOTE: 前缀完整保留）</span>' : ""}</td></tr>
+        <tr><th>实际读到的条目名</th><td>${names.length ? `<code>${esc(names.join("、"))}</code>` : "（无）"}</td></tr>
+        <tr><th>命名合规结论</th><td>${esc(verdict)}</td></tr>
+      </tbody></table></div>
+      ${entries.length
+        ? `<div class="tbl-wrap"><table><thead><tr><th>目录</th><th>条目名</th><th>序号</th><th>大小</th><th>结论</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : '<div class="empty">包内没有可列出的条目。</div>'}
+      ${recovery}${extraOk}
+    </div>`;
+}
+
+/** 出包「交付报告」卡片 8 字段（包名 / 目录清单 / 条目数 / comment / 状态 / 时间 / 导入路径 / 验收提示）。 */
+function renderBuildReport(report, name) {
+  const box = $("#pp6zipBuildReport");
+  if (!box || !report) return;
+  const c = report.counts || {};
+  const n = (k) => Number(c[k] || 0);
+  const pkgName = name || report.packageName || "pp6-import.zip";
+  const time = report.time || (new Date().toLocaleString("zh-CN") + "（本地生成时间）");
+  const tips = PP6ZIP_TIPS.map((t) => `<li>${esc(t)}</li>`).join("");
+  box.hidden = false;
+  box.innerHTML = `
+    <div class="card">
+      <div class="card-head"><div>
+        <h3>交付报告 <span class="chip accent">${esc(report.status || "待导入")}</span></h3>
+        <div class="sub">实测包结构 · 来自本次下载；本地留痕，不连线上系统</div></div></div>
+      <div class="tbl-wrap"><table><tbody>
+        <tr><th>包名</th><td><code>${esc(pkgName)}</code></td></tr>
+        <tr><th>目录清单</th><td>bo/ ${n("bo")} 条 · form/ ${n("form")} 条 · data_template/ ${n("data_template")} 条 · dataset/ ${n("dataset")} 条
+            <span class="muted">（口径待复核；dataset/ 为数据菜单手建数据集形态，本工具不产出）</span></td></tr>
+        <tr><th>条目数</th><td>${Number(report.entryCount || 0)}${report.truncated && !report.summaryOnly
+          ? ` <span class="chip warn">仅显示前 ${(report.entries || []).length} 条，共 ${report.entriesTotal || report.entryCount} 条</span>` : ""}${report.summaryOnly
+          ? ' <span class="chip warn">清单过大，仅显示统计摘要</span>' : ""}</td></tr>
+        <tr><th>comment 原文</th><td><code>${esc(report.comment || "")}</code>${report.commentTruncated
+          ? ' <span class="muted">（原文过长，已截断；CONFIG_SYNC_NOTE: 前缀完整保留）</span>' : ""}</td></tr>
+        <tr><th>状态</th><td><span class="chip accent">${esc(report.status || "待导入")}</span></td></tr>
+        <tr><th>生成时间</th><td>${esc(time)}</td></tr>
+        <tr><th>导入路径</th><td>${esc(report.importPath || PP6ZIP_IMPORT_PATH)}</td></tr>
+      </tbody></table></div>
+      <div class="set-note"><strong>验收提示</strong><ul>${tips}</ul></div>
+    </div>`;
 }
 
 /* ------------------------------------------------ 事件绑定 */

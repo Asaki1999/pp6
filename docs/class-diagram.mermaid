@@ -1,0 +1,150 @@
+classDiagram
+    class Handler {
+        <<BaseHTTPRequestHandler>>
+        +_send(status:int, body:bytes, ctype:str, filename:str, extra:dict) void
+        +_json(payload:dict, status:int, extra:dict) void
+        +_body() bytes
+        +do_POST() void
+        +do_GET() void
+    }
+    class ZipReportUtil {
+        <<new pure functions>>
+        +_header_json(obj:dict) str
+        +_zip_report(data:bytes, error:Exception) dict
+    }
+    class BuildZip {
+        <<UNCHANGED>>
+        +build_zip(data:bytes, codes:list, relations_header:str) tuple
+        -report:str
+        -zout.comment:bytes
+    }
+    class InspectZip {
+        <<UNCHANGED>>
+        +inspect_zip(data:bytes) tuple
+        +inspect_path(path:Path) tuple
+    }
+    class PatchInspect {
+        <<UNCHANGED>>
+        +inspect_package(data:bytes) dict
+    }
+    class Entry {
+        +name:str
+        +size:int
+        +kind:str
+        +seq:int
+        +utf8:bool
+    }
+    class PackageSummary {
+        <<X-Package-Summary>>
+        +ok:bool
+        +problem:str
+        +message:str
+        +empty:bool
+        +entryCount:int
+        +entries:Entry[]
+        +counts:dict
+        +comment:str
+        +commentTruncated:bool
+        +truncated:bool
+        +valid:bool
+    }
+    class BuildReport {
+        <<X-Build-Report>>
+        +ok:bool
+        +packageName:str
+        +entryCount:int
+        +entries:Entry[]
+        +counts:dict
+        +comment:str
+        +status:str
+        +time:str
+        +importPath:str
+        +valid:bool
+    }
+    class AppState {
+        <<app.js state>>
+        +file:File
+        +data:dict
+        +picked:Set
+        +packageMode:str
+        +buildReport:BuildReport
+        +inspectSummary:PackageSummary
+        +zipPhase:dict
+    }
+    class PackageVM {
+        <<normalized view model>>
+        +mode:str
+        +title:str
+        +note:str
+        +dirs:DirGroup[]
+        +entries:Entry[]
+        +comment:CommentVM
+        +counts:dict
+        +countsNote:str
+        +importPath:str
+        +tips:string[]
+    }
+    class RenderPackage {
+        <<app.js new>>
+        +normalizePackageVM(data, mode) PackageVM
+        +renderPackageTable(vm) string
+        +renderPackage(data, mode) void
+    }
+    class HeaderCodec {
+        <<app.js new>>
+        +decodeHeaderJson(raw:str) dict
+    }
+    class InspectFlow {
+        <<app.js new + modified>>
+        +classifyInspect(res, summary, err) ClassifyResult
+        +renderInspectCard(payload) void
+        +inspectZip(file:File) void
+    }
+    class BuildFlow {
+        <<app.js new + modified>>
+        +buildZip(codes, trigger) void
+        +renderBuildReport(report, name) void
+        +setZipPhase(op, phase, payload) void
+    }
+    class PatchSnap {
+        <<patch.js P.snap / patch.py>>
+        +objects:Object[]
+        +entries:Entry[]
+        +entryCount:int
+        +boCount:int
+        +comment:str
+        +notes:string[]
+        +token:str
+    }
+    class PatchView {
+        <<patch.js new>>
+        +pRenderPackageStruct() void
+        +pEmptyState() void
+        +pHint() void
+        +pUploadZip(file:File) void
+    }
+
+    Handler ..> ZipReportUtil : uses (new)
+    Handler ..> BuildZip : calls (unchanged)
+    Handler ..> InspectZip : calls (unchanged)
+    Handler ..> PatchInspect : calls (unchanged)
+    ZipReportUtil ..> PackageSummary : produces
+    ZipReportUtil ..> BuildReport : produces
+    PackageSummary "1" *-- "0..*" Entry
+    BuildReport "1" *-- "0..*" Entry
+    Handler ..> PackageSummary : emits X-Package-Summary
+    Handler ..> BuildReport : emits X-Build-Report
+    HeaderCodec ..> PackageSummary : decodes
+    HeaderCodec ..> BuildReport : decodes
+    AppState "1" *-- "0..1" BuildReport
+    AppState "1" *-- "0..1" PackageSummary
+    RenderPackage ..> PackageVM : builds
+    RenderPackage ..> AppState : reads
+    PackageVM "1" *-- "0..*" Entry
+    InspectFlow ..> HeaderCodec : uses
+    InspectFlow ..> AppState : writes
+    BuildFlow ..> HeaderCodec : uses
+    BuildFlow ..> AppState : writes
+    BuildFlow ..> RenderPackage : triggers
+    PatchView ..> PatchSnap : reads (no backend change)
+    PatchSnap "1" *-- "0..*" Entry

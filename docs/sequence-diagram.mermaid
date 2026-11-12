@@ -1,0 +1,88 @@
+sequenceDiagram
+    autonumber
+    actor U as 用户/QA
+    participant H as index.html (DOM)
+    participant A as app.js
+    participant C as HeaderCodec
+    participant PJ as patch.js
+    participant S as webui.Handler
+    participant Z as _zip_report / _header_json
+    participant B as build_zip (unchanged)
+    participant I as inspect_zip (unchanged)
+    participant K as patch.inspect_package (unchanged)
+
+    rect rgb(232,244,255)
+    note over U,B: 流程1 parse → 预览(predict) → pack → 回填(actual)
+    U->>A: 选择 Excel / 载入示例
+    A->>S: POST /api/parse (xlsx bytes)
+    S-->>A: 200 {stats, modules[], objects[], forms[], lists[], datasets[], issues[]}
+    A->>A: state.data=data; packageMode="predict"; buildReport=null; inspectSummary=null
+    A->>A: renderAll() 末尾 → renderPackage(state.data,"predict")
+    A->>A: normalizePackageVM() → PackageVM(entries=null, comment.isRaw=false)
+    A->>H: renderPackageTable(vm) 写第 7 tab「预计包结构」
+    U->>A: 点 #btnPack → buildZip()
+    A->>A: setZipPhase("build","busy")
+    A->>S: POST /api/build (xlsx + X-Modules + X-Relations)
+    S->>B: build_zip(data, codes, rel)
+    B-->>S: (zip_bytes, name)  [blob 字节零改动]
+    S->>Z: _zip_report(zip_bytes)
+    Z-->>S: BuildReport dict
+    S->>Z: _header_json(BuildReport)
+    Z-->>S: base64 ASCII 字符串
+    S-->>A: 200 zip blob + X-Filename(quote) + X-Build-Report(base64)
+    A->>C: decodeHeaderJson(X-Build-Report)
+    C-->>A: report | null
+    alt report 可解码
+        A->>A: state.buildReport=report; packageMode="actual"; setZipPhase("build","ok")
+        A->>H: renderBuildReport(report,name) 交付报告卡片
+        A->>A: renderPackage(report,"actual") → 实测包结构
+        A->>A: saveBlob(blob,name) + toast
+    else 头缺失/解码失败 (legacy)
+        A->>A: 仅 saveBlob + 原 toast; packageMode 保持 predict
+    end
+    A->>A: finally 恢复按钮 + updateBar(); 失败不清空 state.data
+    end
+
+    rect rgb(255,246,230)
+    note over U,I: 流程2 inspect → 摘要 / 空 / 异常（blob 语义不变）
+    U->>A: 点 #btnInspect 选 zip → inspectZip(file)
+    A->>A: setZipPhase("inspect","busy"); setLoading(true,"正在反解导出包…")
+    A->>S: POST /api/inspect (zip bytes)
+    S->>Z: _zip_report(raw zip bytes)
+    Z-->>S: PackageSummary dict
+    alt inspect_zip 成功 (含"合法但空包")
+        S->>I: inspect_zip(raw)
+        I-->>S: (xlsx_bytes, name)
+        S-->>A: 200 xlsx + X-Filename + X-Package-Summary(base64)
+    else BadZipFile / 损坏
+        S-->>A: 400 {"ok":false,"error":...} + X-Package-Summary(ok:false,problem:not_zip)
+    end
+    A->>C: decodeHeaderJson(X-Package-Summary)
+    C-->>A: summary | null
+    A->>A: classifyInspect(res, summary, err) → ClassifyResult
+    alt kind=ok
+        A->>A: saveBlob(blob,name) + renderInspectCard(反解摘要)
+    else kind=empty / not_zip / extra_entries / nested_dir / encoding
+        A->>H: 跳过 saveBlob(); renderInspectCard(分类提示 + 实际条目名 + 恢复动作)
+    else kind=legacy (summary=null)
+        A->>A: 逐字走改动前行为（照常下载 + 原 toast）
+    end
+    A->>A: finally setLoading(false); goStep(1)  ← 卡片须在 #stepInput 内
+    end
+
+    rect rgb(235,255,240)
+    note over U,K: 流程3 patch → 包结构表 → 空态禁用（后端零改动）
+    U->>PJ: 上传 zip → pUploadZip(file)
+    PJ->>S: POST /api/patch/inspect (raw bytes)
+    S->>K: patch_inspect → patch.inspect_package(raw)
+    K-->>S: snap {objects[], entries[], entryCount, boCount, comment, notes[], copies, hasId}
+    S-->>PJ: 200 snap (JSON)  [语义完全不变]
+    PJ->>PJ: P.snap=snap; pRenderObjects(); pRenderFields(); pHint()
+    PJ->>H: pRenderPackageStruct() 按 kind 分组 + comment + copies + dataset/ 标注
+    alt objects.length > 0
+        PJ->>H: 恢复三按钮可用, 显示「可以出包了」
+    else objects.length === 0 (空态)
+        PJ->>H: pEmptyState() 禁用 #patchWorkbook/#patchDryRun/#patchBuild; 高亮 #patchNotes
+        PJ->>H: #patchHint →「改用工作区 1 反解后重新出包」
+    end
+    end

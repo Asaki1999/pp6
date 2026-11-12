@@ -22,8 +22,8 @@ async function qApi(path, body) {
 /* ---------------- 模式切换 ---------------- */
 /* 上下文栏 / 状态栏跟着工作区走，避免「切了页面但标题还是上一个」 */
 const MODE_META = {
-  import:   { title: "导入包生成",   desc: "描述需求或上传 Excel，生成系统可导入的同步包" },
-  patch:    { title: "已有包加字段", desc: "在原有 zip 上打最小补丁，除新增字段外字节不变" },
+  import:   { title: "导入包生成",   desc: "描述需求或上传 Excel，出整包（bo/form/data_template 同包）；发布说明写进 zip 注释 CONFIG_SYNC_NOTE:，导入走系统管理 › 发布管理 › 导入同步包，变更区非必经" },
+  patch:    { title: "已有包加字段", desc: "在原 zip 的 bo/*.xml 上打最小补丁，除新增字段外字节原样保留；对齐系统管理 › 发布管理 › 导入同步包，变更区非必经；反解会重造包，补字段请用这里" },
   query:    { title: "数据查询",     desc: "用一句话查数据库，生成 SQL 并查看结果" },
   settings: { title: "设置",         desc: "大模型、数据库连接与本地配置" },
 };

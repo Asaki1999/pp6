@@ -55,7 +55,7 @@
       <div class="side-path">
         <span>系统管理</span><i>›</i><span>发布管理</span><i>›</i><span>导入同步包</span>
       </div>
-      <div class="side-tip">生成的 zip 由系统后台直接导入，无需手工改 XML。</div>
+      <div class="side-tip">生成的 zip 整包一把导入「系统管理 › 发布管理 › 导入同步包」，无需手工改 XML；发布说明写进 zip 注释 <code>CONFIG_SYNC_NOTE:</code>，变更区不是必经路径。</div>
 
       <div class="side-label side-label-2">快捷键</div>
       <div class="side-keys">
@@ -201,6 +201,8 @@
 
   <!-- ========== 第 1 步：对话即入口，说完就开始生成 ========== -->
   <section id="stepInput">
+    <!-- P0-4 反解摘要卡片：必须留在 #stepInput 内，inspectZip() 的 finally 会 goStep(1) -->
+    <div id="pp6zipInspectCard" hidden></div>
     <section class="ai-box ai-chat-launch" id="aiChatLaunch">
       <div class="ai-chat-head">
         <h3>告诉我要建什么，或者直接说哪里要改</h3>
@@ -312,6 +314,8 @@
 
     <div class="stats" id="stats"></div>
     <div class="banner" id="banner" hidden></div>
+    <!-- P0-5 交付报告：buildZip() 成功后回填实测，失败不清空 -->
+    <div id="pp6zipBuildReport" hidden></div>
 
     <div class="card mod-card">
       <div class="card-head">
@@ -329,7 +333,7 @@
       </div>
       <div class="mod-list" id="modList"></div>
       <div class="pack-bar">
-        <span class="sub" id="packHint">已选全部模块 → 出整包</span>
+        <span class="sub" id="packHint">已选全部模块 → 出整包（bo/form/data_template 同包，注释 CONFIG_SYNC_NOTE:）· 导入：系统管理 › 发布管理 › 导入同步包</span>
         <button class="btn primary" id="btnPack">下载导入包 zip</button>
       </div>
     </div>
@@ -341,6 +345,7 @@
       <button class="tab" data-panel="forms">表单预览</button>
       <button class="tab" data-panel="lists">列表 / 数据集</button>
       <button class="tab" data-panel="issues">校验结果 <span class="badge" id="issueBadge">0</span></button>
+      <button class="tab" data-panel="package">同步包结构</button>
     </nav>
 
     <div class="panel" data-panel="objects"></div>
@@ -355,6 +360,7 @@
     <div class="panel" data-panel="forms" hidden></div>
     <div class="panel" data-panel="lists" hidden></div>
     <div class="panel" data-panel="issues" hidden></div>
+    <div class="panel" data-panel="package" hidden></div>
   </section>
 </main>
 
@@ -378,6 +384,8 @@
           <div class="patch-file" id="patchFileInfo" hidden></div>
         </div>
         <div class="patch-notes" id="patchNotes" hidden></div>
+        <!-- P0-2 包结构表：消费 /api/patch/inspect 已有的 entries/comment/copies，后端零改动 -->
+        <div id="pp6zipPatchStruct" hidden></div>
         <div class="set-note">
           <strong>和「反解现有导出包」的区别：</strong>反解会拆成 Excel 再重新造一份包，
           原生包里没建模的内容（对象角色、日志模板、字典样式、权限）会丢。
@@ -468,7 +476,7 @@
             每个对象单独出包（下载多个 zip）</label>
         </div>
         <div class="pack-bar patch-bar">
-          <span class="sub" id="patchHint">先上传 zip，再选对象和字段</span>
+          <span class="sub" id="patchHint">先上传 zip，再选对象和字段 · 只在原包 bo/*.xml 上打补丁；导入：系统管理 › 发布管理 › 导入同步包</span>
           <div class="ai-btns">
             <button class="btn ghost" id="patchWorkbook">下载带新字段的规格 Excel</button>
             <button class="btn ghost" id="patchDryRun">预览改动</button>
