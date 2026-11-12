@@ -1,4 +1,4 @@
-/* 已有包加字段：上传 zip → 选对象 → 填字段 → 在原包上打补丁下载新 zip。
+/* 已有包改字段：上传 zip → 选对象 → 填字段 → 在原包上打补丁下载新 zip。
    复用 app.js 的 saveBlob / toast / humanSize；本文件在 app.js 之后加载。 */
 const P = {
   snap: null,
@@ -64,17 +64,47 @@ function pBusy(btn, on, text) {
   }
 }
 
+// 当前填的字段编码里，哪些在选中对象的包里已经存在 —— 这些就是「改已有字段」
+function pDupCodes() {
+  if (!P.snap) return [];
+  const have = new Set();
+  (P.snap.objects || []).forEach((o) => {
+    if (P.selected.has(o.file)) (o.fields || []).forEach((f) => have.add(f.code));
+  });
+  return P.fields.map((f) => String(f.code || "").trim()).filter((c) => c && have.has(c));
+}
+
 function pHint() {
   const el = pId("patchHint");
   const n = P.selected.size;
   const f = P.fields.filter((x) => (x.code || "").trim()).length;
   // 空态分支并入这里作单点真相：pEmptyState() 不改 hint，避免两处互相覆盖。
   const empty = P.snap && (P.snap.objects || []).length === 0;
-  el.textContent = empty
-    ? "包里没有可加字段的 bo/*.xml → 改用工作区 1 反解后重新出包"
-    : P.snap
-      ? `已选 ${n} 个对象 · ${f} 个新字段${n && f ? " · 可以出包了" : ""}`
-      : "先上传 zip，再选对象和字段";
+  el.style.color = "";
+  if (empty) {
+    el.textContent = "包里没有可加字段的 bo/*.xml → 改用工作区 1 反解后重新出包";
+    return;
+  }
+  if (!P.snap) {
+    el.textContent = "先上传 zip，再选对象和字段";
+    return;
+  }
+  const dup = pDupCodes();
+  const mode = pId("patchMode").value;
+  if (dup.length && mode === "skip") {
+    // 最容易踩的坑：填了同名编码、模式还是「跳过」，出来的包和原包一模一样
+    el.style.color = "var(--warn)";
+    el.innerHTML = `⚠ ${dup.length} 个字段包里已有（${dup.slice(0, 4).map(pEsc).join("、")}`
+      + `${dup.length > 4 ? "…" : ""}），当前是「跳过」→ 不会生效。`
+      + `要改已有字段，请把 ④ 的「重名字段」选成「按新定义覆盖原字段」`;
+    return;
+  }
+  if (dup.length && mode === "replace") {
+    el.innerHTML = `已选 ${n} 个对象 · ${f} 个字段 · `
+      + `<b>其中 ${dup.length} 个按新定义覆盖已有字段</b>（物理列名不变）`;
+    return;
+  }
+  el.textContent = `已选 ${n} 个对象 · ${f} 个新字段${n && f ? " · 可以出包了" : ""}`;
 }
 
 /* ---------------- ① 上传原包 ---------------- */
@@ -127,7 +157,7 @@ function pRenderObjects() {
       ? `<span class="patch-tag warn">包内 ${o.copies} 份副本</span>` : "";
     const noid = o.hasId ? "" : `<span class="patch-tag warn">没有对象 id</span>`;
     const chips = o.fields.map((f) =>
-      `<code title="${pEsc(f.name)}">${pEsc(f.code)}</code>`).join("");
+      `<code title="${pEsc(f.name || f.code)} · ${pEsc(f.type || "")}">${pEsc(f.code)}</code>`).join("");
     cols.push(`<div class="patch-obj ${checked ? "on" : ""}" data-file="${pEsc(o.file)}">
       <label class="patch-obj-head">
         <input type="checkbox" data-pick="${pEsc(o.file)}" ${checked}>
@@ -463,6 +493,10 @@ function pBind() {
     const file = (e.dataTransfer.files || [])[0];
     if (file) pUploadZip(file);
   });
+
+  // 「重名字段」切换直接影响同名字段是跳过还是覆盖，必须立刻刷新提示
+  const modeSel = pId("patchMode");
+  if (modeSel) modeSel.onchange = pHint;
 
   pId("patchObjAll").onclick = () => {
     P.selected = new Set(P.snap.objects.map((o) => o.file));

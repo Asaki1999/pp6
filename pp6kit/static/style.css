@@ -1564,7 +1564,7 @@ select.ai-in { cursor: pointer; }
 .rel-type label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 .chip.warn { background: #fff7ed; color: #c2410c; }
 
-/* ---------- 已有包加字段 ---------- */
+/* ---------- 已有包改字段 ---------- */
 .patch-wrap { max-width: 1220px; margin: 0 auto; padding: 22px 24px 64px; display: grid; gap: 16px; }
 .patch-body { padding: 16px 18px 18px; display: grid; gap: 14px; }
 .patch-pick {

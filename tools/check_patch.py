@@ -158,9 +158,19 @@ def run(path: Path) -> None:
     dup = [{"code": existing_code, "name": "同名字段", "type": "varchar"}] \
         if existing_code else []
     if dup:
-        skipped, _, rep3 = patch.build_patch(raw, {**spec, "fields": dup})
-        ok(bool(skipped) and rep3["changed"][target["file"]]["skipped"],
-           "skip 模式：同名已有字段被跳过")
+        # 一个同名字段 + 一个新字段：同名被跳过，新字段照常进包
+        mixed = dup + [{"code": "chkNew", "name": "检查新字段", "type": "varchar"}]
+        _, _, rep3 = patch.build_patch(raw, {**spec, "fields": mixed})
+        detail = rep3["changed"][target["file"]]
+        ok(bool(detail["skipped"]) and any(a["code"] == "chkNew" for a in detail["added"]),
+           "skip 模式：同名已有字段被跳过，新字段照常写入")
+        # 只有同名字段 + skip → 产物和原包一模一样，必须报错而不是给一份假包
+        try:
+            patch.build_patch(raw, {**spec, "fields": dup})
+            ok(False, "纯同名 + skip 应当报错")
+        except ValueError as exc:
+            ok("没有产生任何改动" in str(exc),
+               "纯同名 + skip 明确报「没有产生任何改动」")
         replaced, _, rep4 = patch.build_patch(
             raw, {**spec, "fields": [{**dup[0], "type": "clob"}], "mode": "replace"})
         with zipfile.ZipFile(io.BytesIO(raw)) as a, \
@@ -168,8 +178,11 @@ def run(path: Path) -> None:
             old = a.read(target["file"]).decode("utf-8")
             new = b.read(target["file"]).decode("utf-8")
             by_code = {x["code"]: x for x in attrs_of(new)}
+            old_row = {x["code"]: x for x in attrs_of(old)}[dup[0]["code"]]
             ok(by_code[dup[0]["code"]]["dataTypeNew"] == "clob",
                "replace 模式：同名行按新定义覆盖")
+            ok(by_code[dup[0]["code"]]["fieldName"] == old_row.get("fieldName"),
+               "replace 不改物理列名 fieldName")
             ok(len(attrs_of(new)) == len(attrs_of(old)), "replace 不会多出字段")
         ok(bool(rep4["changed"][target["file"]]["replaced"]), "报告里记了覆盖")
 

@@ -1496,7 +1496,7 @@ function classifyInspect(res, summary, err) {
       kind: "not_zip", skipDownload: true,
       title: "这不是一个有效的 zip 包（或包已损坏）",
       message: (summary.message || (err && err.message) || "无法打开为 zip 包。") + "。" + listText,
-      recovery: "确认选的是 .zip；重新从系统「发布 ZIP」下载（.crdownload 直接改名 .zip）；或到工作区 2「已有包加字段」验证能否打开。",
+      recovery: "确认选的是 .zip；重新从系统「发布 ZIP」下载（.crdownload 直接改名 .zip）；或到工作区 2「已有包改字段」验证能否打开。",
     });
   }
   /* 是否「外层多套了一层」：首段不是合法目录，但路径里出现 /bo/ 之类。
@@ -1543,7 +1543,7 @@ function classifyInspect(res, summary, err) {
       kind: "empty", skipDownload: true,
       title: "包内没有可反解的 bo/form/data_template XML",
       message: "没有下载会误导人的空 xlsx。" + listText,
-      recovery: "去工作区 1 重新出包（空模板 / 全不选会被拦）；只是想给线上对象补字段请改用工作区 2「已有包加字段」。",
+      recovery: "去工作区 1 重新出包（空模板 / 全不选会被拦）；只是想给线上对象补字段请改用工作区 2「已有包改字段」。",
     });
   }
   // 6 正常
@@ -1786,7 +1786,7 @@ function renderInspectCard(payload) {
   const recovery = cls.recovery
     ? `<div class="set-note"><strong>恢复动作</strong>：${esc(cls.recovery)}</div>` : "";
   const extraOk = isOk
-    ? `<div class="set-note">反解会拆成 Excel 重造包，原生包未建模内容（对象角色 / 日志模板 / 字典样式 / 权限）会丢；补字段请改用工作区 2「已有包加字段」。</div>`
+    ? `<div class="set-note">反解会拆成 Excel 重造包，原生包未建模内容（对象角色 / 日志模板 / 字典样式 / 权限）会丢；补字段请改用工作区 2「已有包改字段」。</div>`
     : "";
   box.hidden = false;
   box.innerHTML = `

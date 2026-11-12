@@ -1,4 +1,13 @@
-"""patch：在一份**已有**同步包 zip 上做「业务对象加字段」的最小差异补丁。
+"""patch：在一份**已有**同步包 zip 上做最小差异补丁（加字段 / 改已有字段）。
+
+两条腿
+------
+1. **加字段**：编码在包里没有 → 追加 ``<attribute/>``，必要时补字典。
+2. **改已有字段**：编码和包里已有的一样 + ``mode="replace"`` → 只改这个字段：
+   类型、选项值、名称、必填…；物理列名 ``fieldName`` 永远不动。
+
+用户真正在意的场景是「导入前把包改对」——导进去表结构就落库了，线上再改
+字段类型只是改元数据、不会 ALTER，所以改包必须发生在导入之前。
 
 为什么不是「反解成 Excel 再重新出包」
 ------------------------------------
@@ -339,6 +348,12 @@ def _self_closing_end(text: str, start: int) -> int:
     return -1
 
 
+def _unesc(value: str) -> str:
+    """把 XML 属性值还原成原字符，供重新生成时再转义一次。"""
+    return (value.replace("&quot;", '"').replace("&apos;", "'")
+            .replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"))
+
+
 def _attr_spans(text: str, tag: str, start: int, end: int) -> list[tuple[int, int, dict]]:
     """entity 区间内所有 <attribute/> 的 (起, 止, 属性)。"""
     pat = re.compile(r"<" + re.escape(tag) + r"\b")
@@ -348,7 +363,8 @@ def _attr_spans(text: str, tag: str, start: int, end: int) -> list[tuple[int, in
         if stop < 0 or stop > end:
             continue
         frag = text[m.start():stop]
-        attribs = dict(re.findall(r'([\w:.-]+)="([^"]*)"', frag))
+        attribs = {k: _unesc(v)
+                   for k, v in re.findall(r'([\w:.-]+)="([^"]*)"', frag)}
         out.append((m.start(), stop, attribs))
     return out
 
@@ -358,6 +374,148 @@ def _attr_line_for(field: BoField, prefix: str) -> str:
     if prefix != "tns:":
         line = line.replace("<tns:attribute", f"<{prefix}attribute", 1)
     return line
+
+
+def _merge_attr_line(old: dict, raw: dict, field: BoField, prefix: str) -> tuple[str, list[str], list[str]]:
+    """改写一个**已有** attribute：新定义为准，但原有属性一个都不许丢。
+
+    为什么不像新增字段那样直接 ``_attr_line_for``
+    ---------------------------------------------
+    老实现整行重生成，新定义里没填的键就跟着没了。实测（2026-11-12，项目.zip
+    的 name 字段 varchar→user）：
+        length  200 → 64        用户没让改长度
+        format  yyyy-MM-dd      改完 varchar 还留着日期格式
+    原包里还有我们没建模的属性（roleList / formula / cascade…），整行重生成
+    等于拿未知换已知。所以这里以**原属性为基底**覆盖，只有三类例外：
+        fieldName  物理列名，永不改（改了等于要求线上 ALTER 列名）
+        sn         行序号，保持原位
+        type       角色列（base / role…），不由字段类型决定
+
+    返回 (新行文本, 改动的键, 原来的类型)。
+    """
+    p = field.resolved()
+    old_type = str(old.get("dataTypeNew") or "")
+    # 物理类型没变（varchar 族互改：字符串↔用户↔部门↔选项…）就不动物理列参数，
+    # 这和线上「7 类可互改、不 ALTER」的行为对齐
+    phys_changed = str(p.get("datatype") or "") != str(old.get("datatype") or "")
+    given = {k for k, v in raw.items() if v is not None and str(v).strip() != ""}
+
+    merged: dict[str, object] = dict(old)
+    if phys_changed:
+        # 换了物理类型，原类型的专属参数不能带过去
+        for key in ("format", "length", "precision", "defaultvalue", "options", "objectType"):
+            merged.pop(key, None)
+    for key in ("code", "fieldName", "sn", "type"):
+        merged.pop(key, None)          # 下面单独塞回去
+
+    merged["code"] = old.get("code") or field.code
+    merged["fieldName"] = old.get("fieldName") or p["fieldName"]
+    merged["sn"] = old.get("sn") or p["sn"]
+    if "type" in old:
+        merged["type"] = old["type"]        # 可能本来就是空串，别当成「没有」
+    merged["dataTypeNew"] = p["dataTypeNew"]
+    if p.get("datatype"):
+        merged["datatype"] = p["datatype"]
+
+    # 名称/说明：只有用户真填了才动，避免前端「只改类型」时用 code 顶掉原名
+    if "name" in given or "desc" in given:
+        if str(raw.get("name") or "").strip():
+            merged["name"] = field.name
+        if str(raw.get("desc") or "").strip():
+            merged["desc"] = field.desc
+
+    # 必填/索引/默认值：前端表格永远会带 required=false / index=false，
+    # 所以只在**勾上**时才认作显式声明（勾上=设为必填/索引；不勾=不动原值），
+    # 否则「只改类型」会顺手把原字段的必填和索引清掉
+    for key in ("isnull", "isindex", "defaultvalue"):
+        if key in given or key not in merged:
+            val = p.get(key)
+            if val in (None, ""):
+                merged.pop(key, None)
+            else:
+                merged[key] = val
+    if _truthy(raw.get("required")):
+        merged["isnull"] = "N"
+    elif raw.get("isnull") is not None and str(raw.get("isnull")).strip():
+        merged["isnull"] = "Y" if _truthy(raw.get("isnull")) else "N"
+    if _truthy(raw.get("index")):
+        merged["isindex"] = "Y"
+    # 物理参数（长度/精度/格式）只在用户给了或物理类型变了时写；
+    # 同族互改时原包里没有就别硬补 —— 原生 dic 字段本来就不带 format
+    for key in ("format", "length", "precision"):
+        if key in given or phys_changed:
+            val = p.get(key)
+            if val in (None, ""):
+                merged.pop(key, None)
+            else:
+                merged[key] = val
+    # options：只有显式给了、或物理类型变了才重建
+    if "options" in given or phys_changed or "options" not in merged:
+        opts = p.get("options")
+        if opts:
+            merged["options"] = gen_bo.json_attr(opts)
+        elif "options" in given:
+            merged.pop("options", None)
+    # 关联对象/字典 key：dic 必须写成「对象编码_字段编码」，其余类型不留残留
+    if field.type_new in ("dic", "object") and p.get("objectType"):
+        merged["objectType"] = p["objectType"]
+    elif field.type_new not in ("dic", "object") and phys_changed:
+        merged.pop("objectType", None)
+
+    for key in ("options", "format", "objectType", "length", "precision", "defaultvalue"):
+        if merged.get(key) in (None, ""):
+            merged.pop(key, None)
+
+    order = [k for k in old if k in merged]
+    order += [k for k in merged if k not in old]
+    astr = "".join(f' {k}="{esc_attr(merged[k])}"' for k in order)
+    line = f"<{prefix}attribute{astr}/>"
+    changed = [k for k in order if str(merged.get(k, "")) != str(old.get(k, ""))]
+    return line, changed, old_type
+
+
+def _rewrite_dict_items(text: str, prefix: str, items: list[tuple[str, str, list[str]]],
+                       root_close: str) -> tuple[str, int]:
+    """重写已有字典的候选值：同名的复用原 key，新增的生成新短码。
+
+    为什么要「复用 key」
+    -------------------
+    字典项的 key 是库里已经存着的值。用户只是加一个选项、改个显示名，
+    如果把整组 key 重新生成，线上已有记录的取值就全部对不上了。
+    所以按选项**名称**去匹配旧条目，命中就沿用旧 key。
+
+    老实现只给「新增字段」补字典，已有 dic 字段改选项值时 dictionaryList
+    一个字节都没动 —— 包变了、选项值还是老的（2026-11-12 实测选项.zip）。
+    """
+    if not items:
+        return text, 0
+    tag = f"{prefix}dictionary"
+    tag_a = f"{prefix}attrs"
+    done = 0
+    for key, _dic_name, choices in items:
+        pat = re.compile(
+            r"<" + re.escape(tag) + r'\b[^>]*\btypeKey="' + re.escape(key)
+            + r'"[^>]*(?:/>|>.*?</' + re.escape(tag) + r">)", re.S)
+        old_key: dict[str, str] = {}
+        for frag in pat.findall(text):
+            a = dict(re.findall(r'([\w:.-]+)="([^"]*)"', frag))
+            if a.get("name") and a.get("key"):
+                old_key[a["name"]] = a["key"]
+        text = pat.sub("", text)
+        used = set(old_key.values())
+        lines = []
+        for i, label in enumerate(choices, start=1):
+            code = old_key.get(label) or gen_bo._choice_code(label, i, used, scope=key)
+            used.add(code)
+            lines.append(
+                f'<{tag} typeKey="{esc_attr(key)}" key="{esc_attr(code)}" '
+                f'name="{esc_attr(label)}" sn="{i}" disabled="false">'
+                f'<{tag_a}>{cdata(_DIC_STYLE)}</{tag_a}></{tag}>')
+        sep = "\n" if "\n" in text else ""
+        text = _append_to_container(text, f"{prefix}dictionaryList", lines, sep,
+                                    "  " if sep else "", root_close)
+        done += len(lines)
+    return text, done
 
 
 def _dict_lines(fields: list[BoField], prefix: str, info: dict) -> tuple[list[str], list[str], list[str]]:
@@ -465,6 +623,7 @@ def _patch_bo_xml(text: str, info: dict, raw_fields: list[dict], mode: str) -> t
     added: list[dict] = []
     replaced: list[dict] = []
     skipped: list[dict] = []
+    dict_rewrites: list[tuple[str, str, list[str]]] = []
     warns: list[str] = []
     new_fields: list[BoField] = []
     replacements: dict[tuple[int, int], str] = {}
@@ -487,8 +646,13 @@ def _patch_bo_xml(text: str, info: dict, raw_fields: list[dict], mode: str) -> t
                 # 替换时保留原物理列名，避免线上表被要求改列
                 if old.get("fieldName") and not f.field_name:
                     f.field_name = old["fieldName"]
-                replacements[(s, e)] = _attr_line_for(f, prefix)
-                replaced.append({"code": f.code, "name": f.name, "sn": f.sn})
+                line, keys, old_type = _merge_attr_line(old, raw, f, prefix)
+                replacements[(s, e)] = line
+                replaced.append({"code": f.code, "name": old.get("name") or f.name, "sn": f.sn,
+                                 "from": old_type, "to": f.type_new, "attrs": keys})
+                # 选项值改了就重写这个字段的字典项，否则包变了、选项还是老的
+                if f.type_new == "dic" and f.choices:
+                    dict_rewrites.append((f.dict_key(), f.name, list(f.choices)))
             else:
                 skipped.append({"code": f.code, "name": f.name,
                                 "reason": "包里已有同名字段"})
@@ -535,6 +699,8 @@ def _patch_bo_xml(text: str, info: dict, raw_fields: list[dict], mode: str) -> t
         out = _append_to_container(out, f"{prefix}dictionaryTypeList", type_lines, sep, indent, root_close)
     if item_lines:
         out = _append_to_container(out, f"{prefix}dictionaryList", item_lines, sep, indent, root_close)
+    # 已有 dic 字段的选项值：整组替换（同名复用 key，保住库里已存的值）
+    out, rewritten = _rewrite_dict_items(out, prefix, dict_rewrites, root_close)
 
     # 自检：补丁后的 XML 必须仍能解析，且 attribute 数量符合预期
     try:
@@ -554,6 +720,7 @@ def _patch_bo_xml(text: str, info: dict, raw_fields: list[dict], mode: str) -> t
         "warnings": warns,
         "dictTypes": len(type_lines),
         "dictItems": len(item_lines),
+        "dictRewritten": rewritten,
         "fieldCountBefore": len(spans),
         "fieldCountAfter": n_after,
     }
@@ -590,7 +757,7 @@ def _fields_for(spec: dict, file: str, info: dict) -> list[dict]:
 
 def _report_text(spec: dict, changed: dict, kept: int, dropped: int) -> str:
     lines = [
-        "PP6 加字段报告",
+        "PP6 包补丁报告",
         f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"原始条目 {kept + dropped} 个：保留 {kept}，按 bo-only 丢弃 {dropped}",
         f"范围: {spec.get('scope') or 'full'}   重名处理: {spec.get('mode') or 'skip'}",
@@ -602,11 +769,16 @@ def _report_text(spec: dict, changed: dict, kept: int, dropped: int) -> str:
         for a in d["added"]:
             lines.append(f"      + {a['code']}（{a['name']}）  {a['type']}  sn={a['sn']}")
         for a in d["replaced"]:
-            lines.append(f"      ~ {a['code']}（{a['name']}）  按新定义覆盖  sn={a['sn']}")
+            span = f"{a['from']}→{a['to']}" if a.get("from") and a.get("from") != a.get("to") else a.get("to") or ""
+            lines.append(f"      ~ {a['code']}（{a['name']}）  按新定义覆盖  {span}  sn={a['sn']}")
+            if a.get("attrs"):
+                lines.append(f"          改写属性：{' / '.join(a['attrs'])}")
         for a in d["skipped"]:
             lines.append(f"      = {a['code']}  已存在，跳过")
         if d["dictTypes"] or d["dictItems"]:
             lines.append(f"      字典类型 +{d['dictTypes']}，选项 +{d['dictItems']}")
+        if d.get("dictRewritten"):
+            lines.append(f"      已有字典的选项值重写 {d['dictRewritten']} 条")
     warns = [w for d in changed.values() for w in d["warnings"]]
     if warns:
         lines += ["", "提示:"] + [f"  - {w}" for w in dict.fromkeys(warns)]
@@ -633,6 +805,7 @@ def build_patch(data: bytes, spec: dict) -> tuple[bytes, str, dict]:
 
     patched: dict[str, bytes] = {}
     changed: dict[str, dict] = {}
+    untouched: dict[str, dict] = {}
     for file, info in chosen.items():
         raws = _fields_for(spec, file, info)
         if not raws:
@@ -643,8 +816,23 @@ def build_patch(data: bytes, spec: dict) -> tuple[bytes, str, dict]:
         if parsed is None:
             raise ValueError(f"{file}: 不是可解析的业务对象 XML")
         new_text, detail = _patch_bo_xml(text, parsed, raws, mode)
+        if new_text == text:
+            # 一个字都没变（典型：字段名和包里已有字段重复 + 模式=跳过）。
+            # 以前照样记进 changed、报告里写「+ 字段」，用户拿到的是原包。
+            untouched[file] = detail
+            continue
         patched[file] = new_text.encode("utf-8")
         changed[file] = detail
+
+    if not changed:
+        reason = "、".join(
+            f"{d['code']}（包里已有同名字段）"
+            for det in untouched.values() for d in det.get("skipped") or []) \
+            or "没有产生任何字节变化"
+        raise ValueError(
+            f"没有产生任何改动：{reason}。"
+            "这段字段按新定义改写已有字段时，请把「重名字段」选成「按新定义覆盖原字段」；"
+            "只想加字段就换一个没被占用的字段编码。")
 
     kept = dropped = 0
     buf = io.BytesIO()
@@ -672,7 +860,13 @@ def build_patch(data: bytes, spec: dict) -> tuple[bytes, str, dict]:
     names = list(dict.fromkeys(o["name"] or o["code"] for o in chosen.values()))
     labels = names[0] if len(names) == 1 else f"{names[0]}等{len(names)}个对象"
     stamp = datetime.now().strftime("%Y%m%d")
-    name = package_name(labels or "业务对象", "加字段", stamp)
+    # 只改已有字段的产物不该叫「加字段」，否则用户分不清这份包里到底做了什么
+    verbs = []
+    if any(d["added"] for d in changed.values()):
+        verbs.append("加字段")
+    if any(d["replaced"] for d in changed.values()):
+        verbs.append("改字段")
+    name = package_name(labels or "业务对象", "+".join(verbs) or "补丁", stamp)
     payload = {
         "ok": True,
         "changed": changed,
