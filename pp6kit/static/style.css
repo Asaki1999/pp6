@@ -2457,8 +2457,9 @@ body.pl-modal-open { overflow: hidden; }
 .pl-pre > b { font-size: 13px; font-weight: 600; }
 .pl-pre label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
 .pl-pre input[type="radio"] { margin: 0; accent-color: var(--accent-2); cursor: pointer; }
-/* 说明文字靠右，窄屏时自动折到下一行 */
-.pl-pre .sub { margin-left: auto; font-size: 12px; color: var(--muted); }
+/* 说明文字固定占第二行：普通/流程/存量包三条选项栏宽度不同，
+   靠 margin-left:auto 会出现「一条在右、一条换行」的不一致。 */
+.pl-pre .sub { flex-basis: 100%; margin-left: 0; font-size: 12px; color: var(--muted); }
 
 /* ---- 第 3 步标注：结果页顶上的一句话，和 .pl-entry 同族但更轻（没有按钮） ---- */
 .pl-step3 {

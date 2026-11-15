@@ -2415,6 +2415,14 @@ def _():
     got = _json.loads(lines[-1])
     assert got["0_static"]["importBarOnTop"] is True, \
         "普通模式的「关联项目」选项不在 AI 卡上方：会被长卡片挤到折叠线下，用户看不见"
+    # 三个页面（普通 / 流程 / 存量包）的选项栏必须同一套位置、标题、选项文案
+    assert got["0_static"]["threeBars"] is True, "三个页面没有同款选项栏"
+    assert got["0_static"]["barsAtTop"] is True, \
+        "有页面的选项栏不在导入卡片上方（普通/流程/存量包要一致）"
+    assert got["0_static"]["sameTitle"] is True, "三个页面的标题不一致"
+    assert got["0_static"]["sameHint"] is True, "三个页面的说明文案不一致"
+    assert got["0_static"]["patchAllLabel"] is True, \
+        "存量包页的选项还写「关联」，没有和普通/流程统一成「全部关联」"
     d = got["5b_defer"]
     assert d["deferred"] is True, d
     assert d["shown"] is True, d

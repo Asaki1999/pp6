@@ -386,7 +386,7 @@
     </div>
     <div class="panel" data-panel="projlink" hidden>
       <div class="pl-toolbar">
-        <span class="sub">勾了「关联项目」的对象：已自动补「所属项目」链接字段，
+        <span class="sub">业务对象关联项目：已自动补「所属项目」链接字段，
           与项目对象同名/近义的字段（含相似字段）已照项目定义原样覆盖，差异见下方对照</span>
         <span class="pl-toolbar-btns">
           <button class="btn ghost" id="btnPlModal">查看字段差异</button>
@@ -408,11 +408,11 @@
 
     <!-- 对象级选择同样放在**导入前**：按包内 = 保留包里的现状，不强制点分析 -->
     <div class="pl-pre" id="plPrePatchBar">
-      <b>业务对象关联项目</b>
+      <b>存量包 · 业务对象关联项目</b>
       <label><input type="radio" name="plPrePatch" value="off"> 不关联</label>
-      <label><input type="radio" name="plPrePatch" value="on"> 关联</label>
+      <label><input type="radio" name="plPrePatch" value="on"> 全部关联</label>
       <label><input type="radio" name="plPrePatch" value="keep" checked> 按包内</label>
-      <span class="sub">读包时按这一档预置每个对象的「关联项目」勾选；勾了才按项目定义对齐字段。</span>
+      <span class="sub">读包前先选：按包内=保留包里现状；全部关联=每个对象都关联；不关联=一个都不关联。</span>
     </div>
 
     <section class="card">

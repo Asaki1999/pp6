@@ -291,6 +291,15 @@ function staticChecks() {
     hasImportBar: /id="plPreImportBar"/.test(html),
     importBarOnTop: /id="plPreImportBar"/.test(html)
       && html.indexOf('id="plPreImportBar"') < html.indexOf('id="aiChatLaunch"'),
+    // 三个页面（普通/流程/存量包）的选项栏：都在各自页面顶部，文案/选项一致
+    threeBars: ["plPreImportBar", "plPreWorkflowBar", "plPrePatchBar"]
+      .every((id) => html.indexOf(`id="${id}"`) >= 0),
+    barsAtTop: html.indexOf('id="plPreImportBar"') < html.indexOf('id="aiChatLaunch"')
+      && html.indexOf('id="plPreWorkflowBar"') < html.indexOf('id="wfImport"')
+      && html.indexOf('id="plPrePatchBar"') < html.indexOf('id="patchPickZip"'),
+    sameTitle: (html.match(/业务对象关联项目/g) || []).length >= 3,
+    sameHint: (html.match(/先选：/g) || []).length >= 3,
+    patchAllLabel: /name="plPrePatch" value="on">\s*全部关联/.test(html),
     hasWorkflowBar: /id="plPreWorkflowBar"/.test(html),
     hasPatchBar: /id="plPrePatchBar"/.test(html),
     importValues: (html.match(/name="plPreImport" value="([a-z]+)"/g) || []).map((s) => s.split('"')[3]),
