@@ -130,6 +130,22 @@ window.ProjLink = (function () {
     return diffsOf(got).length;
   }
 
+  /* 直接对应、但项目定义和我们的写法有差异的行（已自动覆盖，只读展示）。
+   * 用户要「哪些不一致」：不能因为 autofix 了就不给看。 */
+  function hasDiff(r) {
+    return !!(r && r.diff && String(diffText(r.diff) || "").trim());
+  }
+
+  function directRows(vm) {
+    const got = vm || _vm;
+    if (!got) return [];
+    return relationsOf(got).filter((r) => r && r.status === "auto" && hasDiff(r));
+  }
+
+  function directDiffCount(vm) {
+    return directRows(vm).length;
+  }
+
   function summaryOf(vm) {
     const got = vm || _vm;
     const rs = (got && got.relationSummary) || {};
@@ -232,7 +248,7 @@ window.ProjLink = (function () {
       </div>`;
   }
 
-  function rowHtml(objCode, r) {
+  function rowHtml(objCode, r, auto = false) {
     const st = STATUS[r.status] || { cls: "", text: r.status || "" };
     const key = rowKey(objCode, r.fieldCode);
     const checked = _picked.has(key);
@@ -241,14 +257,16 @@ window.ProjLink = (function () {
     const cand = r.status === "ambiguous" ? candidateHtml({ ...r, objectCode: objCode }) : "";
     const note = r.note
       ? `<div class="pl-rel-note">⚠ ${esc(r.note)}</div>` : "";
-    const pick = disabled
-      ? '<span class="pl-rel-locked muted" title="冲突：项目字段已被别的字段认领">保留我的</span>'
-      : `<label class="pl-rel-pick">
-           <input type="checkbox" data-pl-pick="${esc(key)}"
-                  data-pl-obj="${esc(objCode)}" data-pl-field="${esc(r.fieldCode)}"
-                  ${checked ? "checked" : ""}>
-           <span>按项目覆盖</span>
-         </label>`;
+    const pick = auto
+      ? '<span class="pl-rel-locked muted" title="字段名完全一致，已按项目定义自动覆盖">已自动覆盖</span>'
+      : disabled
+        ? '<span class="pl-rel-locked muted" title="冲突：项目字段已被别的字段认领">保留我的</span>'
+        : `<label class="pl-rel-pick">
+             <input type="checkbox" data-pl-pick="${esc(key)}"
+                    data-pl-obj="${esc(objCode)}" data-pl-field="${esc(r.fieldCode)}"
+                    ${checked ? "checked" : ""}>
+             <span>按项目覆盖</span>
+           </label>`;
     return `
       <div class="pl-rel-row ${esc(st.cls)}" data-pl-rel="${esc(key)}">
         <div class="pl-rel-main">
@@ -514,10 +532,17 @@ window.ProjLink = (function () {
     const body = document.getElementById("plModalBody");
     const head = document.getElementById("plModalTitle");
     if (!mask || !body) return;
-    if (!confirmRows(_vm).length) return;
+    const rows = confirmRows(_vm);
+    // 只有直接对应（E0）的差异、没有待确认项时也要弹：用户要看到「哪些不一致」，
+    // 不能因为已经自动覆盖就静默改掉。
+    if (!rows.length && !directRows(_vm).length) return;
     _picked.clear();                       // 每次打开都从「保留我方」开始
     _candChoice.clear();                   // 多候选下拉也回到「最匹配」
-    if (head) head.textContent = "这些字段和项目相近，要按项目定义覆盖吗？";
+    if (head) {
+      head.textContent = rows.length
+        ? "这些字段和项目相近，要按项目定义覆盖吗？"
+        : "项目字段已自动对齐，下面是改动明细";
+    }
     body.innerHTML = bodyHtml(_vm);
     mask.hidden = false;
     document.body.classList.add("pl-modal-open");
@@ -600,6 +625,8 @@ window.ProjLink = (function () {
     if (!btn) return;
     btn.textContent = _picked.size
       ? `按勾选覆盖（${_picked.size} 个）` : "按勾选覆盖";
+    btn.disabled = !_picked.size;
+    btn.title = _picked.size ? "" : "先勾选要覆盖的字段；一个都不改就点「保留我的」";
   }
 
   function bodyHtml(vm) {
@@ -635,8 +662,19 @@ window.ProjLink = (function () {
           ${mine.map((r) => rowHtml(r.objectCode || objOf(vm, r.fieldCode), r)).join("")}
         </div>`;
     }).join("");
+    const autoRows = directRows(vm);
+    const autoGroup = autoRows.length ? `
+      <div class="pl-rel-group" data-pl-group="auto">
+        <div class="pl-rel-group-head">
+          <strong>直接对应（已自动覆盖）</strong>
+          <span class="chip muted">${autoRows.length}</span>
+          <span class="muted">字段名完全一致；下面是项目定义改了什么，只读</span>
+        </div>
+        ${autoRows.map((r) => rowHtml(
+          r.objectCode || objOf(vm, r.fieldCode), r, true)).join("")}
+      </div>` : "";
     const unrelated = relationsOf(vm).filter((r) => r && r.status === "unrelated");
-    return `${meta}${links}${groups}
+    return `${meta}${links}${autoGroup}${groups}
       ${unrelatedHtml(unrelated)}
       ${newCount ? `<div class="pl-modal-meta muted">其余 ${esc(newCount)} 个新字段
         （项目对象里没有）按原规则生成，不参与覆盖。</div>` : ""}`;
@@ -710,7 +748,7 @@ window.ProjLink = (function () {
 
   return {
     render, openModal, closeModal, summary, reset,
-    diffCount, pendingCount, updateBadge, selectAll, collect, isPicked,
+    diffCount, pendingCount, directDiffCount, updateBadge, selectAll, collect, isPicked,
     chooseCandidate,
     // 供探针/调试：分组与差异摘要的纯函数
     groupOf, diffText, confirmRows,

@@ -115,6 +115,15 @@ const REL_AUTO = {
   target: { code: "code", name: "项目编号", fieldName: "code_", type: "字符串" },
   candidates: [], diff: null, action: "已自动覆盖", note: "",
 };
+const REL_AUTO_DIFF = {
+  fieldCode: "xiangMuBianHao", fieldName: "项目编号", status: "auto", rule: "E0",
+  basis: "字段名完全一致", confidence: "high",
+  target: { code: "code", name: "项目编号", fieldName: "code_", type: "字符串" },
+  candidates: [], diff: diff({
+    fieldCode: "xiangMuBianHao", fieldName: "项目编号",
+    targetCode: "code", targetName: "项目编号", rule: "E0",
+  }), action: "已自动覆盖", note: "",
+};
 const REL_S4 = {
   fieldCode: "projCategory", fieldName: "项目类别", status: "pending", rule: "S4",
   basis: "同义词（项目类别≈项目类型，归一后都是「项目类型」）", confidence: "medium",
@@ -302,6 +311,22 @@ PL.openModal(vmPure);
 out.Z_notOpened = mask.hidden === true;
 PL.render(box, vmPure);
 out.Z_tabStillRenders = box.innerHTML.indexOf("pl-rel-table") >= 0;
+
+/* ④b 只有直接对应（E0）有差异、没有待确认项 → 也要弹。
+   用户要看到「哪些不一致」；已自动覆盖不等于不该提示。 */
+const vmAuto = vmOf([REL_AUTO_DIFF, REL_UNRELATED],
+  { diffs: [REL_AUTO_DIFF.diff], diffCount: 1 });
+mask.hidden = true;
+PL.closeModal();
+out.A_direct = PL.directDiffCount(vmAuto);
+PL.openModal(vmAuto);
+out.A_opened = mask.hidden === false;
+const autoHtml = body.innerHTML;
+out.A_autoGroup = autoHtml.indexOf("直接对应（已自动覆盖）") >= 0;
+out.A_autoField = autoHtml.indexOf("项目编号") >= 0;
+out.A_autoNoPick = autoHtml.indexOf('data-pl-pick="contract.xiangMuBianHao"') < 0;
+out.A_title = el("plModalTitle").textContent;
+out.A_primaryDisabled = el("plApplyPicked").disabled === true;
 
 /* ⑤ 弹窗底部按钮：全选 / 全不选 / 保留我的 / 按勾选覆盖（HTML 里，不在 JS 里拼） */
 if (HTML) {

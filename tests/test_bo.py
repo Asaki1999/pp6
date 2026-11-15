@@ -695,3 +695,28 @@ def _():
     opts = json.loads(row["options"].replace("&quot;", '"'))
     assert "optionSource" not in opts, opts
     assert opts == {"isMultiple": False, "isDefault": False}, opts
+
+
+@case("BO34", "bo", "AI 只生成用户明确提到的字段，不自动补常见字段", "P0",
+      ["只保留 6 个", "9 个额外字段被丢弃", "提示里说明"])
+def _():
+    # 用户实测：描述只提了 6 个字段，AI 回了 15 个（合同类型/承办部门/关联项目/
+    # 生效日期/到期日期/合同状态/收付款状态/备注/合同附件全是自己加的）。
+    # 两道闸：提示词不许凑 8-16 个；build_bo 再按描述做一次确定性过滤。
+    from pp6kit import ai_bo
+    desc = "做一个合同台账，记录合同名称、合同编号、合同金额、签订日期、对方单位、经办人。"
+    names = ["合同编号", "合同名称", "合同类型", "合同金额", "签订日期", "对方单位",
+             "经办人", "承办部门", "关联项目", "生效日期", "到期日期", "合同状态",
+             "收付款状态", "备注", "合同附件"]
+    bo, notices = ai_bo.build_bo(
+        {"name": "合同台账", "code": "contract_ledger",
+         "fields": [{"name": n, "type": "varchar"} for n in names]},
+        description=desc)
+    got = [f.name for f in bo.fields]
+    assert got == ["合同编号", "合同名称", "合同金额", "签订日期", "对方单位", "经办人"], got
+    for extra in ["合同类型", "承办部门", "关联项目", "生效日期", "到期日期",
+                  "合同状态", "收付款状态", "备注", "合同附件"]:
+        assert extra not in got, f"{extra} 是 AI 自己加的，应该被过滤掉"
+    assert any("只保留明确提到的字段" in n and "9 个" in n for n in notices), notices
+    assert "8-16" not in ai_bo.SYSTEM, "提示词还在让 AI 凑 8-16 个字段"
+    assert "只生成用户描述里明确提到的业务字段" in ai_bo.SYSTEM, "提示词没有严格要求只生成提到的字段"

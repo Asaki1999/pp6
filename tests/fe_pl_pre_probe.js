@@ -483,6 +483,7 @@ async function scenarioDiffModal() {
     render() {},
     diffCount: (vmData) => (vmData && vmData.__diff ? 1 : 0),
     pendingCount: (vmData) => (vmData && vmData.__diff ? 1 : 0),
+    directDiffCount: () => 0,
     openModal: (vmData) => calls.push(vmData && vmData.__diff),
   };
 

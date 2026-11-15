@@ -1877,7 +1877,14 @@ def _():
     # ② 三组分开（语义相近 / 可能相关 / 需确认），自动的行不列
     assert all(got["M_groups"]), got["M_groups"]
     assert all(got["M_groupKeys"]), got["M_groupKeys"]
-    assert got["M_hidesAuto"] is True, "自动覆盖的字段也列进弹窗了：等于又让用户选一遍"
+    assert got["M_hidesAuto"] is True, "没有差异的自动行也列进弹窗了：等于又让用户选一遍"
+    # ②a 只有直接对应（E0）有差异、没有待确认项：也要弹，只读展示改动，不给勾
+    assert got["A_direct"] == 1, got
+    assert got["A_opened"] is True, "只有 E0 差异时没弹：用户看不到不一致"
+    assert got["A_autoGroup"] and got["A_autoField"], got
+    assert got["A_autoNoPick"] is True, "E0 自动覆盖行给了勾选框"
+    assert "已自动对齐" in got["A_title"], got["A_title"]
+    assert got["A_primaryDisabled"] is True, "没有待确认项时「按勾选覆盖」还能点"
     # ②b 无关字段：默认收起，但**能展开看到每一个字段名**（用户问的就是「哪些字段无关」）
     assert got["M_hasUnrelatedToggle"] is True, "无关字段没有可展开的清单"
     assert got["M_unrelatedNames"] is True, "展开后看不到具体字段名"

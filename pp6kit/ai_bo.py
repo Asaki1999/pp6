@@ -90,17 +90,23 @@ JSON 结构：
 3. 名称类字段用 varchar；金额用 number；审批人用 user；状态/类型/类别这类固定取值用 dic。
    **拿不准是 dic 还是 object 时一律 dic**：dic 带候选值，导入后能直接用；
    object 选错对象就是空下拉，用户什么也选不到。
-4. 字段 8-16 个，覆盖业务实际要填的东西，不要凑数也不要漏
-5. 「关联项目」「关联客户」「关联合同」这类**指向系统里别的业务对象**的，用 object（对象），
+4. **只生成用户描述里明确提到的业务字段。** 用户没提的字段一个都不要加——
+   不要默认补「合同类型、状态、备注、附件、生效日期、到期日期、承办部门、
+   关联项目」这类常见字段；字段数量不设下限，用户说几个就是几个。
+   系统字段由生成器自动补，不要输出。
+5. **不要自动生成「关联项目 / 所属项目」这类链接字段。** 只有用户明确说
+   「关联项目 / 所属项目」时才生成 object 字段；应用在勾选「关联项目」时
+   会自动补 projectId，不需要 AI 生成。
+6. 「关联项目」「关联客户」「关联合同」这类**指向系统里别的业务对象**的，用 object（对象），
    objectType 填**下面给定的对象编码**（如 project / customer / contract）。
    编码必须从给定清单里选，不要自造，也不要填中文名——填错导入后是一个空下拉，什么也选不到。
    指向「人」的不要用 object，用 user；指向「部门」的用 department。
    **对象清单里没有对应条目的，不要硬套 object**——比如「需求单位」写了 20 个公司名，
    系统里没有这些组织，就该是 dic（选项）+ 候选值。
-6. 带「单号」「编号」且要自动生成的，用 autoNumber
-7. `readonly` 默认 false；只有字段是「只读展示/自动带出/自动生成」时才设 true，
+7. 带「单号」「编号」且要自动生成的，用 autoNumber
+8. `readonly` 默认 false；只有字段是「只读展示/自动带出/自动生成」时才设 true，
    要人填写或选择的字段不要设只读。
-8. 两个字段之间是「父级选了 A，子级只剩 A 下面那几项」的取值关系时，
+9. 两个字段之间是「父级选了 A，子级只剩 A 下面那几项」的取值关系时，
    **在子字段上加 `cascadeParent` = 父字段的 code**（如 品种分类 → "productCategory"）。
    例：品种类别/品种分类、战略类别/项目注册类别、省市/区县。
    只在确实是父子取值关系时加；两个互不相干的下拉不要加，并列的也不要互相指。
@@ -338,9 +344,57 @@ def _as_pool(known) -> list[dict]:
     return [{"code": str(c), "name": ""} for c in known]
 
 
+_GENERIC_FIELD_WORDS = {
+    "合同", "项目", "申请", "名称", "编号", "日期", "时间", "金额", "数量",
+    "类型", "状态", "备注", "附件", "部门", "单位", "人员", "内容", "说明",
+    "描述", "单号", "类别", "分类", "是否", "台账", "记录",
+}
+
+
+def _norm_cn(value: str) -> str:
+    """只留中文/字母/数字，去掉空格和标点，用于「描述里到底提没提这个词」。"""
+    return re.sub(r"[^\u4e00-\u9fa5a-z0-9]", "", str(value or "").lower())
+
+
+def _mentioned(name: str, description: str) -> bool:
+    """字段名是否真的出现在用户描述里。
+
+    只认**完整名字**或长度 2-4、且不属于「合同/名称/状态」这类通用词的名字片段。
+    这样「合同类型」不会因为描述里有「合同」就被保留；「物品名称」在描述写「物品」
+    时仍能保留（片段「物品」不是通用词）。
+    """
+    a, d = _norm_cn(name), _norm_cn(description)
+    if not a or not d:
+        return True
+    if a in d:
+        return True
+    for size in range(min(4, len(a)), 1, -1):
+        for i in range(len(a) - size + 1):
+            token = a[i:i + size]
+            if token in _GENERIC_FIELD_WORDS:
+                continue
+            if token in d:
+                return True
+    return False
+
+
+def _filter_mentioned(fields: list[dict], description: str) -> tuple[list[dict], list[str]]:
+    """只保留用户描述里明确提到的字段；返回 (保留, 被丢弃的字段名)。"""
+    kept: list[dict] = []
+    dropped: list[str] = []
+    for raw in fields:
+        name = str(raw.get("name") or "").strip()
+        if not name or _mentioned(name, description):
+            kept.append(raw)
+        else:
+            dropped.append(name)
+    return kept, dropped
+
+
 def build_bo(spec: dict, known_objects: list | None = None,
              strict_objects: bool = False,
-             prefer_code: bool = False) -> tuple[Bo, list[str]]:
+             prefer_code: bool = False,
+             description: str | None = None) -> tuple[Bo, list[str]]:
     """把 AI 给的 JSON 规整成 Bo。返回 (对象, 提示)。
 
     strict_objects=True（读非标准 Excel 时用）：object 字段的关联编码不在对象库里，
@@ -365,8 +419,17 @@ def build_bo(spec: dict, known_objects: list | None = None,
     bo = Bo(code=code, name=name, tbl_name=table_name_for(code),
             desc=(spec.get("desc") or "").strip())
 
+    raw_fields = list(spec.get("fields") or [])
+    if description:
+        raw_fields, dropped = _filter_mentioned(raw_fields, description)
+        if dropped:
+            notices.append(
+                f"按你的描述只保留明确提到的字段，已忽略 AI 额外建议的 {len(dropped)} 个："
+                + "、".join(dropped[:8])
+                + ("…" if len(dropped) > 8 else "")
+            )
     used: set[str] = set()
-    for raw in (spec.get("fields") or []):
+    for raw in raw_fields:
         ftype = (raw.get("type") or "varchar").strip()
         if ftype not in ALLOWED_TYPES:
             # 模型偶尔会回「单行文本」「下拉框」「数据字典」这种控件层叫法，
@@ -547,7 +610,7 @@ def generate(description: str, cfg: dict, known_objects: list | None = None,
     except json.JSONDecodeError as exc:
         raise llm.LlmError(f"模型输出不是合法 JSON（{exc.msg}），请再试一次或把需求写简单些") from exc
 
-    bo, notices = build_bo(spec, pool)
+    bo, notices = build_bo(spec, pool, description=description)
     return {
         "ok": True,
         "bo": bo,

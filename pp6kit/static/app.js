@@ -485,7 +485,9 @@ function renderRelations() {
  *
  * 2026-11-15 口径：只有「直接对应」的字段自动覆盖，语义相近 / 可能相关 / 冲突 /
  * 多候选都要用户逐条确认。所以这里不再用 diffCount 开弹窗（差异是「勾了会变成
- * 什么」的说明，不是「要不要勾」的问题），改为 pendingCount>0 才弹。
+ * 什么」的说明，不是「要不要勾」的问题），改为 pendingCount>0 才弹；
+ * 只有直接对应（E0）有差异、没有待确认项时也弹一次——用户要看到「哪些不一致」，
+ * 不能因为已经自动覆盖就静默改掉。
  * plModalShown 保证同一份文件只自动弹一次（勾完重解析后不再糊遮罩）。 */
 function renderProjectLink() {
   const vm = state.data && state.data.projectAlign;
@@ -494,8 +496,10 @@ function renderProjectLink() {
   window.ProjLink.reset();
   window.ProjLink.render(box, vm);      // render 内部会顺手 updateBadge()
   const count = window.ProjLink.pendingCount(vm);
+  const direct = window.ProjLink.directDiffCount
+    ? window.ProjLink.directDiffCount(vm) : 0;
   state.plPending = count;
-  if (count && !state.plModalShown) {
+  if ((count || direct) && !state.plModalShown) {
     state.plModalShown = true;
     window.ProjLink.openModal(vm);
   }
@@ -2552,8 +2556,11 @@ function bind() {
     plOpen.onclick = () => {
       const vm = state.data && state.data.projectAlign;
       if (!window.ProjLink) return;
-      if (!window.ProjLink.pendingCount(vm)) {
-        toast("没有需要确认的相近字段：同名同族的字段已经自动覆盖了", 5000);
+      const pending = window.ProjLink.pendingCount(vm);
+      const direct = window.ProjLink.directDiffCount
+        ? window.ProjLink.directDiffCount(vm) : 0;
+      if (!pending && !direct) {
+        toast("项目字段没有差异：同名字段已经是项目定义", 5000);
         return;
       }
       window.ProjLink.openModal(vm);
