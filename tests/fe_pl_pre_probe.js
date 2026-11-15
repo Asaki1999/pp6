@@ -299,7 +299,8 @@ function staticChecks() {
       && html.indexOf('id="plPrePatchBar"') < html.indexOf('id="patchPickZip"'),
     sameTitle: (html.match(/业务对象关联项目/g) || []).length >= 3,
     sameHint: (html.match(/先选：/g) || []).length >= 3,
-    patchAllLabel: /name="plPrePatch" value="on">\s*全部关联项目/.test(html),
+    patchAllLabel: /name="plPrePatch" value="on">\s*全部关联<\/label>/.test(html),
+    noProjectSuffix: !/全部关联项目/.test(html),
     hasWorkflowBar: /id="plPreWorkflowBar"/.test(html),
     hasPatchBar: /id="plPrePatchBar"/.test(html),
     importValues: (html.match(/name="plPreImport" value="([a-z]+)"/g) || []).map((s) => s.split('"')[3]),
@@ -310,13 +311,13 @@ function staticChecks() {
     workflowDefaultOff: /name="plPreWorkflow" value="off" checked/.test(html),
     patchDefaultKeep: /name="plPrePatch" value="keep" checked/.test(html),
     step1Numbering: /第 1 步 · 业务对象关联项目/.test(html),
-    // 「全部关联项目」是新文案，旧的「全部关联」不该再单独出现
-    saysAllLinked: /全部关联项目/.test(html),
+    // 「全部关联」是选项状态；「业务对象关联项目」才是功能名，别把「项目」塞进选项
+    saysAllLinked: /全部关联/.test(html),
     // 第三档「按 Excel」整块删干净：值、文案、说明都不留
     noExcelValue: !/value="excel"/.test(html),
     noExcelLabel: !/按 Excel/.test(html),
     // 说明是大白话：两档各是什么后果 + 导入后不再弹
-    hintExplainsGears: /全部关联项目=这份 Excel 里每个对象都关联项目/.test(html)
+    hintExplainsGears: /全部关联=这份 Excel 里每个对象都关联项目/.test(html)
       && /全部不关联=一个都不关联/.test(html)
       && /导入后不再弹选择框/.test(html),
     // 旧的第 1 步弹窗必须整块消失（DOM / 按钮 / 样式都不留死代码）
