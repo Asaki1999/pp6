@@ -15,7 +15,7 @@ from pathlib import Path
 
 EXCEL_TYPES = ("Excel 文件 (*.xlsx;*.xlsm)",)
 ZIP_TYPES = ("导出包 (*.zip)",)
-SOURCE_TYPES = ("Excel / PDF / Word (*.xlsx;*.xlsm;*.pdf;*.docx)",)
+SOURCE_TYPES = ("Excel PDF Word 文件 (*.xlsx;*.xlsm;*.pdf;*.docx)",)
 
 
 def _dialog(kind: str):
