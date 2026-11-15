@@ -25,7 +25,7 @@ const MODE_META = {
   import:   { title: "普通模式", desc: "普通业务对象 + 表单/列表/数据集，出一个同步包（导入走 发布管理 › 导入同步包）；流程对象看「流程模式」" },
   patch:    { title: "存量包修订", desc: "在原 zip 的 bo/*.xml 上打最小补丁，除新增字段外字节原样保留；对齐系统管理 › 发布管理 › 导入同步包，变更区非必经；反解会重造包，补字段请用这里" },
   query:    { title: "数据查询",   desc: "用一句话查数据库，生成 SQL 并查看结果" },
-  workflow: { title: "流程模式",   desc: "流程对象（含表单/列表）出对象包，流程定义单独下 XML" },
+  workflow: { title: "流程模式",   desc: "沿用普通模式的对象；固定 开始→审核→通过，只出流程对象包，不生成流程图/XML" },
   settings: { title: "系统设置",   desc: "大模型、数据库连接与本地配置" },
 };
 
@@ -36,6 +36,9 @@ function switchMode(mode) {
   document.getElementById("mode-query").hidden = mode !== "query";
   document.getElementById("mode-workflow").hidden = mode !== "workflow";
   document.getElementById("mode-settings").hidden = mode !== "settings";
+  // 流程页和普通模式共用同一份解析结果：切过去要立刻按当前对象刷新，
+  // 不能等用户再选一次 Excel（否则会看到「还没有导入」或旧的 0 对象状态）。
+  if (mode === "workflow" && window.Workflow) window.Workflow.refresh();
   // 底部 dock 只放状态栏：主操作统一留在卡片里，
   // 避免切换工作区时操作条忽隐忽现、工作区高度跟着跳。
   const bar = document.getElementById("actionbar");

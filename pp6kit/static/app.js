@@ -272,9 +272,13 @@ async function handleFile(file, { fromAi = false, quiet = false } = {}) {
     if (quiet) {
       const all = state.data.objects || [];
       const n = all.filter((o) => o.flowDriven).length;
-      toast(n
-        ? `已解析：${n} 个流程对象，可以导出对象包`
-        : `已解析：${all.length} 个对象，按固定三步出流程对象包`, 6000);
+      if (!all.length) {
+        toast("已解析，但这份 Excel 里没有业务对象：先到 1_业务对象 填一行", 7000);
+      } else {
+        toast(n
+          ? `已解析：${n} 个流程对象，可以导出对象包`
+          : `已解析：${all.length} 个对象，按固定三步出流程对象包`, 6000);
+      }
     }
     if (fromAi) toast("已按预览生成，选择模块后下载 zip", 5000);
   } catch (err) {

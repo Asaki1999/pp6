@@ -2452,6 +2452,8 @@ def _():
         "没勾流程驱动时没有回退到全部对象 / 没带 X-Workflow-All"
     assert got["0_static"]["wfNoFlowFlagBlame"] is True, \
         "前端还在让用户回 Excel 把「流程驱动」改成「是」"
+    assert got["0_static"]["wfNoZeroObjectToast"] is True, \
+        "流程页又出现「0 个对象，按固定三步」这种误导提示"
     # 返回按钮位置统一：第 2/3 步都在页头 .file-row，底部操作条不再有返回
     assert got["0_static"]["backButtonsTop"] is True, \
         "第 2 步或第 3 步的返回按钮不在页头 .file-row 里（一上一下，用户来回找）"

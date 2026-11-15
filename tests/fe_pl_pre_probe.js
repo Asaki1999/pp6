@@ -349,6 +349,7 @@ function staticChecks() {
     wfAllFallback: /driven\.length \? driven : allObjects\(\)/.test(src)
       && /X-Workflow-All/.test(src),
     wfNoFlowFlagBlame: !/把「流程驱动」改成「是」/.test(src),
+    wfNoZeroObjectToast: !/0 个对象，按固定三步/.test(src),
     hasWorkflowBar: /id="plPreWorkflowBar"/.test(html),
     hasPatchBar: /id="plPrePatchBar"/.test(html),
     importValues: (html.match(/name="plPreImport" value="([a-z]+)"/g) || []).map((s) => s.split('"')[3]),
