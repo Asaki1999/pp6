@@ -2318,3 +2318,25 @@ def _():
     assert "plModalShown = false" in body, "返回第 1 步没有允许再次弹确认"
     assert 'id="plBackEdit"' in html, "确认弹窗没有「返回修改 Excel」入口"
     assert "plBackEdit" in app and "backToInput" in app, "返回修改 Excel 没有绑到第 1 步"
+
+
+@case("PL63", "projlink", "AI 首屏返回后再点「开始生成」：走全新生成并进第 2 步，不能当增量修改",
+      "P0", ["返回后能再进第 2 步", "fresh 生成", "/api/ai/bo 不是 refine"])
+def _():
+    # 用户实测：第 1 步「描述 → 开始生成」进第 2 步，点「回去接着说」改描述，
+    # 再点开始生成就停在第 1 步。根因：sendAiChat 只看 state.aiData 判 first，
+    # 旧结果还在 → 走 /api/ai/refine，而 refine 不 goStep(2)。
+    # 修法：首屏发送显式带 fresh=true，first = fresh || !state.aiData。
+    from pathlib import Path
+    app = (Path(webui.STATIC) / "app.js").read_text(encoding="utf-8")
+    assert re.search(r"async function sendAiChat\(text,\s*\{\s*fresh = false\s*\}\s*=\s*\{\}\)",
+                     app), "sendAiChat 没有 fresh 参数"
+    assert "const first = !!fresh || !state.aiData" in app, "first 仍然只看 aiData"
+    assert "sendAiChat(msg, { fresh })" in app, "aiChatSendFrom 没把 fresh 传下去"
+    # 首屏三个入口（按钮 / Enter / 快捷 chip）都必须 fresh
+    assert 'aiChatSendFrom("aiChatText1", "aiChatLog1", { fresh: true })' in app, \
+        "首屏发送没有标 fresh"
+    # 预览页仍是增量修改，不能误改成全新生成
+    assert 'aiChatSendFrom("aiChatText", "aiChatLog")' in app, "预览页发送被改坏了"
+    assert 'btn.textContent = first ? "开始生成" : "发送修改"' in app, \
+        "按钮文案仍按 state.aiData 判断，回到第 1 步会显示「发送修改」"

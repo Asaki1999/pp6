@@ -1872,7 +1872,7 @@ function aiChatAppendChanges(changes) {
 
 /* 一句话就是全部输入：没有结果时它负责「从零设计」，有结果时负责「增量改」。
    用户不该先点一个「生成」按钮才能开始说话。 */
-async function sendAiChat(text) {
+async function sendAiChat(text, { fresh = false } = {}) {
   const msg = (text != null ? text : $("#aiChatText").value).trim();
   if (!msg) { toast("说说你要建什么"); return; }
   if (!window.PP6_AI_READY) {
@@ -1881,7 +1881,10 @@ async function sendAiChat(text) {
     return;
   }
 
-  const first = !state.aiData;      // 首轮：还没有任何结果
+  // 首轮 = 还没有任何结果，或者用户是从第 1 步首屏重新说需求（fresh）。
+  // 只按 state.aiData 判断会把「返回第 1 步改完描述再点开始生成」误当成
+  // 对旧结果的增量修改，于是只调 /api/ai/refine、不 goStep(2)，看起来卡在第 1 步。
+  const first = !!fresh || !state.aiData;
   const input = $("#aiChatText");
   const btn = $("#aiChatSend");
   input.value = "";
@@ -1939,19 +1942,20 @@ async function sendAiChat(text) {
     aiChatAppend("bot err", (first ? "没生成出来：" : "没改成：") + err.message);
   } finally {
     btn.disabled = false;
-    btn.textContent = state.aiData ? "发送修改" : "开始生成";
+    // 首屏的按钮永远回到「开始生成」；只有预览页的增量修改才是「发送修改」
+    btn.textContent = first ? "开始生成" : "发送修改";
     input.focus();
   }
 }
 
 /* 首屏和预览页各一套对话框：首屏负责「从零」，预览页负责「接着改」。
    两边共用同一个输入源，任一框里说的都走 sendAiChat。 */
-function aiChatSendFrom(idText, idLog) {
+function aiChatSendFrom(idText, idLog, { fresh = false } = {}) {
   const ta = document.getElementById(idText);
   const msg = ta ? ta.value : "";
   if (ta) ta.value = "";
   aiChatTarget = idLog;            // 气泡写到当前这个输入框所属的日志区
-  sendAiChat(msg);
+  sendAiChat(msg, { fresh });
 }
 
 let aiChatTarget = "aiChatLog";
@@ -1959,13 +1963,13 @@ let aiChatTarget = "aiChatLog";
 function bindAiChat() {
   // 首屏
   const s1 = $("#aiChatSend1");
-  if (s1) s1.onclick = () => aiChatSendFrom("aiChatText1", "aiChatLog1");
+  if (s1) s1.onclick = () => aiChatSendFrom("aiChatText1", "aiChatLog1", { fresh: true });
   const t1 = $("#aiChatText1");
   if (t1) {
     t1.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        aiChatSendFrom("aiChatText1", "aiChatLog1");
+        aiChatSendFrom("aiChatText1", "aiChatLog1", { fresh: true });
       }
     });
   }
@@ -2006,7 +2010,7 @@ function bindAiChat() {
       const q = b.dataset.q || b.textContent;
       const ta = $("#aiChatText1");
       if (ta) ta.value = q;
-      aiChatSendFrom("aiChatText1", "aiChatLog1");
+      aiChatSendFrom("aiChatText1", "aiChatLog1", { fresh: true });
     };
   });
 }
