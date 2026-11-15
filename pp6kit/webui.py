@@ -577,7 +577,10 @@ def build_zip(data: bytes, codes: list[str] | None = None,
         # 流程页没有勾「流程驱动」时，后端按固定三步把全部对象纳入流程对象包；
         # 必须在 validate 之前改，后面的流程字段/字典/校验才按流程对象走。
         scope = (object_scope or "all").strip().lower()
-        if scope == "workflow" and workflow_all:
+        # 流程模式发的是 X-Object-Scope=all + X-Workflow-All=1：
+        # 必须先把对象标成流程对象，再按 all 出包；只在 scope=workflow 时标
+        # 会得到“zip 里还是普通对象”的假流程包。
+        if workflow_all:
             for bo in proj.bos:
                 bo.flow_driven = True
 
@@ -899,7 +902,8 @@ def _cache_proj(data: bytes):
 
 
 def import_module(data: bytes, code: str,
-                  projlink_header: str | None = None) -> tuple[bytes, str]:
+                  projlink_header: str | None = None,
+                  workflow_all: bool = False) -> tuple[bytes, str]:
     """只生成某一个模块的独立 zip（页面上的「导入」按钮）。
 
     与 build_zip 的区别：不打包汇总，直接给系统能吃的那个单包。
@@ -910,15 +914,18 @@ def import_module(data: bytes, code: str,
     if code not in mod_def.BY_CODE:
         raise ValueError(f"未知模块 {code}")
     if not mod_def.of(code).zipped:
-        # 流程定义已从工具里下线：固定三步，只出流程对象包，不再生成流程 XML。
-        raise ValueError(f"「{mod_def.label(code)}」不再单独导出："
-                         f"请到「流程模式」导出流程对象包；本工具不生成流程 XML")
+        # 流程不按模块出 zip：固定三步，在结果页单独下载 XML。
+        raise ValueError(f"「{mod_def.label(code)}」不按模块导出："
+                         f"流程 XML 请用结果页的「下载流程 XML」")
     # **必须深拷贝**：_cache_proj() 是跨请求共享的同一个 Project，apply 会改字段
     # 定义、改名、重写引用——直接改缓存的话，下一次「没带头」的请求也会带着
     # projectId（用户会看到开关关不掉，且顺序不同结果不同，极难排查）。
     # 副本上对齐是安全的：_cache_proj 已经 blueprint.expand 过，build() 内部再
     # expand 一次是幂等的，ensure_project_links 也只在副本上加字段。
     proj = copy.deepcopy(_cache_proj(data))
+    if workflow_all:
+        for bo in proj.bos:
+            bo.flow_driven = True
     if projlink_header:
         from . import projlink as _projlink
 
@@ -2278,7 +2285,8 @@ class Handler(BaseHTTPRequestHandler):
                 # 与 build / confirmed-excel 同一个决策头：模块行上的「导入」
                 # 也得按页面上的「关联项目」开关出包
                 body, name = import_module(self._body(), code,
-                                           _projlink_header(self.headers))
+                                           _projlink_header(self.headers),
+                                           _workflow_all(self.headers))
                 self._send(200, body, "application/zip", name)
             elif self.path == "/api/workflow":
                 body, name, ctype = workflow_files(self._body(), _workflow_all(self.headers))

@@ -1327,6 +1327,7 @@ async function importOne(code, btn) {
     // 每个模块行上的「导入」是最显眼的按钮，同样要按页面上的「关联项目」开关
     // 出包：漏一个头，用户就会拿到「有对象、没 projectId」的单模块包
     const headers = { "Content-Type": "application/octet-stream" };
+    if (state.flowMode) headers["X-Workflow-All"] = "1";
     const pl = projLinkHeader();
     if (pl) headers["X-Project-Link"] = pl;
     const res = await fetch(`/api/import/${code}`, { method: "POST", body: buf, headers });

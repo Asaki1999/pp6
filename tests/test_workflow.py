@@ -420,7 +420,8 @@ def _():
     try:
         webui.import_module(data, "workflow")
     except ValueError as exc:
-        assert "不再单独导出" in str(exc) or "不生成流程 XML" in str(exc), str(exc)
+        assert ("不按模块导出" in str(exc) or "不再单独导出" in str(exc)
+                or "下载流程 XML" in str(exc)), str(exc)
     else:
         raise AssertionError("import_module 不应该给出流程的 zip")
 
@@ -1072,3 +1073,30 @@ def _():
     acts = list(chart)
     assert [a.get("Name") for a in acts] == ["开始", "审核", "通过"], [
         a.get("Name") for a in acts]
+
+
+@case("WF33", "workflow", "流程模式 all 范围也要把对象标成 workflow（否则 zip 还是普通对象）", "P0",
+      ["X-Object-Scope=all + X-Workflow-All", "bo XML mode=workflow", "模块单独导出同规则"])
+def _():
+    data = xlsx({
+        S.S_BO: [{"对象名称": "合同台账", "对象编码": "contract_ledger2",
+                  "物理表名": "pp_contract_ledger2", "流程驱动": "否"}],
+        S.S_FIELD: [field("contract_ledger2", "名称", "字符串")],
+        S.S_FORM: [{"表单key": "create_contract_ledger2", "表单名称": "新建合同台账2",
+                    "对象编码": "contract_ledger2", "表单类型": "新建表单"}],
+        S.S_FORMFIELD: [{"表单key": "create_contract_ledger2", "字段编码": "mingCheng",
+                         "显示标签": "名称", "控件类型": "text"}],
+        S.S_LIST: [{"列表key": "contract_ledger2_list", "列表名称": "合同台账2列表",
+                    "对象编码": "contract_ledger2", "显示字段": "mingCheng"}],
+    })
+    body, _name = webui.build_zip(data, ["bo", "form", "list"],
+                                  object_scope="all", workflow_all=True)
+    with zipfile.ZipFile(io.BytesIO(body)) as z:
+        names = z.namelist()
+        bo_name = next(n for n in names if n.startswith("bo/"))
+        assert 'mode="workflow"' in z.read(bo_name).decode("utf-8"), names
+        assert any("details" in n for n in names), names
+    single, _ = webui.import_module(data, "bo", workflow_all=True)
+    with zipfile.ZipFile(io.BytesIO(single)) as z:
+        bo_name = next(n for n in z.namelist() if n.startswith("bo/"))
+        assert 'mode="workflow"' in z.read(bo_name).decode("utf-8")
