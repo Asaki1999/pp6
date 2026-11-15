@@ -1024,3 +1024,28 @@ def _():
     # 3) 全新的流程 → 追加，旧的一条都不少
     out3, _ = _merge(existing, [mk("合同审批", "contract")], "")
     assert [w.name for w in out3] == ["项目立项", "采购申请", "合同审批"]
+
+
+@case("WF31", "workflow", "没勾「流程驱动」也能按固定三步导出流程对象包", "P0",
+      ["不再逼用户回 1_业务对象 改标志", "对象 XML 是 workflow 模式", "不生成流程 XML 条目"])
+def _():
+    data = xlsx({
+        S.S_BO: [{"对象名称": "合同", "对象编码": "contract",
+                  "物理表名": "pp_contract", "流程驱动": "否"}],
+        S.S_FIELD: [{"对象编码": "contract", "字段名称": "名称",
+                     "字段编码": "name", "数据类型": "字符串"}],
+        S.S_FORM: [{"表单key": "create_contract", "表单名称": "新建合同",
+                    "对象编码": "contract", "表单类型": "新建表单"}],
+        S.S_FORMFIELD: [{"表单key": "create_contract", "字段编码": "name",
+                         "显示标签": "名称", "控件类型": "text"}],
+    })
+    body, name = webui.build_zip(data, ["bo", "form", "list"],
+                                 object_scope="workflow", workflow_all=True)
+    with zipfile.ZipFile(io.BytesIO(body)) as z:
+        names = z.namelist()
+        bo_name = next(n for n in names if n.startswith("bo/") and n.endswith(".xml"))
+        bo_xml = z.read(bo_name).decode("utf-8")
+    assert name.endswith(".zip"), name
+    assert 'mode="workflow"' in bo_xml, bo_xml[:500]
+    assert "processState" in bo_xml, bo_xml[:500]
+    assert all(not n.startswith("workflow/") for n in names), names

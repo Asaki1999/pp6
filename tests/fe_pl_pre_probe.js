@@ -345,6 +345,10 @@ function staticChecks() {
     wfNoFlowDesigner: !/id="wfAi"|id="wfList"|id="wfBody"|id="btnWfDownload"/.test(html),
     wfNoFlowApi: !/\/api\/workflow|\/api\/ai\/workflow/.test(src),
     wfObjectPackage: /id="btnWfObjects"/.test(html),
+    // 没有「流程驱动=是」时按全部对象走固定三步；不再让用户回 Excel 改标志
+    wfAllFallback: /driven\.length \? driven : allObjects\(\)/.test(src)
+      && /X-Workflow-All/.test(src),
+    wfNoFlowFlagBlame: !/把「流程驱动」改成「是」/.test(src),
     hasWorkflowBar: /id="plPreWorkflowBar"/.test(html),
     hasPatchBar: /id="plPrePatchBar"/.test(html),
     importValues: (html.match(/name="plPreImport" value="([a-z]+)"/g) || []).map((s) => s.split('"')[3]),

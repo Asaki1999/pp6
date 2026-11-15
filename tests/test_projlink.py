@@ -2448,6 +2448,10 @@ def _():
         "前端还在请求已下线的 /api/workflow 或 /api/ai/workflow"
     assert got["0_static"]["wfObjectPackage"] is True, \
         "流程对象包入口没保留"
+    assert got["0_static"]["wfAllFallback"] is True, \
+        "没勾流程驱动时没有回退到全部对象 / 没带 X-Workflow-All"
+    assert got["0_static"]["wfNoFlowFlagBlame"] is True, \
+        "前端还在让用户回 Excel 把「流程驱动」改成「是」"
     # 返回按钮位置统一：第 2/3 步都在页头 .file-row，底部操作条不再有返回
     assert got["0_static"]["backButtonsTop"] is True, \
         "第 2 步或第 3 步的返回按钮不在页头 .file-row 里（一上一下，用户来回找）"

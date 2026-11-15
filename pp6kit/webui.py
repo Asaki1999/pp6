@@ -88,6 +88,12 @@ def _projlink_header(headers) -> str | None:
     return raw or None
 
 
+def _workflow_all(headers) -> bool:
+    """X-Workflow-All：流程页一个「流程驱动=是」都没有时，按固定三步纳入全部对象。"""
+    raw = (headers.get("X-Workflow-All") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def _object_scope(headers) -> str:
     """X-Object-Scope：同步包默认只出普通对象，流程对象走「流程模式」工作区。
 
@@ -529,7 +535,8 @@ def parse_excel(data: bytes, projlink_header: str | None = None) -> dict:
 def build_zip(data: bytes, codes: list[str] | None = None,
               relations_header: str | None = None,
               object_scope: str = "all",
-              projlink_header: str | None = None) -> tuple[bytes, str]:
+              projlink_header: str | None = None,
+              workflow_all: bool = False) -> tuple[bytes, str]:
     """codes：要出包的模块；None/空 = 全部。
     relations_header：X-Relations 请求头（稀疏决策）。None = 不覆盖，按 Excel 原样。
     projlink_header：X-Project-Link 请求头（关联项目/对齐决策）。None = 只按自动判定。
@@ -567,20 +574,26 @@ def build_zip(data: bytes, codes: list[str] | None = None,
             align_decisions = _projlink.parse_decisions(projlink_header, proj)
             align_report = _projlink.apply(proj, align_decisions)
 
+        # 流程页没有勾「流程驱动」时，后端按固定三步把全部对象纳入流程对象包；
+        # 必须在 validate 之前改，后面的流程字段/字典/校验才按流程对象走。
+        scope = (object_scope or "all").strip().lower()
+        if scope == "workflow" and workflow_all:
+            for bo in proj.bos:
+                bo.flow_driven = True
+
         issues = [Issue("error", "读取", e) for e in read_errors] + validate(proj)
         errors = [i for i in issues if i.level == "error"]
         if errors:
             raise ValueError("存在校验错误，已中止：\n" + "\n".join(str(e) for e in errors[:20]))
 
         # 校验按**整份 Excel** 走（用户看到的问题要是完整的），切分只影响出包。
-        scope = (object_scope or "all").strip().lower()
         if scope in ("plain", "workflow"):
             from .builder import slice_by_mode
             proj = slice_by_mode(proj, scope == "workflow")
             if not proj.bos:
                 if scope == "workflow":
-                    raise ValueError("这份 Excel 里没有流程驱动对象：到「1_业务对象」把"
-                                     "「流程驱动」改成「是」，流程对象才会被列出来")
+                    raise ValueError("这份 Excel 里没有可纳入流程对象包的业务对象："
+                                     "先到「1_业务对象」填一行")
                 raise ValueError("这份 Excel 里的业务对象全是流程模式，同步包里没有可出的"
                                  "内容：流程对象请到左侧「流程模式」工作区导出")
 
@@ -2112,7 +2125,8 @@ class Handler(BaseHTTPRequestHandler):
                 body, name = build_zip(self._body(), _codes(self.headers),
                                        _relations_header(self.headers),
                                        _object_scope(self.headers),
-                                       _projlink_header(self.headers))
+                                       _projlink_header(self.headers),
+                                       _workflow_all(self.headers))
                 # X-Build-Report 的数据从「返回的 zip 字节」实测读取，不是推测；
                 # build_zip() 本身一行未动，blob / X-Filename / Content-* 全不变。
                 extra = None

@@ -270,10 +270,11 @@ async function handleFile(file, { fromAi = false, quiet = false } = {}) {
     // quiet：人在「流程模式」页上传，结果区照样准备好，但不要把工作区滚回顶部
     goStep(3, { scroll: !quiet });
     if (quiet) {
-      const n = (state.data.objects || []).filter((o) => o.flowDriven).length;
+      const all = state.data.objects || [];
+      const n = all.filter((o) => o.flowDriven).length;
       toast(n
-        ? `已解析：${n} 个流程对象，可以导出对象包或下载 XML`
-        : "这份 Excel 里没有流程驱动对象：到 1_业务对象 把「流程驱动」改成「是」", 6000);
+        ? `已解析：${n} 个流程对象，可以导出对象包`
+        : `已解析：${all.length} 个对象，按固定三步出流程对象包`, 6000);
     }
     if (fromAi) toast("已按预览生成，选择模块后下载 zip", 5000);
   } catch (err) {
@@ -817,6 +818,11 @@ async function downloadWorkflowObjects(btn) {
       "X-Object-Scope": "workflow",
       "X-Modules": JSON.stringify(WF_OBJECT_MODULES),
     };
+    // 一个「流程驱动=是」都没有时，让后端按固定三步把全部对象纳入流程对象包，
+    // 不再逼用户回 1_业务对象 改标志。
+    if (!drivenObjects().length && allObjects().length) {
+      headers["X-Workflow-All"] = "1";
+    }
     // 流程对象包同样要带「关联项目」决策：流程对象也是业务对象，勾了开关却没带
     // 就是「页面有 projectId、这个包里没有」——这一包是单独导的，最容易漏
     const plHeader = projLinkHeader();
@@ -2717,8 +2723,19 @@ function bind() {
  * 也没有节点、分支、处理人的编辑入口。
  */
 
+function allObjects() {
+  return (state.data && state.data.objects) || [];
+}
+
+function drivenObjects() {
+  return allObjects().filter((o) => o.flowDriven);
+}
+
+/* 流程模式不再强求「流程驱动=是」：没有勾的对象也按固定三步处理。
+   有勾的优先用勾的；一个都没勾就用全部对象，避免用户还要回去改 Excel。 */
 function flowObjects() {
-  return ((state.data && state.data.objects) || []).filter((o) => o.flowDriven);
+  const driven = drivenObjects();
+  return driven.length ? driven : allObjects();
 }
 
 /* 导入区状态：文件名 + 这次会出多少对象/表单/列表。 */
@@ -2737,18 +2754,22 @@ function renderWfImport() {
   tag.title = state.file.name;
 
   const d = state.data || {};
-  const objs = flowObjects();
-  if (!objs.length) {
-    stat.innerHTML = `已解析 <b>${esc(state.file.name)}</b>，但里面没有流程驱动对象：` +
-      `到 <code>1_业务对象</code> 把「流程驱动」改成「是」即可。`;
+  const all = allObjects();
+  const driven = drivenObjects();
+  if (!all.length) {
+    stat.innerHTML = `已解析 <b>${esc(state.file.name)}</b>，但里面没有业务对象，` +
+      `先到 <code>1_业务对象</code> 填一行。`;
     return;
   }
+  const objs = driven.length ? driven : all;
   const codes = new Set(objs.map((o) => o.code));
   const forms = (d.forms || []).filter((f) => codes.has(f.boCode));
   const lists = (d.lists || []).filter((x) => codes.has(x.boCode));
   stat.className = "wf-import-stat ok";
-  stat.innerHTML = `本次会出：<b>${objs.length}</b> 个流程对象 · ` +
-    `<b>${forms.length}</b> 张表单 · <b>${lists.length}</b> 个列表`;
+  stat.innerHTML = (driven.length
+    ? `本次会出：<b>${objs.length}</b> 个流程对象`
+    : `本次会出：<b>${objs.length}</b> 个对象（未勾「流程驱动」，按固定三步处理）`)
+    + ` · <b>${forms.length}</b> 张表单 · <b>${lists.length}</b> 个列表`;
 }
 
 /* 流程页上传：解析完留在本页（quiet），直接能出对象包。 */
