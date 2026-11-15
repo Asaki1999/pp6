@@ -589,6 +589,106 @@ def slice_by_mode(project: Project, flow: bool) -> Project:
     return out
 
 
+# 反解旧包后只改了「对象编码」，表单 / 列表的 key 还带着旧编码，是这次
+# 「列表报错」的根因（2026-11-15 对着 8112 真实只读库核对）：
+#   新对象 project_test_1115 的包里仍是 create_project_create / project_create_list，
+#   导入时系统按 key 更新，把原对象「项目立项信息列表」的 dataset_key_/bo_code_
+#   改成了新对象；库里没有 project_test_1115_list，列表页按新对象取模板就抛
+#   「未找到相关数据模板信息」。
+# 判据做成纯函数，避免误伤：只有 key 符合平台标准派生模式、且其中取出的编码
+#   既不等于当前对象编码、也不在本包任何对象编码里，才判定为骨架残留。
+# 同一个对象做修订（编码不变）、自定义短 key（cs / fxcs）、多对象包里
+#   指向别的在包对象的 key，一律保持原样（BO25 的「原地更新」语义不动）。
+_STALE_KEY_PATTERNS = (
+    re.compile(r"^(?:create|detail|import)_(.+)$"),
+    re.compile(r"^fetch_basic_(.+)_information$"),
+    re.compile(r"^(.+)_(?:list|details)$"),
+)
+
+
+def stale_code_in_key(key: str) -> str:
+    """标准派生 key 里带的旧对象编码；不是标准模式返回空串。"""
+    for pat in _STALE_KEY_PATTERNS:
+        m = pat.match(key or "")
+        if m:
+            return m.group(1)
+    return ""
+
+
+def normalize_derived_keys(project: Project) -> list[str]:
+    """对象编码改了之后，把残留旧编码的表单 / 列表 key 重算到当前对象。
+
+    同时把所有以表单 key 为外键的引用（控件、隐藏规则、脚本、对象 options、
+    流程节点）一起改掉，并清掉「按更新导入」用的 exist_key / exist_id：
+    派生新对象时若还带着旧 id / 旧模板 key，导入会去覆盖线上旧模板。
+    返回的是给用户看的提示，出包时进 notices。
+    """
+    codes = {bo.code for bo in project.bos}
+    notices: list[str] = []
+    form_map: dict[str, str] = {}
+    affected: set[str] = set()
+
+    for bo in project.bos:
+        for f in project.forms:
+            if f.bo_code != bo.code:
+                continue
+            old = stale_code_in_key(f.key)
+            if not old or old == bo.code or old in codes:
+                continue
+            new_key = f.key.replace(old, bo.code, 1)
+            tpl = blueprint._NAME_TEMPLATE.get(f.kind)
+            form_map[f.key] = new_key
+            f.key = new_key
+            f.name = tpl.format(obj=bo.name) if tpl else f.name.replace(old, bo.code)
+            f.exist_key = ""
+            affected.add(bo.code)
+            notices.append(f"表单 key 还带着旧对象编码 {old}，已改为 {new_key}"
+                           "（新对象不该复用旧模板 key，否则导入会覆盖线上同名模板）")
+        for lst in project.lists:
+            if lst.bo_code != bo.code:
+                continue
+            old = stale_code_in_key(lst.key)
+            if not old or old == bo.code or old in codes:
+                continue
+            new_key = lst.key.replace(old, bo.code, 1)
+            lst.key = new_key
+            lst.name = f"{bo.name}列表"
+            lst.exist_key = ""
+            affected.add(bo.code)
+            notices.append(f"列表 key 还带着旧对象编码 {old}，已改为 {new_key}"
+                           "（新对象不该复用旧模板 key，否则导入会覆盖线上同名模板）")
+
+    if not form_map and not affected:
+        return notices
+
+    def fix(value: str) -> str:
+        return form_map.get(value, value)
+
+    for f in project.forms:
+        for ff in f.fields:
+            ff.form_key = fix(ff.form_key)
+        for rule in f.hide_rules:
+            rule.form_key = fix(rule.form_key)
+    project.form_scripts = {fix(k): v for k, v in project.form_scripts.items()}
+    for bo in project.bos:
+        if bo.code in affected:
+            bo.exist_id = ""
+        # bo.options 里可能是一整段 JSON（如 struType=list 的 formKey），
+        # 不能只做精确相等替换，得按子串换。
+        for k, v in list(bo.options.items()):
+            if not isinstance(v, str):
+                continue
+            nv = v
+            for old_key, new_key in form_map.items():
+                nv = nv.replace(old_key, new_key)
+            if nv != v:
+                bo.options[k] = nv
+    for wf in project.workflows:
+        for node in wf.nodes:
+            node.form_key = fix(node.form_key)
+    return notices
+
+
 def build(project: Project, snippets: dict, out_dir: Path | None = None,
           codes: list[str] | None = None) -> BuildResult:
     """codes：要出包的模块（bo/form/list/dataset/filter）；None = 全部。"""
@@ -614,6 +714,11 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
         if not bo.tbl_name:
             bo.tbl_name = table_name_for(bo.code)
             res.notices.append(f"业务对象 {bo.code}: 物理表名按规范取 {bo.tbl_name}")
+
+    # 反解旧包改编码后，先把残留旧编码的表单 / 列表 key 归位，
+    # 再展开「标准全套」——否则 standard bundle 会按新编码建一套，
+    # 而反解来的旧 key 又留着，一个对象出两套互相覆盖的模板。
+    res.notices.extend(normalize_derived_keys(project))
 
     # 先按规范展开「标准全套」表单
     res.notices.extend(blueprint.expand(project))

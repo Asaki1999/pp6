@@ -265,3 +265,97 @@ def _():
 
     body, _ = webui.build_zip(xlsx(sheets), ["bo"], object_scope="workflow")
     assert pick(body, "bo/").count("<tns:bodefentity") == 1
+
+
+def _renamed_package() -> dict:
+    """反解「项目立项信息」包后只改了对象名/编码，表单列表仍是旧 key。"""
+    return {
+        S.S_BO: [{"对象名称": "项目测试 1115", "对象编码": "project_test_1115",
+                  "物理表名": "pp_project_test_1115"}],
+        S.S_FIELD: [field("project_test_1115", "名称", "字符串")],
+        S.S_FORM: [{"表单key": "create_project_create", "表单名称": "新建项目立项信息",
+                    "对象编码": "project_test_1115", "表单类型": "新建表单"}],
+        S.S_FORMFIELD: [{"表单key": "create_project_create", "字段编码": "mingCheng",
+                         "显示标签": "名称", "控件类型": "text"}],
+        S.S_LIST: [{"列表key": "project_create_list", "列表名称": "项目立项信息列表",
+                    "对象编码": "project_test_1115", "显示字段": "mingCheng"}],
+    }
+
+
+@case("BLD18", "builder", "反解改编码后表单列表 key 归位到新对象", "P0",
+      ["真实库实测：旧 key 会覆盖线上同名模板", "列表页按新对象取模板报未找到"])
+def _():
+    body, _ = build(_renamed_package())
+    names = list(unzip(body))
+    assert any(n.startswith("form/") and "create_project_test_1115" in n for n in names), names
+    assert any(n.startswith("data_template/") and "project_test_1115_list" in n for n in names), names
+    all_text = "\n".join(texts(body).values())
+    assert 'key="create_project_test_1115"' in all_text
+    assert 'key="project_test_1115_list"' in all_text
+    assert 'name="新建项目测试 1115"' in all_text
+    assert 'name="项目测试 1115列表"' in all_text
+    assert "create_project_create" not in all_text, "表单旧 key 还留在 XML 里"
+    assert "project_create_list" not in all_text, "列表旧 key 还留在 XML 里"
+    assert "项目立项信息" not in all_text, "骨架对象的显示名还留在包里"
+
+
+@case("BLD19", "builder", "key 归位不误伤同对象修订与自定义短 key", "P0",
+      ["BO25 的原地更新语义不能被打破", "cs / fxcs 这类短 key 一律不动"])
+def _():
+    from pp6kit import model as M
+
+    normal, _ = build(one_form_package())
+    assert any("create_contract" in n for n in unzip(normal)), list(unzip(normal))
+
+    bo = M.Bo(code="contract", name="合同", tbl_name="pp_contract")
+    f = M.Form(key="create_contract", name="新建合同", bo_code="contract")
+    short = M.ListDef(key="fxcs", name="测试", bo_code="contract")
+    proj = M.Project(bos=[bo], forms=[f], lists=[short])
+    assert builder.normalize_derived_keys(proj) == []
+    assert (f.key, short.key) == ("create_contract", "fxcs")
+
+    # 多对象包：key 指向的编码是本包另一个对象，不算骨架残留
+    a = M.Bo(code="project_create", name="项目立项信息", tbl_name="pp_project_create")
+    b = M.Bo(code="supplier", name="供应商", tbl_name="pp_supplier")
+    lst = M.ListDef(key="project_create_list", name="项目立项信息列表", bo_code="project_create")
+    proj2 = M.Project(bos=[a, b], lists=[lst])
+    assert builder.normalize_derived_keys(proj2) == []
+    assert lst.key == "project_create_list"
+
+
+@case("BLD20", "builder", "key 归位时所有外键引用与 exist 标记同步", "P0",
+      ["漏改 form_key 会让控件/规则找不到表单", "留着 exist_id 会覆盖线上旧对象"])
+def _():
+    from pp6kit import model as M
+
+    bo = M.Bo(code="project_test_1115", name="项目测试 1115",
+              tbl_name="pp_project_test_1115", exist_id="1444049045910720512",
+              options={"formKey": "create_project_create",
+                       "tree": '{"formKey":"create_project_create","idKey":"id"}'})
+    f = M.Form(key="create_project_create", name="新建项目立项信息",
+              bo_code=bo.code, kind=M.FORM_CREATE, exist_key="old-id",
+              fields=[M.FormField(form_key="create_project_create", name="mingCheng",
+                                 label="名称", field_type="text")],
+              hide_rules=[M.HideRule(form_key="create_project_create",
+                                     target="mingCheng", source="zhuangTai")])
+    lst = M.ListDef(key="project_create_list", name="项目立项信息列表",
+                    bo_code=bo.code, exist_key="old-id")
+    proj = M.Project(
+        bos=[bo], forms=[f], lists=[lst],
+        form_scripts={"create_project_create": "return 1;"},
+        workflows=[M.Workflow(name="立项流程", bo_code=bo.code,
+                              nodes=[M.WfNode(wf="立项流程", name="开始",
+                                              form_key="create_project_create")])],
+    )
+    notes = builder.normalize_derived_keys(proj)
+    assert notes and any("project_create" in n for n in notes)
+    new_key = "create_project_test_1115"
+    assert f.key == new_key and f.name == "新建项目测试 1115"
+    assert lst.key == "project_test_1115_list" and lst.name == "项目测试 1115列表"
+    assert f.fields[0].form_key == new_key
+    assert f.hide_rules[0].form_key == new_key
+    assert proj.form_scripts == {new_key: "return 1;"}
+    assert bo.options["formKey"] == new_key
+    assert "create_project_create" not in bo.options["tree"]
+    assert proj.workflows[0].nodes[0].form_key == new_key
+    assert bo.exist_id == "" and f.exist_key == "" and lst.exist_key == ""
