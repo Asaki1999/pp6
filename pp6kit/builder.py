@@ -141,6 +141,7 @@ _PLATFORM_CODE_HINT = ("pp_equipment", "test_case", "pp_directory", "iform_")
 # 唯一来源是 model.WF_STATE_OPTIONS：gen_workflow.state_codes() 也用同一份，
 # 否则「对象里的字典 key」与「流程里的 BusinessState」会是两套短码。
 PROCESS_STATE_OPTIONS = list(WF_STATE_OPTIONS)
+PROCESS_FIELD_CODES = {code for code, _name, _length in PROCESS_FIELDS} | {"processState"}
 
 
 def ensure_default_workflow(project) -> list[str]:
@@ -856,7 +857,7 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
             form_type="form",
         )
         for x in sorted(bo.fields, key=lambda x: x.sn):
-            if x.is_system:
+            if x.is_system or x.code in PROCESS_FIELD_CODES:
                 continue
             dform.fields.append(FormField(
                 form_key=dkey,

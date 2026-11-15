@@ -97,7 +97,17 @@ _LINK_CONFIG_LIST = {"id": "id_", "text": "name_", "typeById": "varchar", "type"
 # 只补 id / version 两个系统必需的主键与版本控件。
 # 以前还会补一个「拼音」隐藏控件，但线上业务表并没有这一列（老表单才有），
 # 生成后表单上多出来一列反而要去删，所以不再生成。
-_HIDDEN_FIELDS = (("id", "主键"), ("version", "版本"))
+# 流程冗余字段/流程状态：对象里必须有（流程反写），但表单上不能给用户看。
+# 只在表单里落成 fieldType=hidden；不放进任何分区。
+_PROCESS_HIDDEN = (
+    ("processNode", "流程节点"),
+    ("processHandler", "流程处理人"),
+    ("processDefId", "流程定义"),
+    ("processInstanceId", "流程实例"),
+    ("processState", "流程状态"),
+)
+_PROCESS_CODES = {code for code, _label in _PROCESS_HIDDEN}
+_HIDDEN_FIELDS = (("id", "主键"), ("version", "版本")) + _PROCESS_HIDDEN
 
 
 class Snippets:
@@ -562,6 +572,9 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
            script: str = "") -> tuple[str, list[str]]:
     """返回 (xml 文本, 提示列表)。"""
     notices: list[str] = []
+    # 流程节点/处理人/定义/实例/状态只用于流程反写，不渲染成可见控件；
+    # 下面 _HIDDEN_FIELDS 会补 hidden 控件（不改对象字段本身）。
+    form.fields = [f for f in form.fields if f.name not in _PROCESS_CODES]
     _inherit_cascade(form, bo, notices)
     # 库里有同 key 的模板 → 沿用它的 id，导入才是「更新」而不是又建一个同名表单
     form_id = form.exist_key or new_id()
@@ -667,7 +680,11 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
 
     # 隐藏字段挂在根上（与线上一致：id / version 不在任何分区里）
     hidden_names = []
-    for which, label in (_HIDDEN_FIELDS if form.auto_hidden else ()):
+    for which, label in _HIDDEN_FIELDS:
+        # id/version 受 auto_hidden 控制；流程字段即使表单关了自动隐藏也要补，
+        # 否则流程反写没有落点。
+        if not form.auto_hidden and which not in _PROCESS_CODES:
+            continue
         if any(f.name == which for f in form.fields):
             continue
         hidden_names.append(which)

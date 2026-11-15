@@ -52,6 +52,10 @@ _CONTROL_BY_TYPE = {
     "table": "dataTemplate",
 }
 
+# 流程冗余字段 / 流程状态是系统反写用的，不在表单上给用户填。
+PROCESS_FIELD_CODES = {"processNode", "processHandler", "processDefId",
+                       "processInstanceId", "processState"}
+
 _NAME_TEMPLATE = {
     FORM_CREATE: "新建{obj}",
     FORM_DETAIL: "{obj}详情",
@@ -88,6 +92,8 @@ def fields_from_bo(bo: Bo, kind: str, form_key: str = "") -> list[FormField]:
     """
     out: list[FormField] = []
     for f in sorted(bo.fields, key=lambda x: x.sn):
+        if f.code in PROCESS_FIELD_CODES:
+            continue
         out.append(
             FormField(
                 form_key=form_key,

@@ -1100,3 +1100,33 @@ def _():
     with zipfile.ZipFile(io.BytesIO(single)) as z:
         bo_name = next(n for n in z.namelist() if n.startswith("bo/"))
         assert 'mode="workflow"' in z.read(bo_name).decode("utf-8")
+
+
+@case("WF34", "workflow", "流程冗余字段/流程状态在表单里只做隐藏控件", "P0",
+      ["processNode 等 fieldType=hidden", "不在表单分区里露出 GUID/状态"])
+def _():
+    data = xlsx({
+        S.S_BO: [{"对象名称": "合同", "对象编码": "contract",
+                  "物理表名": "pp_contract", "流程驱动": "是"}],
+        S.S_FIELD: [field("contract", "名称", "字符串")],
+        S.S_FORM: [{"表单key": "create_contract", "表单名称": "新建合同",
+                    "对象编码": "contract", "表单类型": "新建表单"}],
+        S.S_FORMFIELD: [{"表单key": "create_contract", "字段编码": "mingCheng",
+                         "显示标签": "名称", "控件类型": "text"}],
+    })
+    proj, errors, _ = project_of(data)
+    assert not errors, errors
+    with tempfile.TemporaryDirectory() as tmp:
+        res = builder.build(proj, webui._snippets(), Path(tmp), codes=["form"])
+        form_xml = next(a for a in res.artifacts if a.module == "form").xml
+    root = ET.fromstring(form_xml)
+    by_name = {}
+    for ff in root.iter("formField"):
+        name = ff.get("name") or ""
+        by_name.setdefault(name, []).append(ff)
+    for code in ("processNode", "processHandler", "processDefId",
+                 "processInstanceId", "processState"):
+        assert code in by_name, (code, sorted(by_name)[:20])
+        assert all(x.get("fieldType") == "hidden" for x in by_name[code]), code
+    # 业务字段仍然是可见的 text
+    assert any(x.get("fieldType") == "text" for x in by_name.get("mingCheng", []))
