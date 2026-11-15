@@ -95,12 +95,10 @@ def fields_from_bo(bo: Bo, kind: str, form_key: str = "") -> list[FormField]:
                 label=f.name,
                 field_type=control_for(f),
                 full_row=f.type_new == "clob",
-                # dic 字段的取值来源必须是**字典 typeKey**（对象编码_字段编码），
-                # 不是 f.object_type —— AI 常把 object_type 填成字段编码本身，
-                # 那样控件引用的字典在 bo 里根本不存在，界面上会退化成
-                # 「固定值 + 候选值」两套，用户看到选项重复两遍。
-                value_source=(f.dict_key() if f.type_new == "dic"
-                              else (f.object_type if f.type_new == "object" else "")),
+                # 取值来源只有 BoField.value_source() 一处真相：
+                # 全局字典（dict_ref）与自定义字典（dict_key）在这里分流，
+                # 三处各写一遍「dic → dict_key()」时全局字典必然指向空下拉。
+                value_source=f.value_source(),
             )
         )
     return out

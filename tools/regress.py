@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
+import shutil
 import sys
+import tempfile
 import time
 import traceback
 from pathlib import Path
@@ -28,11 +31,56 @@ from tests import _harness as H          # noqa: E402
 TEST_DIR = ROOT / "tests"
 
 # 模块顺序 = 清单顺序 = 从底层到端到端，出问题先看最前面的
-MODULES = ["naming", "reader", "validate", "bo", "form", "builder", "patch",
-           "webui", "security", "nlq"]
+# 新模块加在这里才会被加载——**这是最容易漏的一步**（用例写了但没跑）
+MODULES = ["naming", "reader", "validate", "bo", "projlink", "form", "builder",
+           "workflow", "patch", "webui", "security", "nlq"]
+
+# 本次回归会话独有的临时根目录（见 _isolate_tmp）
+_TMP_DIR: Path | None = None
+
+
+def _isolate_tmp() -> Path:
+    """给本次回归会话一个**独立**的 TMPDIR，避免与别人并发跑时互相踩。
+
+    为什么必须这么做（2026-11-13 实测）：
+      ``resources.work_dir()`` = ``Path(tempfile.gettempdir()) / "pp6kit-work"``，
+      而 ``webui.build_zip()`` 在里面用**固定文件名** ``.build.xlsx`` /
+      ``.upload.xlsx`` …，每个调用都在 ``finally`` 里删掉它。
+      两条回归流水线同时跑 → A 的 ``finally`` 删掉 B 正在读的文件，
+      表现为随机几条报 ``[Errno 2] ... .build.xlsx`` / ``Truncated file header``
+      / ``File is not a zip file``（QA 与 team-lead 各踩过一次，6 条随机红）。
+
+    修法选择：**只隔离测试**，不改 ``work_dir()``、也不改那 9 个固定临时路径。
+    产品侧的「桌面壳双开互删工作目录」是另一个问题，留作独立修复
+    ——注意那一版的修复清单必须包含 ``webui.workflow_files()`` 的
+    ``workflow-out/``（它 ``rmtree`` 整个目录，杀伤面比单个文件更大），
+    只改 ``build_zip`` 的几处固定名属于假修。
+
+    ⚠ ``tempfile.gettempdir()`` 会把首次结果缓存在 ``tempfile.tempdir``，
+    所以除了设环境变量还要直接赋 ``tempfile.tempdir``；并且必须在**任何**
+    ``work_dir()`` 调用之前执行（``load()`` 是最早的入口）。
+    """
+    global _TMP_DIR
+    path = Path(tempfile.mkdtemp(prefix="pp6kit-tmp-"))
+    os.environ["TMPDIR"] = str(path)          # macOS / Linux
+    os.environ["TEMP"] = str(path)            # Windows
+    os.environ["TMP"] = str(path)
+    tempfile.tempdir = str(path)              # 兜底：可能已被缓存
+    _TMP_DIR = path
+    return path
+
+
+def _cleanup_tmp() -> None:
+    """删掉会话临时目录，别把 /tmp 堆满。失败不影响退出码。"""
+    global _TMP_DIR
+    if _TMP_DIR is not None:
+        shutil.rmtree(_TMP_DIR, ignore_errors=True)
+        _TMP_DIR = None
 
 
 def load() -> None:
+    # 必须在 import 测试模块（它们会 import pp6kit → 可能算 work_dir）之前
+    _isolate_tmp()
     # 系统 python 往往没装 openpyxl，报错会是一长串 import 栈，不如直接说清楚
     try:
         import openpyxl  # noqa: F401
@@ -178,6 +226,15 @@ def main() -> int:
     args = ap.parse_args()
 
     load()
+    try:
+        return _run(args)
+    finally:
+        # 所有出口（全跑 / 只列清单 / 写报告 / 过滤后没用例 / 首个失败即停）都收干净，
+        # 不给 /tmp 留 pp6kit-tmp-* 目录
+        _cleanup_tmp()
+
+
+def _run(args) -> int:
     cases = H.REGISTRY
     if not cases:
         print("没有收集到用例：检查 tests/test_*.py 是否存在")

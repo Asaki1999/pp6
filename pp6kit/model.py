@@ -214,6 +214,39 @@ class BoField:
     # 就是 object 类型的「隶属的项目类型 classificationId」）。
     # 下拉只是「听谁的」，具体哪些子项属于哪个父值仍存在系统侧字典里。
     cascade_parent: str = ""
+    # 选项分组（仅级联字段用）：{父选项名: [子选项名, ...]}。
+    #
+    # 为什么必须有这一层：系统级联是「父值 → 过滤子字典」。而《项目基本信息
+    # 表单-尹姣定.xlsx》里品种分类的候选值是**分组**给出的：
+    #     中药：OTC、RX、双跨、其他
+    #     化药：OTC、RX、双跨、其他
+    # 同一个 OTC 在多个父级下各出现一次。如果按扁平去重成 6 项，分组关系就
+    # 丢了，导入后父级选「中药」子级仍全量显示——用户看到的就是「级联没用」。
+    # 解析时保留这份映射，出包时据此给子字典项挂依赖。
+    choice_groups: dict[str, list[str]] = field(default_factory=dict)
+    # 全局字典引用（P1-3 + 项目对齐 R4）。空 = 自定义字典（BO_ATTR），走 dict_key()。
+    #
+    # 为什么不再复用 object_type 判断：resolved() 对 dic **强制**把 object_type
+    # 改写成 dict_key()，反解/对齐带进来的全局 typeKey 会被悄悄打回
+    # 「对象编码_字段编码」，界面上就是一个不存在的自定义字典（空下拉）。
+    # 所以必须有独立的四个字段承载它，且 options 原样照抄项目侧，不合成 optionSource。
+    dict_ref: str = ""                   # dictionaryType.typeKey（如 "report_type"）
+    dict_name: str = ""                  # dictionaryType.name（"项目汇报类型"）
+    dict_stru: str = ""                  # dictionaryType.struType（GLOBAL 实测 "1"）
+    dict_items: list[dict] = field(default_factory=list)
+    #   [{"key":"MonthlyReportModules","name":"月报","sn":146}, ...]
+    #   ↑ 候选值 key 是**固定业务码**，不可按 md5 重算，只能原样照抄
+
+    def sub_choices(self) -> list[str]:
+        """去重后的全部子选项（分组映射为空时退回 choices）。"""
+        if not self.choice_groups:
+            return list(self.choices)
+        out: list[str] = []
+        for items in self.choice_groups.values():
+            for it in items:
+                if it not in out:
+                    out.append(it)
+        return out
 
     def resolved_field_name(self) -> str:
         if self.field_name:
@@ -235,6 +268,38 @@ class BoField:
         必须由对象编码参与，所以这里一律重新生成。
         """
         return f"{self.bo_code}_{self.code}" if self.bo_code else self.code
+
+    def value_source(self) -> str:
+        """表单控件/详情表单取值来源的**唯一真相**（替代三处 f.dict_key() 复制）。
+
+        以前 blueprint.fields_from_bo / builder 详情表单 / patch._project_with_fields
+        各自写了一遍「dic → dict_key()」，一旦出现全局字典（dict_ref 非空）就会
+        指向一个不存在的自定义 key，界面上是空下拉。收敛到这里，只改一处。
+
+            dic    → dict_ref or dict_key()
+            object → object_type
+            其余   → ""
+        """
+        if self.type_new == "dic":
+            return self.dict_ref or self.dict_key()
+        if self.type_new == "object":
+            return self.object_type or ""
+        return ""
+
+    def excel_options(self) -> dict:
+        """写回 Excel「扩展参数」列用：options + 四个控制键。
+
+        控制键只在模型/Excel 之间往返，``resolved()`` 写出 XML 前会剥掉，
+        所以 XML 零污染（架构 D5）。不新开一列「字典类型」的原因：
+        S_FIELD 加列会牵动 sheet_data 位序与用户旧模板，风险大于收益。
+        """
+        opts = dict(self.options)
+        if self.dict_ref:
+            opts["dict_ref"] = self.dict_ref
+            opts["dict_name"] = self.dict_name
+            opts["dict_stru"] = self.dict_stru
+            opts["dict_items"] = [dict(i) for i in self.dict_items]
+        return opts
 
     def resolved(self) -> dict[str, Any]:
         """补齐缺省值，返回生成用的扁平参数。"""
@@ -258,6 +323,17 @@ class BoField:
             # 平台自建的系统字段（文本类）不带 format
             fmt = None
         opts = dict(self.options)
+        # ① 先剥控制键（架构 D5）：dict_ref/dict_name/dict_stru/dict_items 只活在
+        # 模型与 Excel 的「扩展参数」列里，绝不进 XML。它们不在 gen_bo.ATTR_ORDER
+        # 里，剥掉后产物与线上原生包逐键一致。
+        ctrl = {k: opts.pop(k, None)
+                for k in ("dict_ref", "dict_name", "dict_stru", "dict_items")}
+        if ctrl["dict_ref"] and not self.dict_ref:
+            self.dict_ref = str(ctrl["dict_ref"])
+            self.dict_name = str(ctrl["dict_name"] or "")
+            self.dict_stru = str(ctrl["dict_stru"] or "")
+            items = ctrl["dict_items"]
+            self.dict_items = list(items) if isinstance(items, list) else []
         if type_new == "datetime" and not self.is_system:
             # 线上实测（2026-11-12，逐个变量导入对照，13 行 / 14 行）：
             # 自定义 datetime 字段在「对象属性」页会**整条消失**，而
@@ -335,10 +411,42 @@ class BoField:
         # 我们的字段都是从文档新建的独立字典，所以用 BO_ATTR_DIC_TYPE。
         object_type = self.object_type or None
         if type_new == "dic":
-            # 自定义字典的 objectType 就是 dict_key（对象编码_字段编码），
-            # 和 dictionaryType.typeKey 保持完全一致，不加下划线
-            object_type = self.dict_key() or None
-            opts.setdefault("optionSource", "BO_ATTR_DIC_TYPE")
+            if self.dict_ref:
+                # ② GLOBAL 分支（架构 R4 / F-C）：引用项目侧的共享字典，
+                # objectType 就是那个 typeKey（线上实测 project.huiBaoLeiXing
+                # 的 objectType="report_type"），且 options 里**没有**
+                # optionSource——合成它会造出一个线上不存在的形态。
+                object_type = self.dict_ref
+                opts.pop("optionSource", None)
+            else:
+                # 自定义字典的 objectType 就是 dict_key（对象编码_字段编码），
+                # 和 dictionaryType.typeKey 保持完全一致，不加下划线
+                object_type = self.dict_key() or None
+                opts.setdefault("optionSource", "BO_ATTR_DIC_TYPE")
+            # 级联字段的 options 有两种「宽度」，2026-11-12 逐包实测：
+            #
+            #   A. 完整 10 键（用户显式配过级联的那个字段，如 productClass）：
+            #      isMultiple, isDefault, uniqueCheck, optionSource, columns,
+            #      identities, format:null, formula:null,
+            #      cascadeEnabled, cascadeParentCode
+            #   B. 精简 5 键（同一条级联链上其余字段，如 strategyCategory /
+            #      registerCategory / categoryCode）：
+            #      isMultiple, optionSource, cascadeEnabled,
+            #      cascadeParentCode, isDefault
+            #
+            # 判据不是「有没有级联」，而是「调用方给没给整块 options」：
+            # 系统在设计器里手动配级联时会把整套空键一起写进去，程序化设置的
+            # 只写两个级联键。所以这里以「self.options 里是否已带 uniqueCheck
+            # 或 columns 这类配套键」为准——保留了手工配置，新填的走精简版。
+            _explicit_full = any(
+                k in (self.options or {})
+                for k in ("uniqueCheck", "columns", "identities", "format", "formula"))
+            if self.cascade_parent and _explicit_full:
+                for k, v in (
+                    ("uniqueCheck", False), ("columns", []),
+                    ("identities", []), ("format", None), ("formula", None),
+                ):
+                    opts.setdefault(k, v)
         elif type_new == "object":
             opts.setdefault("optionSource", "BO_ATTR_DIC_TYPE")
             # 多选关联对象要存逗号分隔的多个 id，64 装不下。
@@ -408,6 +516,11 @@ class Bo:
     # 目标库里已存在同名对象时，出包必须写回它原来的 id，
     # 否则导入会「新增」一份而不是「更新」——判断依据就是 iform_bo_def.id
     exist_id: str = ""
+    # `1_业务对象`›「关联项目」= 是。勾上后 builder 会补「所属项目」链接字段，
+    # 并把与项目对象同名/同族的字段对齐成项目侧定义。
+    # **不自动推断**（架构 D10）：反解出来的包默认「否」，否则「拆了重造」
+    # 会静默多出链接字段与一堆对齐改动。
+    project_link: bool = False
 
     def field_by_code(self, code: str) -> BoField | None:
         for f in self.fields:
@@ -534,6 +647,10 @@ class ListDef:
     # 列表挂在 iform_cat_type 的哪个分类节点下（category_key_='DATA_TEMPLATE_TYPE'）。
     # 留空则导入后归到「未分类」，不指向错误模块；要精确指定就填该节点的 id。
     type_id: str = ""
+    # 级联详情字段：列表里点击该列 → 全屏打开详情表单（对象的所有字段只读）。
+    # 留空 = 不开详情联动。出处：用户给的会议列表导出包（config-sync-20261113002727），
+    # 「会议名称」列的 cascade_configuration 指向 meeting_details 详情表单。
+    detail_field: str = ""
 
 
 # ---------------------------------------------------------------- 数据集
@@ -549,6 +666,135 @@ class DataSet:
     name_field: str = "name_"
 
 
+# ---------------------------------------------------------------- 流程
+#
+# 流程定义（workflowDefinition）是**裸 XML**，不进同步包，导入位置是
+# 管理 › 流程设计 › 导入。结构与取值全部以真实样本为准：
+#   PP6/流程/项目立项_20261113145550.xml  的 **v30** 那一版
+#   （DefaultFlowChartVersion="30"，用户线上正在跑的那版图）
+#   + 配套 PP6/流程/config-sync-20261113150255.zip（bo + 2 张 form）
+# v1–v10 只有 5 个节点的旧图，只用来判断「某个键是必需还是可选」。
+
+WF_START, WF_ONGOING, WF_BRANCH, WF_PASSED, WF_REJECTED = (
+    "Start", "Ongoing", "Branch", "Passed", "Rejected")
+
+# Excel 里填的中文 → XML 里的 State。
+# 「不通过」也映射到 Rejected：样本 v1-v10 那张旧图里该节点就叫「不通过」。
+WF_KIND_BY_LABEL = {"开始": WF_START, "审批": WF_ONGOING, "判断": WF_BRANCH,
+                    "通过": WF_PASSED, "驳回": WF_REJECTED, "不通过": WF_REJECTED}
+
+# 业务状态：固定 4 个，名字与对象 processState 字段的选项**逐字相同**
+# （短码靠 gen_bo.dict_choice_codes 换算，差一个字就换不出来 → 节点状态为空）。
+WF_STATE_BY_KIND = {WF_START: "待发起", WF_ONGOING: "进行中",
+                    WF_PASSED: "已完成", WF_REJECTED: "已失败"}
+
+# processState 字段的选项值（顺序即字典里的 sn，短码用它算，**不能改序**）。
+# builder.ensure_workflow_fields() 与 gen_workflow.state_codes() 都以这里为唯一来源：
+# 顺序一变，同一份 Excel 的 BusinessState 短码就会与业务对象里的字典项对不上。
+WF_STATE_OPTIONS = ["待发起", "进行中", "已完成", "已失败"]
+
+# 流程状态（processState）的选项短码是**系统常量**，不是按对象算出来的。
+# 2026-11-13 在 8112 真实库 powerproject6_release 上核对：
+#   iform_cat_dic 里 20+ 个 `*_processState` 字典，四个选项的 key_ 完全一致：
+#     待发起 f9cd5a6d / 进行中 d432d037 / 已完成 78782698 / 已失败 3184e2aa
+#   对象导出 XML 与流程 XML 的 BusinessState 用的也是这同一组值。
+# 之前按 `{对象编码}_processState` 做 scope 算 md5，导致每个对象的短码都不同，
+# 与平台约定对不上（自洽但与全系统不一致，列表筛选/看板按码过滤就会漏数据）。
+PROCESS_STATE_CODES = {
+    "待发起": "f9cd5a6d",
+    "进行中": "d432d037",
+    "已完成": "78782698",
+    "已失败": "3184e2aa",
+}
+
+# 各 State 的默认画布颜色（样本 v30 实测：Ongoing=1 / Branch=2 / Passed=3 / Rejected=8）。
+# ⚠ Start 故意不在表里：v30 的开始节点**没有** ColorCode
+# （只有 v1–v10 的旧图写了 7）。要改回「写 7」只需在这里加一行 WF_START: "7"。
+WF_COLOR = {WF_ONGOING: "1", WF_BRANCH: "2", WF_PASSED: "3", WF_REJECTED: "8"}
+
+# 判断节点出边的条件运算符：中文 → XML 里的 operator。
+# 「属于 / 为空 / 不为空」在样本里**没有实例**（属于无证据实现，见架构文档待明确第 9 条）。
+WF_COND_LABEL = {"等于": "equal", "不等于": "not_equal", "大于": "greater",
+                 "大于等于": "greater_or_equal", "小于": "less", "小于等于": "less_or_equal",
+                 "属于": "in", "为空": "is_empty", "不为空": "is_not_empty"}
+
+# 不需要填「条件值」的算子
+WF_EMPTY_OPS = {"is_empty", "is_not_empty"}
+
+
+@dataclass
+class WfNode:
+    """流程里的一个节点。
+
+    三种落库形态（样本 v30 逐字）：
+      Start/Ongoing/Passed/Rejected → ``<NormalActivity State="…">``
+      Branch                        → ``<BranchActivity>``（没有 State、没有表单）
+    """
+
+    wf: str
+    name: str
+    kind: str = WF_ONGOING
+    id: int = 0                       # 0 = 按行序自动 1..N（判断节点也占号，与样本一致）
+    handler_type: str = "角色"        # 角色 / 人员 / 无
+    handler_names: list[str] = field(default_factory=list)
+    handler_ids: list[str] = field(default_factory=list)
+    expect_days: int = 2              # → ExpectHandleDays（只有 Ongoing 带）
+    form_key: str = ""                # 空 = 自动（开始→新建表单，其余→详情表单）
+    business_state: str = ""          # 空 = 按 kind 推导（见 WF_STATE_BY_KIND）
+    go_back: list[str] = field(default_factory=list)   # ["无"] = 不允许退回
+    pick_next: bool = False           # → NextHandler 走人工选择
+    allow_handover: bool = False      # → AllowHandover
+    color: str = ""                   # 空 = 按 kind 取 WF_COLOR
+    notes: str = ""                   # 仅备注，不写入 XML
+
+
+@dataclass
+class WfEdge:
+    """一条出边（Transition）。
+
+    同一 src/dst 的多行会在生成时合并成**一条出边的多个 rules**（AND），
+    这样 Excel 不用加「条件组」列。
+    """
+
+    wf: str
+    src: str
+    dst: str
+    name: str = ""
+    condition_field: str = ""
+    condition_op: str = ""
+    condition_value: str = ""
+    value_label: str = ""
+    order: int = 0                    # 判断节点出边 1..N；普通节点恒 0
+    inform: bool | None = None        # None = 按源节点种类推导（判断→否，其余→是）
+
+
+@dataclass
+class Workflow:
+    """一条流程的定义头 + 节点 + 流转。"""
+
+    name: str
+    bo_code: str
+    workflow_type: str = "normal"
+    category_id: str = ""             # → categoryId（流程分类，不是对象的 typeId）
+    module_id: str = ""
+    title_format: str = "${name}-${bo.name}-${bo.createBy}-${bo.createTime}"
+    is_active: bool = True            # → FlowDefinition IsActive
+    desc: str = ""
+    exist_id: str = ""                # 更新线上已有流程时填它原来的 UUID
+    # 自动生成的「兜底流程」（开始→审批→通过）。用户没填 9_流程 时补一条，
+    # 让流程驱动对象至少能跑通；validate 对它的审批人留空只警告不报错，
+    # 因为真正的审批人要项目经理到系统「流程设计」里指定。
+    auto: bool = False
+    nodes: list[WfNode] = field(default_factory=list)
+    edges: list[WfEdge] = field(default_factory=list)
+
+    def node_by_name(self, name: str) -> WfNode | None:
+        for n in self.nodes:
+            if n.name == name:
+                return n
+        return None
+
+
 @dataclass
 class Project:
     tenant_id: str = "-999"
@@ -560,6 +806,11 @@ class Project:
     lists: list[ListDef] = field(default_factory=list)
     datasets: list[DataSet] = field(default_factory=list)
     form_scripts: dict[str, str] = field(default_factory=dict)  # 表单key -> JForm 脚本
+    workflows: list["Workflow"] = field(default_factory=list)
+    # 流程分类ID（0_项目设置 ›「流程分类ID」）。与 type_id 是**两套**分类体系：
+    # 样本 项目立项_20261113145550.xml 的 categoryId 1559242949219319808
+    # 与对象分类 ID 完全不同，复用一个值会让流程落进错的分类节点。
+    wf_category_id: str = ""
     out_dir: str = "out"
     # 读取时自动补齐的明细（编码按名称生成、关联对象对到真实编码），供界面提示用
     auto_notes: list[str] = field(default_factory=list)

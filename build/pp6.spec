@@ -17,6 +17,10 @@ datas = [
     (str(ROOT / "assets" / "ai_examples.json"), "assets"),
     # 业务对象清单快照（关联对象的下拉来源），由 tools/dump_objects.py 生成
     (str(ROOT / "assets" / "objects.json"), "assets"),
+    # 项目对象字段快照（「关联项目」的字段对齐依据），由
+    # tools/dump_project_fields.py --asset 生成；漏掉它冻结态只能走
+    # 「快照不可用」降级分支（只补链接字段、不做对齐）
+    (str(ROOT / "assets" / "project_fields.json"), "assets"),
     # 对象关系历史快照：离线识别「新对象该挂到哪个已有对象下」的证据，
     # 由 tools/ 脚本从 obj_relationship 表 dump（与 objects.refresh 同源）
     (str(ROOT / "assets" / "relationships.json"), "assets"),

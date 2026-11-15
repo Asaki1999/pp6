@@ -39,6 +39,51 @@ const CTRL_LABEL = {
   hidden: "隐藏",
 };
 
+/* ---------------------------------- 第 1 步：业务对象关联项目（两档，导入前就定）
+ *
+ * 以前这一层是**导入后弹出的第 1 步弹窗**：传完 Excel、解析一次，再问「哪些对象
+ * 要关联项目」，点「开始分析」又解析一次。用户的反馈是「顺序反了」——对象级选择
+ * 应该在导入前就在初始页定好，导入完直接看结果。
+ *
+ * 现在只有两档，常驻在上传卡片上方：
+ *   off → 全部不关联（显式发 linked:false，Excel 里的「是」不会漏回来）
+ *   on  → 全部关联
+ * 原来的第三档「按 Excel」被用户砍掉了：要么全关联、要么全不关联，
+ * 想看单个对象，用对象卡片上的「关联项目」开关。`1_业务对象` 的「关联项目」
+ * 列仍然有效（命令行 / 接口直接传 Excel 时照旧认它），只是应用内以两档为准。
+ * 普通模式 / 流程模式共享同一档（localStorage: pp6.plPre），存量包用 pp6.plPrePatch。
+ *
+ * 协议没变：仍然是 POST /api/parse + X-Project-Link，服务端照旧重新分析、不信任前端。
+ */
+const PL_PRE_KEY = "pp6.plPre";
+const PL_PRE_PATCH_KEY = "pp6.plPrePatch";
+const PL_PRE_MODES = ["off", "on"];
+const PL_PRE_PATCH_MODES = ["off", "on", "keep"];
+const PL_PRE_LABEL = { off: "不关联", on: "全部关联" };
+const PL_PRE_PATCH_LABEL = { off: "不关联", on: "关联", keep: "按包内" };
+
+/* 读本地偏好：值不在白名单里（旧版本留下的、手改过的）就当没设过，用默认档。
+ * 隐私模式下 localStorage 会抛异常，也不能因此让整页起不来 → 静默退回默认。
+ * 注意：老版本存过 "excel"（已删掉的第三档）→ 不在白名单 → 自动落回默认 "off"，
+ * 不需要额外的迁移代码。 */
+function readPref(key, allowed, fallback) {
+  try {
+    const store = window.localStorage;
+    const raw = store ? store.getItem(key) : null;
+    return allowed.indexOf(raw) >= 0 ? raw : fallback;
+  } catch (err) {
+    return fallback;
+  }
+}
+
+function savePref(key, value) {
+  try {
+    if (window.localStorage) window.localStorage.setItem(key, value);
+  } catch (err) {
+    /* 存不了不影响本次会话，只是下次打开回到默认档 */
+  }
+}
+
 const state = {
   file: null, data: null, formIndex: 0, desktop: false,
   picked: new Set(), imported: new Set(), aiData: null, aiFile: null,
@@ -48,6 +93,23 @@ const state = {
   buildReport: null,           // X-Build-Report 解码对象 | null
   inspectSummary: null,        // X-Package-Summary 解码对象 | null
   zipPhase: { build: "idle", inspect: "idle" },
+  // 项目对齐：弹窗只在「同一份文件的第一次解析」自动弹一次（关掉不再打扰）
+  plModalShown: false,
+  plPending: 0,
+  // 第 1 步「业务对象关联项目」的两档（初始页控件，导入前就定）：
+  // "off" 不关联（默认） / "on" 全部关联。
+  // 普通模式与流程模式共享同一档，存 localStorage。
+  plPre: readPref(PL_PRE_KEY, PL_PRE_MODES, "off"),
+  // 存量包修订页的三档："off" 全不勾 / "on" 全勾 / "keep" 按包内（保留现状）
+  plPrePatch: readPref(PL_PRE_PATCH_KEY, PL_PRE_PATCH_MODES, "keep"),
+  // 对象卡片上的「关联项目」开关：{ 对象编码: true|false }
+  // 只记「用户亲手拨过的」（勾/取消都算），没拨过的对象仍按 Excel 的列走；
+  // 初始页选了「全部关联 / 不关联」时这里是**全量**决策（每个对象都显式 true/false）
+  plLinked: {},
+  // 「相近字段确认」弹窗里勾过的字段：{ 对象编码: { 字段编码: true } }
+  // 只发勾上的（true）——没勾的就是「保留我方」，服务端不需要知道它们。
+  // 换文件时清空（字段编码换了一批），拨开关重解析时保留。
+  plAlign: {},
 };
 
 /* 桌面壳（pywebview）会注入 window.pywebview.api，同时置 PP6_DESKTOP 供自检读取 */
@@ -97,7 +159,40 @@ function setLoading(on, text = "正在解析…") {
 
 /* ------------------------------------------------ 上传 */
 
-async function handleFile(file, { fromAi = false } = {}) {
+/* 一次新的解析（上传 / 拨开关）后都要做的清理：
+ * 第 7 tab 的实测包结构、进度态都不能跟着旧文件留下来。
+ * 所有写入 state.data 的路径（手动上传 / 载入示例 / applyAiBo thenBuild /
+ * AI sheet apply）都汇聚到 handleFile()，这里是唯一重置点。 */
+function resetParseArtifacts() {
+  // 换一份 Excel 就清掉上一次的实测包结构，避免第 7 tab 残留旧包清单。
+  state.buildReport = null;
+  state.inspectSummary = null;
+  state.packageMode = "predict";
+  state.zipPhase = { build: "idle", inspect: "idle" };
+  const staleBuild = $("#pp6zipBuildReport");
+  if (staleBuild) { staleBuild.hidden = true; staleBuild.innerHTML = ""; }
+  const staleInspect = $("#pp6zipInspectCard");
+  if (staleInspect) { staleInspect.hidden = true; staleInspect.innerHTML = ""; }
+}
+
+/* 一次 POST /api/parse。plHeader 非空才带 Content-Type / X-Project-Link。
+ * 第一次解析不带决策头（只是为了拿到对象清单，用来构造全量决策）；
+ * 服务端不信任前端：带不带头都自己重新分析。 */
+async function postParse(buf, plHeader) {
+  const opt = { method: "POST", body: buf };
+  if (plHeader) {
+    opt.headers = {
+      "Content-Type": "application/octet-stream",
+      "X-Project-Link": plHeader,
+    };
+  }
+  const res = await fetch("/api/parse", opt);
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "解析失败");
+  return data;
+}
+
+async function handleFile(file, { fromAi = false, quiet = false } = {}) {
   if (!file) return;
   if (!/\.(xlsx|xlsm)$/i.test(file.name)) {
     toast("请选择 .xlsx 文件");
@@ -107,29 +202,57 @@ async function handleFile(file, { fromAi = false } = {}) {
   setLoading(true);
   try {
     const buf = await file.arrayBuffer();
-    const res = await fetch("/api/parse", { method: "POST", body: buf });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error || "解析失败");
+    let data = await postParse(buf, null);
+    /* 第 1 步（对象级选择）已经在**导入前**定了：#plPreImportBar 两档。
+     * 这里不再弹窗、也不再 `return` 打断流程 —— 导入完直接出结果。
+     *   off / on 都要构造**全量**决策（每个对象都显式 linked true/false）再解析一次，
+     *   否则 Excel 里本来是「是」的对象会漏回来（页面没关联、包里有「所属项目」）。
+     * Excel 里一个对象都没有时 plPreDecisions() 返回 null，跳过第二次解析。
+     * fromAi / quiet 走同一套：示例和 AI 生成也能验证两档。 */
+    let decisions = plPreDecisions(data.objects);
+    if (decisions) {
+      const modeLabel = PL_PRE_LABEL[state.plPre] || state.plPre;
+      setLoading(true, `正在按「${modeLabel}」分析…`);
+      const prevLinked = state.plLinked;
+      state.plLinked = decisions;             // projLinkHeader() 的直接来源
+      try {
+        data = await postParse(buf, projLinkHeader());
+      } catch (err) {
+        // 退回第一次解析：结果页照常出，决策清掉（否则包里会带一份
+        // 和页面上选的档位对不上的头）
+        state.plLinked = prevLinked;
+        decisions = null;
+        toast(`按「${modeLabel}」分析失败：${err.message}，已按 Excel 里的内容原样分析`, 7000);
+      }
+    }
     state.data = data;
-    // 换一份 Excel 就清掉上一次的实测包结构，避免第 7 tab 残留旧包清单。
-    // 所有写入 state.data 的路径（手动上传 / 载入示例 / applyAiBo thenBuild /
-    // AI sheet apply）都汇聚到 handleFile()，这里是唯一重置点。
-    state.buildReport = null;
-    state.inspectSummary = null;
-    state.packageMode = "predict";
-    state.zipPhase = { build: "idle", inspect: "idle" };
-    const staleBuild = $("#pp6zipBuildReport");
-    if (staleBuild) { staleBuild.hidden = true; staleBuild.innerHTML = ""; }
-    const staleInspect = $("#pp6zipInspectCard");
-    if (staleInspect) { staleInspect.hidden = true; staleInspect.innerHTML = ""; }
+    resetParseArtifacts();
+    // 换了文件 → 项目对齐的弹窗可以再弹一次（决策仍按文件指纹缓存在本地）
+    state.plModalShown = false;
+    // 「关联项目」开关是按对象编码记的，换了 Excel 编码就换了一批，
+    // 不清会给新文件里的同名对象套上上一份的决策（这里只在**换文件**时清，
+    // 拨开关的重新解析走 toggleProjLink()，不经过 handleFile）。
+    // 初始页选了「全部关联 / 不关联」时，这里的决策是**全量**：没关联的对象也要
+    // 显式记 false，只记 true 的话下一次 /api/build 里 Excel 的「是」又会漏回来。
+    state.plLinked = decisions ? Object.assign({}, decisions) : {};
+    // 换文件 → 上一份的「按项目覆盖」勾选也作废：字段编码换了一批，
+    // 留着会给新文件里同名编码的字段套上旧勾选（服务端还会当成有效决策）
+    state.plAlign = {};
     renderAll();
     // 直接从 AI 预览下来的 Excel → 进第 3 步；手动传的也进第 3 步，
-    // 因为「结果」区里就是模块勾选 + 下载，这是流程的终点
-    goStep(3);
+    // 因为「结果」区里就是模块勾选 + 下载，这是流程的终点。
+    // quiet：人在「流程模式」页上传，结果区照样准备好，但不要把工作区滚回顶部
+    goStep(3, { scroll: !quiet });
+    if (quiet) {
+      const n = (state.data.objects || []).filter((o) => o.flowDriven).length;
+      toast(n
+        ? `已解析：${n} 个流程对象，可以导出对象包或下载 XML`
+        : "这份 Excel 里没有流程驱动对象：到 1_业务对象 把「流程驱动」改成「是」", 6000);
+    }
     if (fromAi) toast("已按预览生成，选择模块后下载 zip", 5000);
   } catch (err) {
     toast("解析失败：" + err.message);
-    goStep(1);
+    if (!quiet) goStep(1);
   } finally {
     setLoading(false);
   }
@@ -147,10 +270,71 @@ async function loadDemo() {
   }
 }
 
+/* -------------------------------------- 第 1 步：业务对象关联项目（导入前）
+ *
+ * 这一层现在是**初始页上的两档控件**，不再是导入后的弹窗：
+ *   不关联（默认） / 全部关联
+ * 两档都要把决策显式发回去、再解析一次——不发明示的 false，Excel 里本来是
+ * 「是」的对象就会漏回来。
+ *
+ * 这里只是**前端流程**：协议没变，仍然是 POST /api/parse + X-Project-Link，
+ * 服务端照旧重新分析、不信任前端。
+ */
+
+/* 初始页选的是「全部关联 / 不关联」时，返回**全量**决策 { 对象编码: true|false }；
+ * 一个对象都没有（或都取不到编码）时返回 null，调用方跳过第二次解析。
+ * 必须全量：只发勾上的对象，Excel 里本来是「是」的那些会漏回来。 */
+function plPreDecisions(objects) {
+  const linked = state.plPre === "on";
+  const map = {};
+  (objects || []).forEach((o) => {
+    const code = String((o && o.code) || "");
+    if (code) map[code] = linked;
+  });
+  return Object.keys(map).length ? map : null;
+}
+
+/* 两个菜单的两档单选同步：普通模式 / 流程模式共享同一档（state.plPre），
+ * 存量包修订是独立的三档（state.plPrePatch）。 */
+function syncPlPreInputs() {
+  $$('input[name="plPreImport"], input[name="plPreWorkflow"]').forEach((el) => {
+    el.checked = el.value === state.plPre;
+  });
+  $$('input[name="plPrePatch"]').forEach((el) => {
+    el.checked = el.value === state.plPrePatch;
+  });
+}
+
+/* 绑定单选控件：点了就写 state + localStorage，并把另一个菜单的同名字段刷成一致。
+ * 值不在白名单里就落到该组的默认档（脏值不该把整页带进未定义状态）。 */
+function bindPlPre() {
+  const groups = [
+    { name: "plPreImport", allowed: PL_PRE_MODES, key: PL_PRE_KEY, patch: false, fallback: "off" },
+    { name: "plPreWorkflow", allowed: PL_PRE_MODES, key: PL_PRE_KEY, patch: false, fallback: "off" },
+    { name: "plPrePatch", allowed: PL_PRE_PATCH_MODES, key: PL_PRE_PATCH_KEY, patch: true, fallback: "keep" },
+  ];
+  groups.forEach((g) => {
+    $$(`input[name="${g.name}"]`).forEach((el) => {
+      el.onchange = () => {
+        if (!el.checked) return;
+        const value = g.allowed.indexOf(el.value) >= 0 ? el.value : g.fallback;
+        if (g.patch) state.plPrePatch = value;
+        else state.plPre = value;
+        savePref(g.key, value);
+        syncPlPreInputs();
+      };
+    });
+  });
+  syncPlPreInputs();
+}
+
 /* ------------------------------------------------ 渲染 */
 
 function renderAll() {
   const d = state.data;
+  // 流程工作区是独立菜单，但数据来自同一次解析：这里顺带刷一遍，
+  // 用户上传完 Excel 直接点左侧「流程」就能看到，不用再手动刷新
+  if (window.Workflow) window.Workflow.refresh();
   $("#result").hidden = false;
   window.__importHasResult = true;
   // 旧版这里是 #actionbar / #dropzone 显隐，现在改成步骤条控制：
@@ -158,6 +342,8 @@ function renderAll() {
   $("#fileName").textContent = state.file.name;
   $("#fileSize").textContent = humanSize(state.file.size);
 
+  // 统计不再做成 7 个等权方块——「1 个对象」和「25 个控件」并列会让人无法判断
+  // 这包到底多大。压成一行，数字仍读得到，但不再假装是仪表盘。0 的不显示。
   const stats = [
     ["业务对象", d.stats["业务对象"] || 0],
     ["字段", d.stats["字段"] || 0],
@@ -165,10 +351,23 @@ function renderAll() {
     ["表单控件", d.stats["表单控件"] || 0],
     ["列表", d.stats["列表"] || 0],
     ["数据集", d.stats["数据集"] || 0],
-  ];
-  $("#stats").innerHTML = stats.map(([k, n]) => `
-    <div class="stat ${n ? "" : "zero"}"><div class="n">${n}</div><div class="k">${k}</div></div>
-  `).join("");
+    // 流程是裸 XML、单独下载，统计里不显示会让人以为没生成
+    ["流程", d.stats["流程"] || 0],
+  ].filter(([, n]) => n > 0);
+  $("#stats").innerHTML = stats.length
+    ? stats.map(([k, n]) => `<span class="stat-i"><b>${n}</b>${k}</span>`).join('<span class="sep">·</span>')
+    : '<span class="stat-i empty">这份 Excel 里还没有任何内容</span>';
+
+  // 流程模式的对象不随同步包出包，数字对不上时得说清楚为什么，
+  // 否则用户会以为包里少导了一个对象
+  const note = $("#statsNote");
+  if (note) {
+    const flowCount = (d.objects || []).filter((o) => o.flowDriven).length;
+    note.hidden = !flowCount;
+    note.textContent = flowCount
+      ? `其中 ${flowCount} 个是流程模式的对象：不随同步包出包，到左侧「流程模式 › 导出流程对象包」单独拿。`
+      : "";
+  }
 
   const errCount = d.errorCount;
   const warnCount = d.warnCount;
@@ -219,6 +418,8 @@ function renderAll() {
 
   renderObjects();
   renderRelations();
+  renderProjectLink();
+  renderPlEntry();
   renderFieldCheck();
   renderForms();
   renderLists();
@@ -233,6 +434,14 @@ function renderAll() {
   // P0-1：第 7 tab 两态同渲染；predict 用 state.data，actual 用 state.buildReport。
   // 放在 updateBar() 之后，不动 updateBar / #btnPack 文案与行为。
   renderPackage(state.data, state.packageMode);
+
+  // 有流程才显示「下载流程 XML」：流程是裸 XML，不走同步包，单独一个入口。
+  // 只切 hidden，不碰 updateBar 里对 #btnPack 的禁用逻辑（两者互不影响）。
+  const wfBtn = $("#btnWorkflow");
+  if (wfBtn) {
+    const wfMod = (d.modules || []).find((m) => m.code === "workflow");
+    wfBtn.hidden = !(wfMod && wfMod.count > 0);
+  }
 }
 
 /* 底部按钮与提示随勾选变化 */
@@ -272,8 +481,228 @@ function renderRelations() {
   if (btn) btn.hidden = !relCount;
 }
 
+/* 项目字段对齐：渲染页签、算 badge、有待确认的相近字段时自动开一次确认弹窗。
+ *
+ * 2026-11-15 口径：只有「直接对应」的字段自动覆盖，语义相近 / 可能相关 / 冲突 /
+ * 多候选都要用户逐条确认。所以这里不再用 diffCount 开弹窗（差异是「勾了会变成
+ * 什么」的说明，不是「要不要勾」的问题），改为 pendingCount>0 才弹。
+ * plModalShown 保证同一份文件只自动弹一次（勾完重解析后不再糊遮罩）。 */
+function renderProjectLink() {
+  const vm = state.data && state.data.projectAlign;
+  const box = $("#plBox");
+  if (!window.ProjLink) return;
+  window.ProjLink.reset();
+  window.ProjLink.render(box, vm);      // render 内部会顺手 updateBadge()
+  const count = window.ProjLink.pendingCount(vm);
+  state.plPending = count;
+  if (count && !state.plModalShown) {
+    state.plModalShown = true;
+    window.ProjLink.openModal(vm);
+  }
+}
+
+/* 结果页顶部的「关联项目」入口条。
+ *
+ * 开关本身在「业务对象」页签的卡片右上角，但那一屏要往下滚三个卡片才到，
+ * 用户打开结果页只会看到「要导出哪些模块」，反馈就是「我还是没看到」。
+ * 这里只做两件事：说清有几个还没关联、一键跳过去闪一下开关。
+ * 不碰任何出包逻辑（开关仍然走 toggleProjLink 带决策头重新解析）。
+ *
+ * 可能在页面还没解析完 / 结果区还 hidden 时被 renderAll() 调到，
+ * 拿不到节点就安静返回，不报错。
+ */
+function renderPlEntry() {
+  const bar = $("#plEntry");
+  if (!bar) return;                       // 旧 HTML / 还没解析到这块
+  const txt = $("#plEntryText");
+  const go = $("#plEntryGo");
+  const objects = (state.data && state.data.objects) || [];
+  const total = objects.length;
+  const on = objects.filter((o) => o.projectLink).length;
+  const off = total - on;
+
+  if (!total) {                           // 一个对象都没有：这条横条没有意义
+    bar.hidden = true;
+    if (go) go.onclick = null;
+    return;
+  }
+
+  if (txt) {
+    txt.textContent = on === 0
+      ? `${total} 个对象还没关联项目 —— 勾选后自动补「所属项目」，同名同族字段自动照项目定义覆盖，相近字段会逐条问你`
+      : off === 0
+        ? `${total} 个对象已全部关联项目`
+        : `已关联 ${on} 个，还有 ${off} 个未关联`;
+  }
+  if (go) {
+    go.textContent = off > 0 ? "去设置" : "查看";
+    go.onclick = () => jumpToProjectLink();
+  }
+  bar.hidden = false;
+}
+
+/* 跳到「业务对象」页签，并把第一个未勾选的开关闪一下（全勾了就都闪第一个）。
+ * 页签切换复用现有 onclick（active + panel.hidden），不另写一套显隐。 */
+function jumpToProjectLink() {
+  const tab = document.querySelector('#tabs .tab[data-panel="objects"]');
+  if (tab) tab.click();
+  const panel = document.querySelector('.panel[data-panel="objects"]');
+  if (!panel) return;
+  if (typeof panel.scrollIntoView === "function") {
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  const first = panel.querySelector('[data-pl-link]:not(:checked)')
+    || panel.querySelector('[data-pl-link]');
+  if (!first || typeof first.closest !== "function") return;
+  const box = first.closest(".pl-switch");
+  if (!box) return;
+  box.classList.add("pl-flash");
+  // 闪一下就够：一直闪会让人以为开关是坏的
+  setTimeout(() => box.classList.remove("pl-flash"), 1800);
+}
+
+/* 统一的「关联项目」决策头：界面开关（linked）+ 确认弹窗里勾的字段（align）。
+ *
+ * 同步包 / 流程对象包 / 确认版 Excel 三个入口，以及「拨开关后重新解析」，都用它。
+ * 各自拼一份迟早会出现「预览有 projectId、包里没有」——那种差异只有用户导入后
+ * 才会发现（页面全绿，系统里就是没有「所属项目」）。同理，勾了「按项目覆盖」却
+ * 只在预览里生效、包里没生效，是更糟的一种：用户以为改了，导入后定义还是旧的。
+ *
+ * 格式（服务端 parse_decisions 唯一契约）：
+ *   {version:1, objects:{ 对象编码: {linked: true|false,
+ *                                   align: {字段编码: true | "项目字段编码"}} }}
+ * align 只发勾上的：true = 按最匹配的项目字段覆盖，字符串 = 按选中的候选覆盖
+ * （多候选下拉）；没勾 = 保留我方，不需要显式 false。
+ */
+function projLinkHeader() {
+  const objects = {};
+  const codes = new Set(Object.keys(state.plLinked || {}));
+  Object.keys(state.plAlign || {}).forEach((code) => codes.add(code));
+  codes.forEach((code) => {
+    const entry = {};
+    if (Object.prototype.hasOwnProperty.call(state.plLinked, code)) {
+      // 显式写 true/false：只写 true 的话，用户关掉的开关会被 Excel 里的「是」顶回来
+      entry.linked = !!state.plLinked[code];
+    }
+    const align = state.plAlign[code] || {};
+    const picked = {};
+    Object.keys(align).forEach((field) => {
+      const val = align[field];
+      if (val === true) picked[field] = true;
+      // 多候选：值是项目字段编码（用户在下拉里挑的那个），原样发；false/空不发
+      else if (typeof val === "string" && val) picked[field] = val;
+    });
+    if (Object.keys(picked).length) entry.align = picked;
+    if (Object.keys(entry).length) objects[code] = entry;
+  });
+  return Object.keys(objects).length
+    ? JSON.stringify({ version: 1, objects })
+    : null;
+}
+
+/* 弹窗里「按勾选覆盖」：把勾选结果并进 state.plAlign，然后带决策头重新解析。
+ * 失败只 toast（弹窗还开着，用户能改勾选再试），成功才关弹窗 + 重新渲染。
+ * 预览与 zip 都读 state.plAlign（projLinkHeader），所以两边一定一致。 */
+async function applyProjectPicks() {
+  if (!state.file) {
+    window.ProjLink.closeModal();
+    toast("示例数据没有源文件：请先上传 Excel，再勾选要覆盖的字段");
+    return;
+  }
+  const got = (window.ProjLink && window.ProjLink.collect()) || {};
+  const n = Object.keys(got).reduce((acc, c) => acc + Object.keys(got[c]).length, 0);
+  if (!n) {
+    // 一个都没勾 = 保留我方：不发请求、不改决策（省一次解析，也不留空头）
+    window.ProjLink.closeModal();
+    toast("没有勾选任何字段：这些相近字段都按原规则生成", 5000);
+    return;
+  }
+  const merged = Object.assign({}, state.plAlign);
+  Object.keys(got).forEach((code) => {
+    merged[code] = Object.assign({}, merged[code], got[code]);
+  });
+  state.plAlign = merged;
+  const btn = $("#plApplyPicked");
+  if (btn) btn.disabled = true;
+  setLoading(true, "正在按你勾的字段重新分析…");
+  try {
+    const buf = await state.file.arrayBuffer();
+    const headers = { "Content-Type": "application/octet-stream" };
+    const plHeader = projLinkHeader();
+    if (plHeader) headers["X-Project-Link"] = plHeader;
+    const res = await fetch("/api/parse", { method: "POST", body: buf, headers });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "解析失败");
+    state.data = data;
+    state.plModalShown = true;            // 已确认过这一轮，别再自动弹
+    resetParseArtifacts();
+    window.ProjLink.closeModal();
+    renderAll();
+    toast(n
+      ? `已按勾选覆盖 ${n} 个字段，预览与下载的包都已更新`
+      : "已保留全部字段：没有勾选任何「按项目覆盖」", 6000);
+  } catch (err) {
+    // 保持弹窗开着：勾选还在（state.plAlign 已在请求前合并），用户可以直接重试
+    toast("按勾选覆盖失败：" + err.message, 6000);
+  } finally {
+    if (btn) btn.disabled = false;
+    setLoading(false);
+  }
+}
+
+/* 对象卡片上的「关联项目」开关：拨一下就带决策头重新解析（预览即时生效）。
+ * 只改 bo.project_link，不动字段定义；字段对齐仍由后端 apply 负责。 */
+async function toggleProjLink(code, checked, input) {
+  if (!state.file) {
+    if (input) input.checked = !checked;
+    toast("示例数据请先上传 Excel，再在对象卡片上勾「关联项目」");
+    return;
+  }
+  const had = Object.prototype.hasOwnProperty.call(state.plLinked, code);
+  const prev = state.plLinked[code];
+  // 提示里用中文对象名：卡片上写的是「采购申请」+ 编码 chip，只回报编码
+  // （demo_purchase）用户得自己对一遍才知道是哪个对象
+  const found = ((state.data && state.data.objects) || []).find((o) => o.code === code);
+  const label = found ? `${found.name}（${code}）` : code;
+  state.plLinked[code] = !!checked;
+  if (input) input.disabled = true;
+  setLoading(true, "正在按「关联项目」重新分析…");
+  try {
+    const buf = await state.file.arrayBuffer();
+    const headers = { "Content-Type": "application/octet-stream" };
+    const plHeader = projLinkHeader();
+    if (plHeader) headers["X-Project-Link"] = plHeader;
+    const res = await fetch("/api/parse", { method: "POST", body: buf, headers });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "解析失败");
+    state.data = data;
+    // 与 handleFile 同一套重置：新关联的项目对象要能弹字段差异对照，
+    // 第 7 tab 不能残留上一份包结构/实测清单
+    state.plModalShown = false;
+    state.packageMode = "predict";
+    state.buildReport = null;
+    state.inspectSummary = null;
+    state.zipPhase = { build: "idle", inspect: "idle" };
+    const staleBuild = $("#pp6zipBuildReport");
+    if (staleBuild) { staleBuild.hidden = true; staleBuild.innerHTML = ""; }
+    const staleInspect = $("#pp6zipInspectCard");
+    if (staleInspect) { staleInspect.hidden = true; staleInspect.innerHTML = ""; }
+    renderAll();
+    toast(`对象 ${label}：关联项目=${checked ? "是" : "否"}，已重新分析`, 4000);
+  } catch (err) {
+    // 回滚到拨之前的那一次决策（不是无条件 true/false：之前可能压根没决策）
+    if (had) state.plLinked[code] = prev;
+    else delete state.plLinked[code];
+    if (input) { input.checked = !checked; input.disabled = false; }
+    toast("按「关联项目」重新分析失败：" + err.message, 6000);
+  } finally {
+    setLoading(false);
+  }
+}
+
 /* AI 预览页的关系确认（第 2 步），与解析页同一组件、不同 scope */
 function renderAiRelations(d) {
+
   const box = $("#aiRelBox");
   const panel = $("#aiRelPanel");
   const vm = d && d.relationships;
@@ -297,6 +726,10 @@ async function downloadConfirmedExcel() {
     const headers = { "Content-Type": "application/octet-stream" };
     const relHeader = window.Relations ? window.Relations.decisionsHeader("parse") : null;
     if (relHeader) headers["X-Relations"] = relHeader;
+    // 与出包同一份决策头：确认版 Excel 里的「关联项目」列要与页面上的勾选一致，
+    // 否则下次拿这份 Excel 再解析，开关又回到原样
+    const plHeader = projLinkHeader();
+    if (plHeader) headers["X-Project-Link"] = plHeader;
     const res = await fetch("/api/confirmed-excel?name=" + encodeURIComponent(state.file.name), {
       method: "POST", body: buf, headers,
     });
@@ -314,8 +747,77 @@ async function downloadConfirmedExcel() {
   }
 }
 
-/* 按模块导入 / 导出：系统里每个模块单独导入，所以左边一个开关、右边两个动作 */
-function renderModules() {
+/* 下载流程定义：流程是裸 XML，不进同步包，走独立的 /api/workflow 接口。
+   单条流程直接回 .xml，多条回一个 zip（内含 {流程名}.xml）。 */
+async function downloadWorkflow(btn) {
+  if (!state.file) return;
+  const label = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "正在生成…"; }
+  try {
+    const buf = await state.file.arrayBuffer();
+    const res = await fetch("/api/workflow", {
+      method: "POST",
+      body: buf,
+      headers: { "Content-Type": "application/octet-stream" },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || "生成失败");
+    }
+    const blob = await res.blob();
+    const name = decodeURIComponent(res.headers.get("X-Filename") || "流程.xml");
+    if (await saveBlob(blob, name)) {
+      toast(`已下载 ${name}：到 管理 › 流程设计 › 导入 上传`, 6000);
+    }
+  } catch (err) {
+    toast("下载流程 XML 失败：" + err.message, 6000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
+}
+
+/* 导出流程对象包：流程模式的对象 + 它的表单/列表/数据集。
+   和同步包复用同一个 /api/build，用 X-Object-Scope 分开——同步包只出普通对象，
+   流程对象在这里出。导入是两步：对象包 → 管理 › 业务对象 › 导入；
+   流程 XML → 管理 › 流程设计 › 导入。 */
+const WF_OBJECT_MODULES = ["bo", "form", "list", "dataset", "filter"];
+async function downloadWorkflowObjects(btn) {
+  if (!state.file) return;
+  const label = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "正在生成…"; }
+  try {
+    const buf = await state.file.arrayBuffer();
+    const headers = {
+      "Content-Type": "application/octet-stream",
+      "X-Object-Scope": "workflow",
+      "X-Modules": JSON.stringify(WF_OBJECT_MODULES),
+    };
+    // 流程对象包同样要带「关联项目」决策：流程对象也是业务对象，勾了开关却没带
+    // 就是「页面有 projectId、这个包里没有」——这一包是单独导的，最容易漏
+    const plHeader = projLinkHeader();
+    if (plHeader) headers["X-Project-Link"] = plHeader;
+    const res = await fetch("/api/build", {
+      method: "POST",
+      body: buf,
+      headers,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || "生成失败");
+    }
+    const blob = await res.blob();
+    const name = decodeURIComponent(res.headers.get("X-Filename") || "流程对象.zip");
+    if (await saveBlob(blob, name)) {
+      toast(`已下载 ${name}：到 管理 › 业务对象 › 导入 上传；流程 XML 再点「下载流程 XML」`, 7000);
+    }
+  } catch (err) {
+    toast("导出流程对象包失败：" + err.message, 6000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
+}
+
+/* 按模块导入 / 导出：系统里每个模块单独导入，所以左边一个开关、右边两个动作 */function renderModules() {
   const box = $("#modList");
   const mods = state.data.modules || [];
   if (!mods.length) { box.innerHTML = ""; return; }
@@ -338,7 +840,6 @@ function renderModules() {
         <label class="mod-pick">
           <input type="checkbox" data-mod="${m.code}" ${picked ? "checked" : ""} ${empty ? "disabled" : ""}>
         </label>
-        <div class="mod-idx">${m.order}</div>
         <div class="mod-main">
           <div class="mod-name">
             ${esc(m.label)}
@@ -353,10 +854,10 @@ function renderModules() {
         <div class="mod-btns">
           <button class="btn ghost sm" data-act="import" data-mod="${m.code}"
                   ${empty || flowHint ? "disabled" : ""}
-                  title="单独生成这一个模块的 zip 并保存">导入</button>
+                  title="${flowHint ? "流程是裸 XML，不进 zip：请到左侧「流程」工作区下载" : "单独生成这一个模块的 zip 并保存"}">导入</button>
           <button class="btn ghost sm" data-act="export" data-mod="${m.code}"
                   ${empty || flowHint ? "disabled" : ""}
-                  title="只导出这一个模块的 zip">导出</button>
+                  title="${flowHint ? "流程是裸 XML，不进 zip：请到左侧「流程」工作区下载" : "只导出这一个模块的 zip"}">导出</button>
         </div>
       </div>`;
   }).join("");
@@ -386,38 +887,87 @@ function renderObjects() {
     panel.innerHTML = `<div class="card"><div class="empty">还没有业务对象，请先在 1_业务对象 表里填写。</div></div>`;
     return;
   }
-  panel.innerHTML = objects.map((bo) => `
+  // 开关是「拨了就重新解析」，所以没有文件（理论上不会发生，示例也走 handleFile）
+  // 时禁用并说清原因，而不是让人点了没反应
+  const canToggle = !!state.file;
+  const linkTip = canToggle
+    ? "勾选后自动补「所属项目」链接字段，并把与项目对象同名/近义/相似的字段照项目定义覆盖（差异会汇总成一个对照弹窗）"
+    : "示例数据请先上传 Excel，再在对象卡片上勾「关联项目」";
+  panel.innerHTML = `<div class="obj-tip">这里勾选即可，不用改 Excel；
+      Excel 的「关联项目」列仍然有效（以勾选为准）。</div>`
+    + objects.map((bo) => `
     <div class="card">
       <div class="card-head">
         <div>
-          <h3>${esc(bo.name)} <span class="chip accent">${esc(bo.code)}</span></h3>
-          <div class="sub">表名 ${esc(bo.tbl)} · ${bo.fields.length} 个字段${bo.withLog ? " · 记录变更日志" : ""}</div>
+          <h3>${esc(bo.name)} <span class="chip accent">${esc(bo.code)}</span>${bo.flowDriven ? ' <span class="chip">流程模式</span>' : ""}${bo.projectLink ? ' <span class="chip accent">关联项目</span>' : ""}</h3>
+          <div class="sub">表名 ${esc(bo.tbl)} · ${bo.fields.length} 个字段${bo.withLog ? " · 记录变更日志" : ""}${bo.flowDriven ? " · 走「流程模式 › 导出流程对象包」，不随同步包" : ""}${bo.projectLink ? " · 已补「所属项目」链接字段，并已对齐与项目同名的字段" : ""}</div>
         </div>
-        <div class="sub">${esc(bo.moduleId || "未指定模块")}</div>
+        <div class="obj-side">
+          <label class="pl-switch" title="${esc(linkTip)}">
+            <input type="checkbox" data-pl-link="${esc(bo.code)}"
+                   ${bo.projectLink ? "checked" : ""} ${canToggle ? "" : "disabled"}>
+            <span>关联项目</span>
+          </label>
+          <span class="sub">${esc(bo.moduleId || "未指定模块")}</span>
+        </div>
       </div>
       <div class="tbl-wrap">
         <table>
           <thead><tr>
             <th>字段名称</th><th>字段编码</th><th>物理列名</th><th>类型</th><th>长度</th><th>备注</th>
           </tr></thead>
-          <tbody>
-            ${bo.fields.map((f) => `
-              <tr>
-                <td>${esc(f.name)}</td>
-                <td><code>${esc(f.code)}</code></td>
-                <td><code>${esc(f.fieldName)}</code></td>
-                <td>${esc(TYPE_LABEL[f.type] || f.type)}</td>
-                <td>${f.length ?? "—"}${f.precision ? `,${f.precision}` : ""}</td>
-                <td class="sub">${[
-                  f.index ? "索引" : "",
-                  f.objectType ? "关联 " + f.objectType : "",
-                ].filter(Boolean).map(esc).join(" / ") || "—"}</td>
-              </tr>
-            `).join("")}
+          <tbody data-bo="${esc(bo.code)}">
+            ${wfRows(bo.fields, bo.fields.length > OBJ_ROW_LIMIT)}
           </tbody>
         </table>
       </div>
+      ${bo.fields.length > OBJ_ROW_LIMIT
+        ? `<div class="tbl-more"><button class="link" data-more="${esc(bo.code)}">
+             展开全部 ${bo.fields.length} 个字段</button></div>`
+        : ""}
     </div>
+  `).join("");
+
+  // 「关联项目」开关：改变即重新解析，所以只挂 change（不挂 click，
+  // 避免和 label 的默认行为重复触发一次请求）
+  $$('.panel[data-panel="objects"] [data-pl-link]').forEach((el) => {
+    el.onchange = () => toggleProjLink(el.dataset.plLink, el.checked, el);
+  });
+
+  // 字段多的对象默认只显示前 N 行：5 个对象 × 45 个字段 = 225 行，
+  // 一屏滚不到底，也没人需要一眼看完。需要时再展开，展开后还能收起。
+  $$('.panel[data-panel="objects"] [data-more]').forEach((btn) => {
+    btn.onclick = () => {
+      const code = btn.dataset.more;
+      const tbody = document.querySelector(`tbody[data-bo="${code}"]`);
+      const bo = objects.find((o) => o.code === code);
+      // dataset.open = "1" 表示「当前已展开」
+      const open = btn.dataset.open === "1";
+      tbody.innerHTML = wfRows(bo.fields, open);
+      btn.dataset.open = open ? "0" : "1";
+      btn.textContent = open
+        ? `展开全部 ${bo.fields.length} 个字段`
+        : "收起，只看前 " + OBJ_ROW_LIMIT + " 个";
+    };
+  });
+}
+
+/* 字段行：折叠时只出前 OBJ_ROW_LIMIT 行 */
+const OBJ_ROW_LIMIT = 10;
+function wfRows(fields, collapsed) {
+  const list = collapsed ? fields.slice(0, OBJ_ROW_LIMIT) : fields;
+  return list.map((f) => `
+    <tr>
+      <td>${esc(f.name)}</td>
+      <td><code>${esc(f.code)}</code></td>
+      <td><code>${esc(f.fieldName)}</code></td>
+      <td>${esc(TYPE_LABEL[f.type] || f.type)}</td>
+      <td>${f.length ?? "—"}${f.precision ? `,${f.precision}` : ""}</td>
+      <td class="sub">${[
+        f.index ? "索引" : "",
+        f.objectType ? "关联 " + f.objectType : "",
+      ].filter(Boolean).map(esc).join(" / ") || "—"}</td>
+    </tr>
   `).join("");
 }
 
@@ -655,6 +1205,8 @@ async function buildZip(codes, trigger) {
     const headers = { "X-Modules": JSON.stringify(list) };
     const relHeader = window.Relations ? window.Relations.decisionsHeader("parse") : null;
     if (relHeader) headers["X-Relations"] = relHeader;
+    const plHeader = projLinkHeader();
+    if (plHeader) headers["X-Project-Link"] = plHeader;
     const res = await fetch("/api/build", {
       method: "POST",
       body: buf,
@@ -717,7 +1269,12 @@ async function importOne(code, btn) {
   btn.textContent = "生成中…";
   try {
     const buf = await state.file.arrayBuffer();
-    const res = await fetch(`/api/import/${code}`, { method: "POST", body: buf });
+    // 每个模块行上的「导入」是最显眼的按钮，同样要按页面上的「关联项目」开关
+    // 出包：漏一个头，用户就会拿到「有对象、没 projectId」的单模块包
+    const headers = { "Content-Type": "application/octet-stream" };
+    const pl = projLinkHeader();
+    if (pl) headers["X-Project-Link"] = pl;
+    const res = await fetch(`/api/import/${code}`, { method: "POST", body: buf, headers });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || "生成失败");
@@ -999,12 +1556,33 @@ function renderAiList(list) {
   if (list.boardGroup) extra.push(`看板按「${esc(list.boardGroup)}」分列`);
   if (list.gantt) extra.push(`甘特 ${esc(list.gantt.start)} → ${esc(list.gantt.end)}`);
   if (list.sort) extra.push(`排序 ${esc(list.sort)}`);
+  // 级联详情：下拉选一个显示列，点它打开详情表单（全字段只读）。
+  // 选择直接写进 state.aiData.list.detailField，出包原样带回。
+  const opts = ['<option value="">不开详情联动</option>']
+    .concat((list.columns || []).map(
+      (c) => `<option value="${esc(c.code)}"${list.detailField === c.code ? " selected" : ""}>${esc(c.label)}</option>`
+    )).join("");
   return `
     <div class="ai-list-body">
       <div class="ai-kv"><span>视图</span><b>${views}</b></div>
       <div class="ai-kv"><span>显示列</span><b>${cols}</b></div>
+      <div class="ai-kv"><span>级联详情</span>
+        <b><select id="aiDetailField" class="ai-input" style="max-width:220px">${opts}</select></b>
+      </div>
+      <div class="ai-note-line">· 开启后生成两个表单：新建表单（可编辑）+ 详情表单（全只读）；列表里点击所选列即全屏打开详情</div>
       ${extra.map((t) => `<div class="ai-note-line">· ${t}</div>`).join("")}
     </div>`;
+}
+
+// 级联详情下拉的选择写回 state（渲染完成后调用一次）
+function bindDetailFieldPicker() {
+  const df = $("#aiDetailField");
+  if (df) {
+    df.onchange = () => {
+      if (state.aiData && state.aiData.list) state.aiData.list.detailField = df.value;
+      toast(df.value ? `点击「${df.selectedOptions[0].textContent}」列将打开详情表单` : "已关闭详情联动");
+    };
+  }
 }
 
 function renderAiActions(d) {
@@ -1035,6 +1613,7 @@ function renderAiActions(d) {
     };
   });
 
+  bindDetailFieldPicker();
   bindAiEdit();
   renderAiRelations(d);
 }
@@ -1197,7 +1776,7 @@ async function applyAiBo(d, { thenBuild = false } = {}) {
 }
 
 /* 步骤切换：1 输入 / 2 预览 / 3 出包 */
-function goStep(n) {
+function goStep(n, { scroll = true } = {}) {
   const steps = { 1: "#stepInput", 2: "#stepPreview", 3: "#result" };
   Object.entries(steps).forEach(([k, sel]) => {
     const el = $(sel);
@@ -1208,6 +1787,7 @@ function goStep(n) {
     el.classList.toggle("active", cur === n);
     el.classList.toggle("done", cur < n);
   });
+  if (!scroll) return;   // 在「流程模式」页上传时不抢滚动位置
   // 页面滚动已交给 .workspace，window.scrollTo 作为兼容兜底保留
   const ws = $("#workspace");
   if (ws) ws.scrollTo({ top: 0, behavior: "smooth" });
@@ -1215,6 +1795,13 @@ function goStep(n) {
 }
 
 function backToInput() {
+  // 回到第 1 步：清空文件选择框，改完 Excel 后再选同一个文件也能触发 change；
+  // 同时允许下一次解析重新弹「相近字段确认」，不会因为上一轮已弹过而被吞掉。
+  const fi = $("#fileInput");
+  if (fi) fi.value = "";
+  const wf = $("#wfFileInput");
+  if (wf) wf.value = "";
+  state.plModalShown = false;
   goStep(1);
 }
 
@@ -1496,7 +2083,7 @@ function classifyInspect(res, summary, err) {
       kind: "not_zip", skipDownload: true,
       title: "这不是一个有效的 zip 包（或包已损坏）",
       message: (summary.message || (err && err.message) || "无法打开为 zip 包。") + "。" + listText,
-      recovery: "确认选的是 .zip；重新从系统「发布 ZIP」下载（.crdownload 直接改名 .zip）；或到工作区 2「已有包改字段」验证能否打开。",
+      recovery: "确认选的是 .zip；重新从系统「发布 ZIP」下载（.crdownload 直接改名 .zip）；或到工作区 3「存量包修订」验证能否打开。",
     });
   }
   /* 是否「外层多套了一层」：首段不是合法目录，但路径里出现 /bo/ 之类。
@@ -1543,7 +2130,7 @@ function classifyInspect(res, summary, err) {
       kind: "empty", skipDownload: true,
       title: "包内没有可反解的 bo/form/data_template XML",
       message: "没有下载会误导人的空 xlsx。" + listText,
-      recovery: "去工作区 1 重新出包（空模板 / 全不选会被拦）；只是想给线上对象补字段请改用工作区 2「已有包改字段」。",
+      recovery: "去工作区 1 重新出包（空模板 / 全不选会被拦）；只是想给线上对象补字段请改用工作区 3「存量包修订」。",
     });
   }
   // 6 正常
@@ -1786,7 +2373,7 @@ function renderInspectCard(payload) {
   const recovery = cls.recovery
     ? `<div class="set-note"><strong>恢复动作</strong>：${esc(cls.recovery)}</div>` : "";
   const extraOk = isOk
-    ? `<div class="set-note">反解会拆成 Excel 重造包，原生包未建模内容（对象角色 / 日志模板 / 字典样式 / 权限）会丢；补字段请改用工作区 2「已有包改字段」。</div>`
+    ? `<div class="set-note">反解会拆成 Excel 重造包，原生包未建模内容（对象角色 / 日志模板 / 字典样式 / 权限）会丢；补字段请改用工作区 3「存量包修订」。</div>`
     : "";
   box.hidden = false;
   box.innerHTML = `
@@ -1885,7 +2472,13 @@ function bind() {
 
   // ---- 第 1 步（下半）：已经有一份标准 Excel，直接进预览
   $("#reimport").querySelector("span").onclick = pickAndLoad;
-  $("#fileInput").onchange = (e) => handleFile(e.target.files[0]);
+  $("#fileInput").onchange = (e) => {
+    const f = e.target.files && e.target.files[0];
+    // 同一个文件再选一次也要触发 change：否则「出包 → 返回上一步 → 改 Excel →
+    // 再选同一个文件」会一点反应都没有，用户以为流程卡死。
+    e.target.value = "";
+    if (f) handleFile(f);
+  };
   const reimportBox = $("#reimport");
   ["dragenter", "dragover"].forEach((ev) =>
     reimportBox.addEventListener(ev, (e) => { e.preventDefault(); reimportBox.classList.add("drag"); }));
@@ -1913,6 +2506,60 @@ function bind() {
   const btnConfirmed = $("#btnConfirmedExcel");
   if (btnConfirmed) btnConfirmed.onclick = downloadConfirmedExcel;
 
+  // 「相近字段确认」弹窗：底部四个出口——全选 / 全不选 / 保留我的 / 按勾选覆盖。
+  // 「按勾选覆盖」会把勾选并进 state.plAlign 再重新解析（预览与 zip 同一份决策），
+  // 「保留我的」只关弹窗、不发 align（等于全部保留我方定义）。
+  const plModal = $("#plMask");
+  if (plModal) {
+    const close = $("#plModalClose");
+    if (close) close.onclick = () => window.ProjLink.closeModal();
+    const all = $("#plPickAll");
+    if (all) all.onclick = () => window.ProjLink.selectAll(true);
+    const none = $("#plPickNone");
+    if (none) none.onclick = () => window.ProjLink.selectAll(false);
+    // 从确认弹窗直接回第 1 步改 Excel：比先关弹窗、再点结果页「返回上一步」少一步。
+    // 回去后文件选择框已清空，同一个文件再选一次会重新解析、重新弹本弹窗。
+    const backEdit = $("#plBackEdit");
+    if (backEdit) {
+      backEdit.onclick = () => {
+        window.ProjLink.closeModal();
+        backToInput();
+        toast("改完 Excel 后，重新选一次这个文件即可重新解析", 6000);
+      };
+    }
+    const back = $("#plLater");
+    if (back) {
+      back.onclick = () => {
+        window.ProjLink.closeModal();
+        toast("已保留你方定义：这些相近字段都按原规则生成", 5000);
+      };
+    }
+    const confirm = $("#plApplyPicked");
+    if (confirm) confirm.onclick = () => { applyProjectPicks(); };
+    plModal.addEventListener("click", (e) => {
+      if (e.target === plModal) window.ProjLink.closeModal();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !plModal.hidden) window.ProjLink.closeModal();
+    });
+  }
+  const plOpen = $("#btnPlModal");
+  if (plOpen) {
+    plOpen.onclick = () => {
+      const vm = state.data && state.data.projectAlign;
+      if (!window.ProjLink) return;
+      if (!window.ProjLink.pendingCount(vm)) {
+        toast("没有需要确认的相近字段：同名同族的字段已经自动覆盖了", 5000);
+        return;
+      }
+      window.ProjLink.openModal(vm);
+    };
+  }
+
+  // 第 1 步「业务对象关联项目」：初始页两档控件（导入前就定），
+  // 普通模式 / 流程模式共享同一档，存量包页「按包内」独立一档
+  bindPlPre();
+
   $("#modAll").onclick = () => {
     state.picked = new Set((state.data.modules || []).filter((m) => m.count > 0).map((m) => m.code));
     renderModules(); updateBar();
@@ -1925,6 +2572,8 @@ function bind() {
   $("#btnDemo").onclick = loadDemo;
   const packBtn = $("#btnPack") || $("#btnBuild");
   if (packBtn) packBtn.onclick = () => buildZip();
+  const wfBtn = $("#btnWorkflow");
+  if (wfBtn) wfBtn.onclick = () => downloadWorkflow(wfBtn);
 
   // ---- 首屏对话已由 bindAiChat 绑定，这里不再重复绑「生成预览」
 
@@ -1964,3 +2613,286 @@ function bind() {
 
   detectDesktop();
   bind();
+
+/* ============================================================ 流程工作区
+ *
+ * 流程是**裸 XML**，不进同步包（导入走 管理 › 流程设计 › 导入），
+ * 所以它单独占一个左侧工作区，而不是混在「要导出哪些模块」里。
+ *
+ * 这个工作区自带 Excel 导入：流程模式的对象、它的表单/列表、流程定义
+ * 都从同一份填写表来，没必要让用户先去「普通模式」传一遍再切回来。
+ *
+ * 数据来自同一次 /api/parse（webui._wf_payload），这里只负责渲染：
+ * 左列流程清单、右列节点表 + 流转表。下载复用 downloadWorkflow()。
+ */
+
+/* 导入区状态：文件名 + 这次会出多少东西。
+   数字从 state.data 算，和 parse 接口同源，不另开统计口径。 */
+function renderWfImport() {
+  const tag = $("#wfFileTag");
+  const stat = $("#wfImportStat");
+  if (!tag || !stat) return;             // 面板不在（旧 HTML）
+  if (!state.file) {
+    tag.hidden = true;
+    stat.className = "wf-import-stat";
+    stat.textContent = "还没有导入：点右上「选择 Excel」，或把 .xlsx 直接拖到这里";
+    return;
+  }
+  tag.hidden = false;
+  tag.textContent = state.file.name;
+  tag.title = state.file.name;
+
+  const d = state.data || {};
+  const objs = (d.objects || []).filter((o) => o.flowDriven);
+  if (!objs.length) {
+    stat.className = "wf-import-stat";
+    stat.innerHTML = `已解析 <b>${esc(state.file.name)}</b>，但里面没有流程驱动对象：` +
+      `到 <code>1_业务对象</code> 把「流程驱动」改成「是」就会自动补一条默认流程。`;
+    return;
+  }
+  const codes = new Set(objs.map((o) => o.code));
+  const forms = (d.forms || []).filter((f) => codes.has(f.boCode));
+  const wfs = (d.workflows || []).length;
+  stat.className = "wf-import-stat ok";
+  stat.innerHTML = `本次会出：<b>${objs.length}</b> 个流程对象 · <b>${forms.length}</b> 张表单 · ` +
+    `<b>${wfs}</b> 条流程定义`;
+}
+
+/* 流程页上传：解析完留在本页（quiet），直接能出对象包和 XML */
+function bindWfImport() {  const pick = $("#btnWfPick");
+  const input = $("#wfFileInput");
+  const box = $("#wfImport");
+  if (!pick || !input) return;
+  pick.onclick = () => input.click();
+  input.onchange = (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";                 // 同一个文件再选一次也要触发 change
+    if (f) handleFile(f, { quiet: true });
+  };
+  if (!box) return;
+  box.ondragover = (e) => { e.preventDefault(); box.classList.add("dz-over"); };
+  box.ondragleave = () => box.classList.remove("dz-over");
+  box.ondrop = (e) => {
+    e.preventDefault();
+    box.classList.remove("dz-over");
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) handleFile(f, { quiet: true });
+  };
+}
+
+/* 一句话生成/修改流程：把当前 xlsx + 描述发给 /api/ai/workflow，
+   后端只重写 9/10/11 三张表并回一份新 Excel；这里拿它替换当前文件，
+   后面的预览和导出就都基于新流程。 */
+async function aiMakeWorkflow() {
+  if (!state.file) { toast("先在上面导入 Excel：AI 要知道流程挂在哪个对象上"); return; }
+  const box = $("#wfAiText");
+  const text = (box && box.value || "").trim();
+  if (!text) { toast("先说清楚流程要怎么走，例如：部门经理 → 财务 → 总经理"); if (box) box.focus(); return; }
+  const btn = $("#wfAiSend");
+  const label = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "生成中…"; }
+  try {
+    const buf = await state.file.arrayBuffer();
+    const cur = WfView.current();
+    const qs = new URLSearchParams({ instruction: text, focus: cur ? cur.name : "" });
+    const res = await fetch("/api/ai/workflow?" + qs.toString(), {
+      method: "POST",
+      body: buf,
+      headers: { "Content-Type": "application/octet-stream" },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || "生成失败");
+    }
+    const blob = await res.blob();
+    const name = decodeURIComponent(res.headers.get("X-Filename") || "流程草稿.xlsx");
+    let summary = null;
+    const rawSum = res.headers.get("X-AI-Summary");
+    if (rawSum) {
+      try { summary = JSON.parse(decodeURIComponent(rawSum)); } catch (_) { /* 头缺失就只提示成功 */ }
+    }
+    // 用新草稿替换当前文件：原 xlsx 不动，后面导出的都是这次的结果
+    await handleFile(new File([blob], name, { type: blob.type }), { quiet: true });
+    const notes = (summary && summary.notes) || [];
+    if (notes.length) toast(notes.slice(0, 3).join("；"), 9000);
+    else toast(`已按描述生成流程（${name}），原文件没动`, 7000);
+    if (box) box.value = "";
+  } catch (err) {
+    toast("生成流程失败：" + err.message, 9000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
+}
+
+/* 流程模式概要里的「关联项目」开关：与对象卡片上那枚同一款、同一套行为
+ * （勾了就带决策头重新解析，预览即时生效）。
+ * 绑定对象是没勾流程驱动的对象 / 没有对象时不出这个开关，避免点了没反应。 */
+function bindWfProjLink(wf) {
+  const box = $("#wfMeta");
+  if (!box || !wf || !wf.boCode) return;
+  const bo = ((state.data && state.data.objects) || []).find((o) => o.code === wf.boCode);
+  if (!bo) return;
+  const canToggle = !!state.file;
+  const tip = canToggle
+    ? "勾选后自动补「所属项目」链接字段，并把与项目对象同名/近义/相似的字段照项目定义覆盖（差异会汇总成一个对照弹窗）"
+    : "示例数据请先上传 Excel，再勾「关联项目」";
+  const wrap = document.createElement("label");
+  wrap.className = "pl-switch wf-meta-pl";
+  wrap.title = tip;
+  wrap.innerHTML = `<input type="checkbox" data-pl-link="${esc(wf.boCode)}"
+      ${bo.projectLink ? "checked" : ""} ${canToggle ? "" : "disabled"}><span>关联项目</span>`;
+  box.appendChild(wrap);
+  const el = wrap.querySelector("[data-pl-link]");
+  if (el) el.onchange = () => toggleProjLink(el.dataset.plLink, el.checked, el);
+}
+
+const WfView = {
+  // 选中项按**流程名**记，不按下标：重新解析后行序可能变，
+  // 按下标会「选着 A 结果显示 B」。名字没了就回落到第一条。
+  picked: "",
+
+  current() {
+    const list = (state.data && state.data.workflows) || [];
+    if (!list.length) return null;
+    return list.find((w) => w.name === this.picked) || list[0];
+  },
+
+  render() {
+    renderWfImport();
+    const list = (state.data && state.data.workflows) || [];
+    const empty = $("#wfEmpty");
+    const body = $("#wfBody");
+    const btn = $("#btnWfDownload");
+    // 流程对象包：和 XML 是两步导入，数据到位才允许点，避免导出一份空包
+    const objs = $("#btnWfObjects");
+    if (!empty || !body || !btn) return;      // 面板不在（旧 HTML）
+
+    if (!state.data) {
+      empty.hidden = false;
+      body.hidden = true;
+      btn.disabled = true;
+      if (objs) objs.disabled = true;
+      $("#wfEmptySub").textContent =
+        "点上面的「选择 Excel」（或把文件拖进那个虚线框），流程对象和节点安排会出现在这里。";
+      $("#wfList").innerHTML = '<div class="wf-list-empty">还没有数据</div>';
+      return;
+    }
+    if (!Array.isArray(state.data.workflows)) {
+      empty.hidden = false;
+      body.hidden = true;
+      btn.disabled = true;
+      if (objs) objs.disabled = true;
+      $("#wfEmptySub").textContent =
+        "这次解析没有返回流程数据。后端可能是旧版本，重启应用后再试。";
+      $("#wfList").innerHTML = "";
+      return;
+    }
+    if (!list.length) {
+      empty.hidden = false;
+      body.hidden = true;
+      btn.disabled = true;
+      if (objs) objs.disabled = true;
+      $("#wfEmptySub").textContent =
+        "这份 Excel 里没有流程驱动对象。到「1_业务对象」把「流程驱动」改成「是」，" +
+        "就会自动生成一条 开始 → 部门审批 → 通过，不用填 9_流程 / 10_流程节点。";
+      $("#wfList").innerHTML = '<div class="wf-list-empty">9_流程 为空</div>';
+      return;
+    }
+
+    empty.hidden = true;
+    body.hidden = false;
+    btn.disabled = false;
+    if (objs) objs.disabled = false;
+
+    const wf = this.current();
+    this.picked = wf.name;
+
+    // ---- 左列：流程清单
+    $("#wfList").innerHTML = list.map((w) => {
+      const on = w.name === wf.name ? " active" : "";
+      return `<button class="wf-item${on}" data-wf="${esc(w.name)}">
+        <div class="wf-item-name">${esc(w.name)}${w.auto
+          ? '<span class="wf-auto">默认</span>' : ""}</div>
+        <div class="wf-item-sub">${esc(w.boName || w.boCode || "未绑定对象")}${
+          w.boName && w.boCode ? `（${esc(w.boCode)}）` : ""}</div>
+        <div class="wf-item-meta">${w.nodeCount} 节点 · ${w.edgeCount} 流转</div>
+      </button>`;
+    }).join("");
+    $$("#wfList .wf-item").forEach((el) => {
+      el.onclick = () => { this.picked = el.dataset.wf; this.render(); };
+    });
+
+    // ---- 右列：概要
+    $("#wfMeta").innerHTML = [
+      ["流程名称", wf.name],
+      ["绑定对象", `${wf.boName || ""}${wf.boCode ? `（${wf.boCode}）` : ""}` || "—"],
+      ["来源", wf.auto ? "自动生成（可在系统里改）" : "9_流程 里配置"],
+      ["启用", wf.active ? "是" : "否"],
+      ["规模", `${wf.nodeCount} 个节点 / ${wf.edgeCount} 条流转`],
+    ].map(([k, v]) => `<div class="wf-meta-item"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join("");
+    // 流程模式里也放同一款「关联项目」开关：这块的「绑定对象」就是流程驱动对象，
+    // 人正在看这条流程时最想勾的就是它，绕回结果页反而更远。
+    // 只加一个 pill，不改 .wf-meta 的 flex 排布（flex-wrap 会自动换行）。
+    bindWfProjLink(wf);
+
+    // ---- 节点：主行「序号 + 名称 + 类型」，第二行放元信息。
+    // 之前是 8 列表格，宽容器里会把卡片顶宽、把右上按钮挤出视口；
+    // 行列表天然自适应宽度，节点多了也不会变形。
+    const meta = (pairs) => pairs
+      .filter(([, v]) => v !== null && v !== undefined && v !== "")
+      .map(([k, v]) => `<span><i>${esc(k)}</i>${v}</span>`).join("");
+
+    $("#wfNodeCount").textContent = `${wf.nodeCount} 个`;
+    $("#wfNodes").innerHTML = wf.nodes.map((n) => `
+      <div class="wf-row">
+        <div class="wf-idx">${n.id}</div>
+        <div class="wf-row-body">
+          <div class="wf-row-name">
+            ${esc(n.name)}
+            <span class="wf-tag wf-tag-${esc(n.kind)}">${esc(n.kind)}</span>
+          </div>
+          <div class="wf-row-meta">${meta([
+            ["处理人", n.handler ? esc(n.handler)
+                     : (n.kind === "审批" ? '<span class="muted">待指定</span>' : "—")],
+            ["表单", n.formKey ? `<code>${esc(n.formKey)}</code>` : "自动"],
+            ["业务状态", esc(n.state || "—")],
+            ["办理时限", n.days ? `${n.days} 天` : ""],
+            ["可退回", n.kind === "审批" ? (n.goBack ? esc(n.goBack) : "自动") : ""],
+          ])}</div>
+        </div>
+      </div>`).join("");
+
+    // ---- 流转：同一套行列表，起点 → 终点当主行
+    $("#wfEdgeCount").textContent = `${wf.edgeCount} 条`;
+    $("#wfEdges").innerHTML = wf.edges.length
+      ? wf.edges.map((e) => `
+        <div class="wf-row">
+          <div class="wf-idx">${e.order || 0}</div>
+          <div class="wf-row-body">
+            <div class="wf-row-name">
+              ${esc(e.src)}<span class="wf-arrow">→</span>${esc(e.dst)}
+            </div>
+            <div class="wf-row-meta">${meta([
+              ["流转", esc(e.name || "—")],
+              ["条件", esc(e.condition || "无条件")],
+            ])}</div>
+          </div>
+        </div>`).join("")
+      : '<div class="wf-rows-empty">没有流转</div>';
+  },
+};
+
+window.Workflow = {
+  render() { WfView.render(); },
+  // renderAll 里也用这个名字，语义更清楚：数据变了，重画
+  refresh() { WfView.render(); },
+};
+
+$("#btnWfDownload") && ($("#btnWfDownload").onclick = () => downloadWorkflow($("#btnWfDownload")));
+$("#btnWfObjects") && ($("#btnWfObjects").onclick = () => downloadWorkflowObjects($("#btnWfObjects")));
+bindWfImport();
+$("#wfAiSend") && ($("#wfAiSend").onclick = aiMakeWorkflow);
+$("#wfAiText") && ($("#wfAiText").onkeydown = (e) => {
+  // Enter 发送、Shift+Enter 换行，和普通模式的对话区一致
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); aiMakeWorkflow(); }
+});

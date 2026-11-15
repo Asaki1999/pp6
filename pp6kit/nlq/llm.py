@@ -176,6 +176,12 @@ def chat_any(cfg: dict, messages: list[dict], timeout: int = 60,
                 try:
                     text = chat(ch["base_url"], ch["api_key"], model,
                                 messages, timeout=timeout, max_tokens=max_tokens)
+                    if not (text or "").strip():
+                        # 推理模型（deepseek-flash 实测）偶尔把 max_tokens 全烧在
+                        # reasoning 上，content 返回空串（2026-11-12：三次两空）。
+                        # 空回答对任何调用方都没用，静默重试一次最划算。
+                        text = chat(ch["base_url"], ch["api_key"], model,
+                                    messages, timeout=timeout, max_tokens=max_tokens)
                     if model != ch.get("model"):
                         ch = dict(ch, model=model)     # 记录实际用的模型
                     return text, ch

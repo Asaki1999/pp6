@@ -21,7 +21,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "pp6kit" / "static"
-FILES = ("index.html", "app.js", "patch.js", "query.js", "style.css", "relations.js")
+FILES = ("index.html", "app.js", "patch.js", "query.js", "style.css", "relations.js",
+         # 项目对齐组件（页签 + 相似字段弹窗）。新增静态文件必须登记在这里，
+         # 否则同步完界面会报 window.ProjLink is undefined
+         "projlink.js")
 
 # 打包产物的两种形态：macOS .app 和 onedir 目录
 TARGETS = (

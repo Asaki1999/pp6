@@ -280,3 +280,32 @@ def _():
     assert isinstance(warns, tuple)      # 不抛异常即可；id 属系统字段，不该报错
     errs, _, _ = run(base_sheets())
     assert not errs, errs
+
+
+@case("VAL23", "validate", "表单脚本：没挂 JForm / 钩子拼错 / 括号不配平", "P0",
+      ["只在 Object.assign(JForm,…) 里才生效", "钩子名拼错会静默不执行", "括号错表单打不开"])
+def _():
+    """真实库里 85 个表单的脚本全部是 `Object.assign(JForm, {钩子: function(form){…}})`。
+
+    这三类是「导入不报错、运行时也不报错，只是不生效」的静默故障——
+    比语法错误更难查，所以出包前就拦。
+    """
+    form_row = {"表单key": "f1", "表单名称": "表单1", "对象编码": "project", "表单类型": "标准全套"}
+
+    def scripts(script: str):
+        sheets = base_sheets(**{S.S_FORM: [form_row], S.S_SCRIPT: [{"表单key": "f1", "JForm 脚本": script}]})
+        return run(sheets)
+
+    ok = 'Object.assign(JForm,{onLoad:function(form){form.setHidden("a",true)}})'
+    errs, warns, _ = scripts(ok)
+    assert not [e for e in errs if "表单脚本" in str(e)], errs
+    assert not [w for w in warns if "表单脚本" in str(w)], warns
+
+    errs, warns, _ = scripts('JForm.onLoad = function(form){}')
+    assert any("Object.assign(JForm" in str(e) for e in errs), errs
+
+    errs, warns, _ = scripts('Object.assign(JForm,{onload:function(form){}})')
+    assert any("钩子 onload" in str(w) for w in warns), warns
+
+    errs, warns, _ = scripts('Object.assign(JForm,{onLoad:function(form){ if(1){ } })')
+    assert any("花括号不配平" in str(e) for e in errs), errs

@@ -336,6 +336,24 @@ def _apply_options(base: dict, field: FormField, parents: set[str] | None = None
     return out
 
 
+def node_field_meta(form: Form, field: FormField, snip: "Snippets") -> tuple[str, dict, bool]:
+    """给「流程节点字段权限」用的控件快照：(真正写进 XML 的控件类型, fieldOptions, 是否兜底)。
+
+    为什么必须由本模块提供、而不是让 gen_workflow 自己拼：
+    ``nodePermissions`` 里的 field_type / field_options 要与 form 里那个控件**逐键一致**，
+    而「级联父级集合 → 有效控件类型 → 取哪份骨架 → 应用级联形态」是一条链
+    （render() 里第 742/755/760/766 行就是这条链）。拆到别的模块去复制一遍，
+    将来 gen_form 改了签名不会报错，只会静默生成与表单不一致的 field_options ——
+    而「节点上字段全消失」的成因正是这个（docs/流程-分析.md §2 第 6 行）。
+
+    返回的第三个值表示「骨架用了 text 兜底」，调用方据此提示用户核对。
+    """
+    parents = _cascade_parent_names(form)
+    ftype = _effective_type(field, parents)
+    base, fallback = snip.field_options(ftype)
+    return ftype, _apply_options(base, field, parents), fallback
+
+
 def _is_dic_field(field: FormField) -> bool:
     """这个下拉的选项是不是来自字典（层级字典才能级联）。"""
     if field.field_type == "dictionary":

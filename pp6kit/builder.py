@@ -1,25 +1,53 @@
 """编排：Project -> 一组可直接导入的 zip。"""
 from __future__ import annotations
 
+import copy
 import re
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import blueprint, gen_bo, gen_form, gen_tpl, modules as mod_def
+from . import blueprint, gen_bo, gen_form, gen_tpl, gen_workflow, modules as mod_def
 from .gen_form import Snippets
 from .ids import new_id
-from .model import PROCESS_FIELDS, Bo, BoField, Project, table_name_for
+from .model import (
+    FORM_DETAIL,
+    PROCESS_FIELDS,
+    WF_STATE_OPTIONS,
+    Bo,
+    BoField,
+    Form,
+    FormField,
+    Project,
+    table_name_for,
+)
 
 # 系统必备字段（样例导出中始终存在；缺失会导致表结构不完整）
+#
+# 系统新建对象时自带 16 个默认字段（对象属性 › 默认字段页签，2026-11-13 用户截图）：
+#   名称(name) + id/tenantId/ip/createBy/createTime/updateBy/updateTime/
+#   deleted/version/baselineVersion/isDraft + 流程四件套(processNode/
+#   processHandler/processDefId/processInstanceId，仅流程驱动对象落库)
+# 这里补的是「对象名称」等基础 12 个；流程四件套在 ensure_process_fields
+# （flow_driven 对象）里补。
 #
 # 顺序照「推送工作区」导出包里的 sn 排列（2026-11-12 用 4 个原生包核对）：
 #   id → tenantId → ip → createBy → createTime → updateBy → updateTime
 #     → deleted → version
 # 注意 **updateBy 在 updateTime 前面**——之前写成 updateTime→updateBy，
 # 字段顺序与系统产物不一致，界面上「更新人/更新时间」两列会反过来。
+#
+# ⚠ 规格以官方导出包为准，不照抄默认字段页签的显示值：
+#   createBy/updateBy 页签显示 24，官方包实际 64；isDraft 页签显示
+#   草稿/字符串10，官方包实际「是否草稿」varchar(1)；processNode 页签
+#   显示 300，官方流程对象实际 1000。长度不一致会导致导入后列宽与
+#   系统建的对象对不上。
 SYSTEM_FIELDS: list[dict] = [
+    # 名称：系统新建对象的第一个默认字段（截图实测 varchar(10)）。
+    # 用户字段表里自己定义了「名称」时（编码自动生成 name）会自动跳过，
+    # 以用户的定义为准（如 project_create 的「项目名称」是 varchar 200）。
+    {"code": "name", "name": "名称", "type_new": "varchar", "length": 10},
     {"code": "id", "name": "主键", "type_new": "varchar", "length": 64, "is_index": True},
     {"code": "tenantId", "name": "租户ID", "type_new": "varchar", "length": 64, "is_index": True},
     {"code": "ip", "name": "IP地址", "type_new": "varchar", "length": 15},
@@ -31,8 +59,9 @@ SYSTEM_FIELDS: list[dict] = [
     # 已有表结构对不上时导入端会按「字段已存在」跳过，不报错但列宽是错的。
     {"code": "deleted", "name": "数据删除状态", "type_new": "varchar", "length": 1, "is_index": True},
     {"code": "version", "name": "版本", "type_new": "number", "length": 20},
-    # 下面两个是 2026-10 对照线上系统补的：
-    # 实测 project/test_plan 等对象的字段里都有，缺了导入后基线/草稿功能不可用
+    # 下面两个是 2026-10 对照线上系统补的：实测 project/test_plan 等对象的
+    # 字段里都有，缺了导入后基线/草稿功能不可用。
+    # 名称沿用官方包（是否草稿 varchar(1)）；页签显示的「草稿/10」是模板展示值。
     {"code": "baselineVersion", "name": "基线版本", "type_new": "number", "length": 20},
     {"code": "isDraft", "name": "是否草稿", "type_new": "varchar", "length": 1},
 ]
@@ -108,6 +137,78 @@ def ensure_process_fields(bo: Bo) -> list[str]:
 _PLATFORM_CODE_HINT = ("pp_equipment", "test_case", "pp_directory", "iform_")
 
 
+# 流程状态的 4 个选项（顺序即字典 sn，短码由它算出，**不能改序**）。
+# 唯一来源是 model.WF_STATE_OPTIONS：gen_workflow.state_codes() 也用同一份，
+# 否则「对象里的字典 key」与「流程里的 BusinessState」会是两套短码。
+PROCESS_STATE_OPTIONS = list(WF_STATE_OPTIONS)
+
+
+def ensure_default_workflow(project) -> list[str]:
+    """流程驱动对象没配流程时，自动补一条「开始 → 审批 → 通过」。
+
+    为什么要有这个：这个 app 的主业是生成**业务对象和表单**。流程是必须的
+    （对象要有 processState、待办要有个入口），但真实流程的分支、会签、
+    条件处理人应该由项目经理在系统「流程设计」里拖，不该逼人在 Excel 里
+    配三张表。所以默认给最小三步，够跑通、够生成合规的 XML，剩下的在线上改。
+
+    只补「流程驱动但一条流程都没有」的对象；用户自己填了 9_流程 的对象
+    一律不动（哪怕只填了一个节点）。
+
+    审批人不填：``_handler_chain`` 会出成「提交时人工选择下一处理人」，
+    validate 对 ``auto`` 流程只警告，不拦出包。
+    """
+    from .model import WF_ONGOING, WF_PASSED, WF_START, WfEdge, WfNode, Workflow
+
+    have = {w.bo_code for w in project.workflows}
+    made: list[str] = []
+    for bo in project.bos:
+        if not bo.flow_driven or bo.code in have:
+            continue
+        wf = Workflow(
+            name=f"{bo.name or bo.code}审批",
+            bo_code=bo.code,
+            module_id=bo.module_id or project.module_id,
+            category_id=project.wf_category_id,
+            auto=True,
+            nodes=[
+                WfNode(wf="", name="开始", kind=WF_START, id=1),
+                WfNode(wf="", name="部门审批", kind=WF_ONGOING, id=2),
+                WfNode(wf="", name="通过", kind=WF_PASSED, id=3),
+            ],
+            # 不写流转：生成器会按节点行序自动串成直线（开始→部门审批→通过），
+            # 少一处要维护的默认值
+            edges=[],
+        )
+        for n in wf.nodes:
+            n.wf = wf.name
+        project.workflows.append(wf)
+        made.append(f"{bo.code} → 流程「{wf.name}」（开始 → 部门审批 → 通过）")
+    return made
+
+
+def ensure_workflow_fields(bo: Bo) -> list[str]:
+    """流程驱动且本包里有流程时，再补第 5 个流程字段 processState（流程状态，dic）。
+
+    为什么另开一个函数、而不改 ``ensure_process_fields`` 的默认：
+    ``tests/test_reader.py::RDR22`` 直接调后者并断言 ``len(added) == 4``，
+    把默认改成 5 会连别人的用例一起改；而「这个对象有没有流程」是 Project 级信息，
+    Bo 自己不知道，所以判据留在调用方（builder.build）。
+
+    必须是 **dic + choices**：``gen_bo._dict_blocks`` 只认 dic 字段，
+    少了 choices 会出一个空字典，流程的 BusinessState 就换不出短码。
+    """
+    if not bo.flow_driven:
+        return []
+    if bo.field_by_code("processState") is not None:
+        return []
+    sn = max([f.sn for f in bo.fields], default=0) + 1
+    bo.fields.append(BoField(
+        bo_code=bo.code, code="processState", name="流程状态", type_new="dic",
+        length=64, sn=sn, choices=list(PROCESS_STATE_OPTIONS),
+    ))
+    return ["processState"]
+
+
 def ensure_system_fields(bo: Bo) -> list[str]:
     added = []
     have = {f.code for f in bo.fields}
@@ -116,7 +217,7 @@ def ensure_system_fields(bo: Bo) -> list[str]:
     for spec_ in SYSTEM_FIELDS:
         if spec_["code"] in have:
             continue
-        if is_platform and spec_["code"] in ("baselineVersion", "isDraft", "ip"):
+        if is_platform and spec_["code"] in ("baselineVersion", "isDraft", "ip", "name"):
             continue          # 平台自建对象没有这几个字段（实测 pp_equipment 就不带）
         sn += 1
         bo.fields.append(BoField(
@@ -133,6 +234,99 @@ def ensure_system_fields(bo: Bo) -> list[str]:
     return added
 
 
+def _ensure_link_control(project: Project, bo: Bo, field: BoField) -> int:
+    """让该对象的每张表单都有「所属项目」下拉控件，返回新增条数。
+
+    两条路径共用这里（新增 projectId / 复用用户已有的 proj 字段）：
+      - 只补字段不补控件 → 用户在新建/详情表单里根本选不到项目（实测抓到的坑：
+        已有 proj 字段的对象出包后表单里既没有 proj 也没有 projectId 控件）；
+      - 去重只看控件 name == 字段编码 → 幂等：同一 Project 连续 build 两次
+        （预览 + 出包，或确认版 Excel）不会 append 第二个同名控件。
+
+    value_source 先填对象编码（project），随后 blueprint._ensure_value_sources
+    会把它接到系统已有的 project 值来源数据集（没有才新建 project_value）。
+    """
+    added = 0
+    for form in project.forms:
+        if form.bo_code != bo.code:
+            continue
+        if any(x.name == field.code for x in form.fields):
+            continue
+        form.fields.append(FormField(
+            form_key=form.key,
+            name=field.code,
+            label=field.name,
+            field_type="select",
+            value_source=field.object_type or "project",
+        ))
+        added += 1
+    return added
+
+
+def ensure_project_links(project: Project) -> list[str]:
+    """给勾了「关联项目」的对象补「所属项目」链接字段（+ 表单控件）。
+
+    为什么补字段放在 builder 而不是 projlink.apply（架构 D3）
+    --------------------------------------------------------
+    ① `sn` 必须排在**系统字段与流程字段之后**（PRD A2：链接字段不覆盖、不重号），
+       而系统字段是 builder 补的，apply 阶段还看不到它们；
+    ② `apply` 的边界是「对齐 + 改名 + 重写引用」，补字段会破坏这条边界；
+    ③ 出包入口有 4 个（web 整包 / 单模块 / CLI / 确认版 Excel），都走 builder，
+       钩子挂在这里不会漏。
+
+    幂等：已有指向 project 的 object 字段时只记一条 notice（复用，不新增）。
+    """
+    from . import projlink
+
+    notices: list[str] = []
+    if not any(getattr(bo, "project_link", False) for bo in project.bos):
+        return notices
+    snap = projlink.load_snapshot()
+    pool = snap.pool()
+    for bo in project.bos:
+        if not getattr(bo, "project_link", False):
+            continue
+        if getattr(bo, "skip_link_field", False):
+            # 决策里明确说「只对齐、不补『所属项目』」——尊重它，别硬塞字段
+            continue
+        plan = projlink.plan_link_field(bo, pool)
+        if plan.action == "reject_self":
+            raise ValueError(f"业务对象 {bo.code}: 对象 project 不能关联自己（自关联不允许）")
+        if plan.action == "conflict":
+            raise ValueError(
+                f"业务对象 {bo.code}: 物理列 {projlink.LINK_FIELD_NAME} 已被字段 "
+                f"{plan.code}（{plan.name}）占用且未关联项目，请先改字段名或改用现有字段")
+        if plan.action == "reuse":
+            # 复用的字段也要有表单控件：已有 object 字段（如 proj）说明用户
+            # 已经在用这个关联，但表单里可能压根没放控件——不补的话在建/详情
+            # 表单里选不到项目（复验时抓到的坑）。
+            existing = bo.field_by_code(plan.code)
+            notices.append(f"业务对象 {bo.code}: {plan.note}")
+            if existing is not None:
+                if _ensure_link_control(project, bo, existing):
+                    notices.append(
+                        f"业务对象 {bo.code}: 已给复用的链接字段 {existing.code}"
+                        f"（{existing.name}）补上表单下拉控件")
+            continue
+        if bo.field_by_code(projlink.LINK_CODE) is not None:
+            # 幂等：parse 阶段已经补过一次（同一份 Excel 先预览再出包），
+            # 这次只补缺失的表单控件，不再追加第二个同编码字段
+            _ensure_link_control(project, bo, bo.field_by_code(projlink.LINK_CODE))
+            continue
+        sn = max([f.sn for f in bo.fields], default=0) + 1
+        field = projlink.link_field(name=plan.name, sn=sn)
+        field.bo_code = bo.code
+        bo.fields.append(field)
+        notices.append(
+            f"业务对象 {bo.code}: 关联项目，已补链接字段 {field.code}"
+            f"（{field.resolved_field_name()} varchar 64，sn={sn}）")
+        # 已有表单也要看得见「所属项目」下拉，否则用户在新建/详情表单里选不到项目
+        _ensure_link_control(project, bo, field)
+    # 幂等：把 select 控件的取值来源接到 project_value（命中系统已有则复用）
+    notices.extend(blueprint._ensure_value_sources(project))
+    return notices
+
+
 def _write_zip(out_dir: Path, folder: str, entry_name: str, content: str) -> tuple[Path, str]:
     out_dir.mkdir(parents=True, exist_ok=True)
     entry = f"{folder}/{entry_name}"
@@ -140,6 +334,19 @@ def _write_zip(out_dir: Path, folder: str, entry_name: str, content: str) -> tup
     with zipfile.ZipFile(zp, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr(entry, content.encode("utf-8"))
     return zp, entry
+
+
+def _write_plain(out_dir: Path, filename: str, content: str) -> Path:
+    """把**裸文件**（流程定义 XML）落盘，返回它的路径。
+
+    流程是裸 XML，不能套 zip：系统的流程导入入口直接吃这份 XML。
+    与 ``_write_zip`` 分开放，是因为两者的产物类型不同——合在一起以后
+    一定会有人给流程包上 zip，那就白做了。
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / filename
+    path.write_text(content, encoding="utf-8")
+    return path
 
 
 _BAD_NAME = re.compile(r'[\\/:*?"<>|\s]+')
@@ -277,12 +484,21 @@ def _pack_all(out: Path, res: BuildResult, prefix: str, name: str | None = None)
 
     流程是裸 XML，不进这个包（系统的流程导入是另一个入口）。
     """
-    if not res.artifacts:
+    # 先算「真能进包的产物」再决定要不要建目录：
+    # 只看 res.artifacts 非空是不够的——只选「流程」时 artifacts 里有流程产物，
+    # 但循环里全被 continue 掉，结果会留下一个空 zip（已由下面的 written 兜住），
+    # 顺带还留下一个空的 out/整包/ 目录。目录也不该留：用户看到空目录会以为漏了文件。
+    packable = [a for a in res.artifacts if a_module(a) != "workflow"]
+    if not packable:
         return None
     out.mkdir(parents=True, exist_ok=True)
     target = out / (name or f"{prefix}-整包（全部模块）.zip")
     sn = 0
     used: set[str] = set()
+    # 实际写进去的条目数。**只看 res.artifacts 非空是不够的**：只选「流程」时
+    # artifacts 里有流程产物，但下面的循环把它 continue 掉了，
+    # 结果会产出一个 0 条目的空 zip（解压是空的，导入端只会说包有问题）。
+    written = 0
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
         # 按真实导出包的顺序写：bo → form → data_template（业务对象必须最先，
         # 表单/列表按表名找它）。`多个对象整体导出.zip` 就是
@@ -295,29 +511,82 @@ def _pack_all(out: Path, res: BuildResult, prefix: str, name: str | None = None)
                 continue
             folder = mod_def.of(mod).folder
             sn += 1
+            written += 1
             entry = unique_entry(used, f"{folder}/{sn:03d}-{entry_slug(a.entry, prefix)}")
             if a.xml is not None:
                 z.writestr(entry, a.xml.encode("utf-8"))
             else:
                 with zipfile.ZipFile(a.zip_path) as src:
                     z.writestr(entry, src.read(a.entry))
+    if not written:
+        # 空 zip 比没有包更糟：用户会当成「生成成功了」拿去导入
+        target.unlink(missing_ok=True)
+        return None
     return target
 
 
 def _deliver(res: BuildResult, out: Path, prefix: str, codes: list[str],
              label: str = "", stamp: str = "") -> None:
-    """按模块出包；只选了一个模块时不再套一层文件夹说明，直接给单包。"""
+    """按模块出包；只选了一个模块时不再套一层文件夹说明，直接给单包。
+
+    分流依据是 ``Module.zipped``（modules.py 已经把这个语义建模过了），
+    **不要**写 ``if code == "workflow"``：以后再有裸 XML 模块，那一行就会漏。
+    """
     for code in codes:
         items = res.of_module(code)
         if not items:
             continue
         mod = mod_def.of(code)
+        if not mod.zipped:
+            # 裸 XML：文件在生成阶段就已经写好了（out/workflow/{流程名}.xml），
+            # 这里只包成 Deliverable，**不再写一遍**——
+            # 两处各写一次文件名/编码规则迟早漂移（中文名、去字符、加后缀…）。
+            for a in items:
+                res.deliverables.append(Deliverable(
+                    module=code, label=mod.label, filename=a.zip_path.name,
+                    path=a.zip_path, items=[a], menu=mod.menu))
+            continue
         name = package_name(label, mod.label, stamp) if label else None
         packed = _pack_module(out, code, items, prefix, name)
         res.deliverables.append(Deliverable(
             module=code, label=mod.label, filename=packed.name, path=packed,
             items=items, menu=mod.menu,
         ))
+
+
+def slice_by_mode(project: Project, flow: bool) -> Project:
+    """按对象「选择模式」切一刀：``flow=True`` 只留流程对象，``False`` 只留普通对象。
+
+    为什么要切：流程对象在系统里是流程模式（bo XML 的 ``mode="workflow"``），
+    要和流程定义配套导入，所以走独立的一包；同步包里只放普通对象。
+    切完两边各自跑同一套 ``build()``，比在 build 内部到处加分支干净。
+
+    连带规则（少带一样导入端就会报「找不到对象」）：
+      - 表单、列表按 ``bo_code`` 跟着对象走；
+      - 数据集没有 bo_code，按 ``from_table`` 对对象的编码或物理表名；
+      - 流程定义只留在流程那一侧，普通对象不该带流程；
+      - 表单脚本按表单 key 过滤。
+
+    返回浅拷贝：Bo/Form 实例是共享的，build() 里对对象的修补（补 tbl_name、
+    补 options）对原 Project 同样可见——同一份 Excel 连续出两个包时不用重读。
+    """
+    keep = [b for b in project.bos if bool(b.flow_driven) is bool(flow)]
+    codes = {b.code for b in keep}
+    tables = {(b.tbl_name or "").lower() for b in keep if b.tbl_name}
+
+    out = copy.copy(project)
+    out.bos = keep
+    out.forms = [f for f in project.forms if f.bo_code in codes]
+    form_keys = {f.key for f in out.forms}
+    out.lists = [l for l in project.lists if l.bo_code in codes]
+    out.datasets = [
+        d for d in project.datasets
+        # from_table 在 Excel 里可能填编码、在原生包里是物理表名，两种都认
+        if (d.from_table or "").lower() in tables or (d.from_table or "") in codes
+    ]
+    out.workflows = [w for w in project.workflows if w.bo_code in codes] if flow else []
+    out.form_scripts = {k: v for k, v in project.form_scripts.items() if k in form_keys}
+    return out
 
 
 def build(project: Project, snippets: dict, out_dir: Path | None = None,
@@ -334,9 +603,11 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
     tenant = project.tenant_id or "-999"
     plan = mod_def.Plan(list(codes or [m.code for m in mod_def.MODULES]))
     res.codes = [m.code for m in plan.modules]
-    # 流程不在生成器里做（需要流程设计器导出的定义），只提示
-    if plan.has("workflow"):
-        res.notices.append("流程定义请在「流程设计」里导出 XML 后原样上传，生成器不做流程")
+    # 流程：按 9_流程 / 10_流程节点 / 11_流程流转 生成 workflowDefinition（裸 XML）。
+    # 「选了流程但表是空的」要说清为什么没产物——以前那句「流程定义请在流程设计里
+    # 导出 XML 后原样上传」已经过时了（现在能真生成）。
+    if plan.has("workflow") and not project.workflows:
+        res.notices.append("选了「流程」但 9_流程 是空的，跳过流程生成")
 
     # 手册：物理表名 = PP_ + 编码，由系统生成，无需手填
     for bo in project.bos:
@@ -377,9 +648,17 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
     # 对象本身不出包时，不补系统字段（那是给对象 XML 用的）。
     need_bo_rows = plan.has("bo") or plan.has("form") or plan.has("list")
 
+    # 流程驱动但没配流程 → 补一条最小三步。必须放在 need_bo_rows 之外：
+    # 只勾「流程」出包时不出对象 XML，但默认流程照样要生成。
+    for line in ensure_default_workflow(project):
+        res.notices.append(f"自动生成默认流程：{line}（审批人留空，导入后到 管理 › 流程设计 里指定）")
+
     if need_bo_rows:
         if not project.module_id:
             res.notices.append("未配置默认模块ID，导入前建议在 0_项目设置 里补上，否则对象可能挂不到模块下")
+        # 本包里有流程的对象要补 processState（流程状态字典），流程的 BusinessState
+        # 靠它换短码；必须在 gen_bo.render() 之前进 bo.fields，否则字典不进 bo XML。
+        wf_bos = {w.bo_code for w in project.workflows}
         for bo in project.bos:
             bo.module_id = bo.module_id or project.module_id
             bo.type_id = bo.type_id or project.type_id
@@ -388,9 +667,22 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
             proc = ensure_process_fields(bo)
             if proc:
                 res.notices.append(f"业务对象 {bo.code}: 流程驱动，已补齐冗余字段 {', '.join(proc)}")
+            if bo.code in wf_bos:
+                extra = ensure_workflow_fields(bo)
+                if extra:
+                    res.notices.append(
+                        f"业务对象 {bo.code}: 有流程，已补流程状态字段 {', '.join(extra)}"
+                        f"（选项 待发起/进行中/已完成/已失败，与流程里的 BusinessState 同源）")
             added = ensure_system_fields(bo)
             if added:
                 res.notices.append(f"业务对象 {bo.code}: 已自动补齐系统字段 {', '.join(added)}")
+
+        # 关联项目：补「所属项目」链接字段 + 表单控件 + 接 project_value。
+        # 位置很关键：进程字段/系统字段都已补完 → 链接字段 sn 必然最大（PRD A2）；
+        # 在 objects.resolve_object_fields 之前 → object_type 参与归一；
+        # 在详情表单与 gen_bo 之前 → 字段与控件都会被生成。
+        for line in ensure_project_links(project):
+            res.notices.append(line)
 
     # 库里已有同名对象 → 用它的 id，导入才是「更新」；否则新 id = 「新增」。
     # 判断依据就是目标库 iform_bo_def.id，填错就会多出一份同名字段的对象。
@@ -433,6 +725,53 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
     for form in project.forms:
         form_of_bo.setdefault(form.bo_code, form.key)
 
+    # ---- 详情表单：列表开了「级联详情字段」的对象，自动补一个
+    # 「所有字段只读」的详情表单，供列表点列打开（用户 2026-11-13 需求）。
+    # 参照会议列表导出包的命名习惯（meeting_details）取 {对象编码}_details；
+    # 项目里已有同 key 或同 kind 的详情表单就不重复生成。
+    # 注意只在「用户开启详情联动」时生成——无条件补会让「标准全套」
+    # 这种本来就有详情表单的项目多出一张（回归 FRM13/BLD06/BLD09 踩过）。
+    detail_of_bo: dict[str, str] = {}
+    for f in project.forms:
+        if f.kind == FORM_DETAIL:
+            detail_of_bo.setdefault(f.bo_code, f.key)
+    for lst in project.lists:
+        if not lst.detail_field:
+            continue
+        if lst.bo_code in detail_of_bo:
+            continue
+        bo = project.bo(lst.bo_code)
+        if bo is None:
+            continue
+        dkey = f"{bo.code}_details"
+        if any(x.key == dkey for x in project.forms):
+            detail_of_bo[bo.code] = dkey
+            continue
+        dform = Form(
+            key=dkey,
+            name=f"{bo.name}详情",
+            bo_code=bo.code,
+            kind=FORM_DETAIL,
+            form_type="form",
+        )
+        for x in sorted(bo.fields, key=lambda x: x.sn):
+            if x.is_system:
+                continue
+            dform.fields.append(FormField(
+                form_key=dkey,
+                name=x.code,
+                label=x.name,
+                field_type="text",
+                # 同一处真相：dic 的取值来源要分全局/自定义两支
+                value_source=x.value_source(),
+                placeholder="",
+                # 详情表单：全部只读
+                readonly=True,
+                group="详情",
+            ))
+        project.forms.append(dform)
+        detail_of_bo[bo.code] = dkey
+
     # ---- 业务对象
     for bo in project.bos if plan.has("bo") else []:
         xml = gen_bo.render(bo, bo_ids[bo.code], log_enable=bo.with_log,
@@ -467,7 +806,8 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
         if bo is None:
             res.notices.append(f"列表 {lst.key}: 对象 {lst.bo_code} 不存在，已跳过")
             continue
-        xml, notices = gen_tpl.render_list(lst, bo, form_of_bo.get(bo.code, ""), snippets, tenant)
+        xml, notices = gen_tpl.render_list(lst, bo, form_of_bo.get(bo.code, ""), snippets, tenant,
+                                           detail_form_key=detail_of_bo.get(bo.code, ""))
         res.notices.extend(notices)
         zp, entry = _write_zip(out / "data_template", "data_template", f"{prefix}-{lst.key}.xml", xml)
         res.artifacts.append(Artifact("列表", lst.key, zp, entry,
@@ -486,6 +826,33 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
         zp, entry = _write_zip(out / "data_template", "data_template", f"{prefix}-{ds.key}.xml", xml)
         res.artifacts.append(Artifact(mod_def.of(code).label, ds.key, zp, entry,
                                       len(xml.encode("utf-8")), code, xml))
+
+    # ---- 流程（裸 XML，不进 zip：系统的流程导入是另一个入口）
+    #
+    # 放在这里而不是业务对象循环里：流程要按对象名/表单 key 推导 FormKey 与
+    # 节点字段权限，这时 blueprint 已展开、form_of_bo / detail_of_bo 都已就绪。
+    if plan.has("workflow"):
+        wf_folder = out / mod_def.of("workflow").folder
+        for wf in project.workflows:
+            bo = project.bo(wf.bo_code)
+            if bo is None:
+                res.notices.append(f"流程 {wf.name}: 对象 {wf.bo_code} 不存在，已跳过")
+                continue
+            xml, notices = gen_workflow.render(
+                wf, bo, project, snip, gen_workflow.wf_id(wf, bo))
+            res.notices.extend(notices)
+            if not xml:
+                res.notices.append(f"流程 {wf.name}: 没有可生成的节点，已跳过")
+                continue
+            path = _write_plain(wf_folder, f"{safe_filename(wf.name)}.xml", xml)
+            # 裸 XML 没有「包内条目」的概念：zip_path 填文件本身、entry 留空，
+            # 这样 Deliverable.bytes（path.stat）、by_kind()、报告里的
+            # 「· 流程 xxx」全部照旧可用，不必给 Artifact 加新字段。
+            res.artifacts.append(Artifact("流程", wf.name, path, "",
+                                          len(xml.encode("utf-8")), "workflow", xml))
+            res.notices.append(
+                f"流程 {wf.name}: 已生成 {len(wf.nodes)} 个节点，"
+                f"文件 {path.name}（导入位置 {mod_def.of('workflow').menu}）")
 
     _deliver(res, out / "按模块", prefix, res.codes, res.biz_label, stamp)
 

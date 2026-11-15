@@ -32,11 +32,13 @@ _FALLBACK = {"datatype": "varchar", "length": 200}
 UI_LABELS: dict[str, str] = {
     "varchar": "字符串",
     "number": "数字",
+    "date": "日期",
     "datetime": "日期时间",
     "clob": "大文本",
     "user": "用户",
     "department": "部门",
     "attachment": "附件列表",
+    "file": "文件",
     "i18n": "国际化",
     "dic": "选项",
     "object": "对象",
@@ -114,8 +116,8 @@ def choices() -> list[str]:
     字符串 / 数字 / 日期时间 / 大文本 / 用户 / 部门 / 附件列表 / 国际化 /
     选项 / 对象 / 用户组 / 表格 / 自动编号 / 公式
     """
-    order = ["varchar", "number", "datetime", "clob", "user", "department",
-             "attachment", "i18n", "dic", "object", "userGroupCate", "table",
+    order = ["varchar", "number", "date", "datetime", "clob", "user", "department",
+             "attachment", "file", "i18n", "dic", "object", "userGroupCate", "table",
              "autoNumber", "formula"]
     return [f"{UI_LABELS[c]}（{c}）" for c in order]
 

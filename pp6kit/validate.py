@@ -41,6 +41,20 @@ _BANNED_IMPORT_CODES = {
 _BANNED_IMPORT_LABELS = ("创建人", "创建时间", "更新人", "更新时间", "流程实例", "版本", "主键")
 
 
+def _is_native_code(code: str) -> bool:
+    """编码是不是项目对象/系统约定里本来就有的（stateId / projectId…）。
+
+    lazy import 避免 validate ↔ projlink 的循环依赖（projlink 只在函数里
+    import validate 的兄弟模块，但两边都在模块顶层互相引会成环）。
+    快照读不到时 projlink 会退回「系统字段 + 链接字段」，不会因为离线失效。
+    """
+    try:
+        from . import projlink as _projlink
+        return _projlink.is_project_code(code)
+    except Exception:
+        return False
+
+
 def _is_banned_import_field(ff) -> bool:
     """判断某个控件是否属于「导入表单里不许出现」的系统字段。"""
     name = (ff.name or "").strip()
@@ -240,9 +254,15 @@ def validate(proj: Project) -> list[Issue]:
             # 字典控件引用的 key 必须能在对象里找到。
             # 引错了（比如没带对象前缀）会退化成「固定值 + 候选值」两套，
             # 用户看到的是选项重复两遍。
+            # 注意「有没有候选值」不影响「字典存在与否」：dic 字段就算这轮
+            # 没取到候选值（AI 模型波动，2026-11-12 尹姣定表实测 4 个字段整轮
+            # 缺 values），它的字典 key 也照样在出包时声明——漏了它表单引用
+            # 就全部判死，用户被卡在导出。空下拉另有字段级 warn 提醒补值。
             if ff.field_type == "dictionary" and bo is not None and ff.value_source:
-                want = {f.dict_key() for f in bo.fields
-                        if f.type_new == "dic" and f.choices}
+                # 用 value_source() 而不是 dict_key()：全局字典（项目对齐/反解带入）
+                # 的 key 是项目侧 typeKey（report_type），dict_key() 永远算不出来，
+                # 用后者会对着合法配置一路报「引用的字典不存在」。
+                want = {f.value_source() for f in bo.fields if f.type_new == "dic"}
                 if ff.value_source not in want:
                     issues.append(Issue(
                         "error", w,
@@ -310,6 +330,18 @@ def validate(proj: Project) -> list[Issue]:
     except Exception:
         pass
 
+    # 关联项目专项校验（自关联 / project_id_ 被占 / 多个链接字段 / 快照不可用）。
+    # 规则主体在 projlink.validate 里，这里只负责把它的级别映射成本模块的 Issue：
+    # 同一条规则若两边各写一遍，早晚会出现「check 说没事、出包却拦住」。
+    try:
+        from . import projlink as _projlink
+        for item in _projlink.validate(proj):
+            issues.append(Issue(item.get("level", "info"),
+                                item.get("where", "1_业务对象"),
+                                item.get("message", "")))
+    except Exception:
+        pass
+
     # 同名对象提醒：2026-11-11 起 bind() 不再静默把同名对象绑到系统 id 上
     # （防新建覆盖线上对象），所以这里提前告诉用户「同名了，走的是新建，
     # 要更新就填已有对象ID」——不然用户以为在改，其实建了个新的。
@@ -330,7 +362,218 @@ def validate(proj: Project) -> list[Issue]:
     except Exception:
         pass
 
+    # 流程（workflowDefinition）：结构错会让导入端直接拒绝，
+    # 所以在出包前拦住，而不是让用户拿着 XML 去试
+    _validate_scripts(proj, issues)
+    _validate_workflows(proj, issues)
+
     return issues
+
+
+# 表单脚本（7_表单脚本）的钩子白名单。
+# 来源：2026-11-14 在 8112 真实库 iform_form_def.extend_attr_.script 上统计 85 个表单得出
+#   onLoad 80 / beforeSubmit 45 / beforeLoad 33 / saveBefore 20 / afterSubmit 16 /
+#   onLoadActions 3 / onValidate 2
+# 写错的钩子名不会报错、也不会执行——只能靠导入后人工点页面才发现，所以这里挡一道。
+KNOWN_JFORM_HOOKS = {
+    "onLoad", "beforeLoad", "beforeSubmit", "saveBefore", "afterSubmit",
+    "onLoadActions", "onValidate",
+}
+
+
+def _validate_scripts(proj: Project, issues: list[Issue]) -> None:
+    """表单脚本的静态体检：挂载方式、钩子名、括号配平。
+
+    只做「写错却静默失效」这一类检查，不判断业务逻辑对不对——
+    脚本内容本身由实施同事负责。
+    """
+    for fkey, script in proj.form_scripts.items():
+        w = f"表单脚本 {fkey}"
+        if "Object.assign(JForm" not in script.replace(" ", ""):
+            if "Object.assign(" in script.replace(" ", ""):
+                issues.append(Issue(
+                    "warn", w,
+                    "脚本用了 Object.assign 但没挂到 JForm 上；平台只认 "
+                    "Object.assign(JForm, {...}) 这一种写法，其它挂载方式导入后不生效",
+                ))
+            else:
+                issues.append(Issue(
+                    "error", w,
+                    "脚本缺少 Object.assign(JForm, {...})，平台不会执行；"
+                    "整段脚本要包在 Object.assign(JForm, { onLoad: function(form){...} }) 里",
+                ))
+        # 钩子名：只认真实库里出现过的那些。拼成 onload / onl oad 都不会报错，只会静默不跑
+        for hook in re.findall(r"([A-Za-z_]\w*)\s*:\s*(?:async\s+)?function\s*\(\s*form", script):
+            if hook not in KNOWN_JFORM_HOOKS:
+                issues.append(Issue(
+                    "warn", w,
+                    f"钩子 {hook} 不在已知集合里（{'/'.join(sorted(KNOWN_JFORM_HOOKS))}）；"
+                    f"名字拼错不会报错、也不会执行，核对一下平台文档",
+                ))
+        if script.count("{") != script.count("}"):
+            issues.append(Issue(
+                "error", w,
+                f"花括号不配平（{script.count('{')} 个 {{ / {script.count('}')} 个 }}），"
+                f"脚本语法错误会让整张表单打不开",
+            ))
+
+
+def _validate_workflows(proj: Project, issues: list[Issue]) -> None:
+    """流程三张表的校验。
+
+    只查「导入后一定出问题」的硬结构，不查审美（配色/坐标）。
+    样本依据：PP6/流程/项目立项_20261113145550.xml 的 v30 图（13 节点 / 15 流转）。
+    """
+    if not proj.workflows:
+        return
+
+    from .model import (WF_BRANCH, WF_ONGOING, WF_PASSED, WF_REJECTED,
+                        WF_START, WF_STATE_OPTIONS)
+
+    used_names: dict[str, int] = {}
+    for wf in proj.workflows:
+        w = f"流程 {wf.name or '<空>'}"
+        if not (wf.name or "").strip():
+            issues.append(Issue("error", "9_流程", "流程名称为空"))
+            continue
+        used_names[wf.name] = used_names.get(wf.name, 0) + 1
+        if used_names[wf.name] > 1:
+            # 节点与流转都按流程名关联，重名会把两条流程的节点串到一起
+            issues.append(Issue("error", w, "流程名称重复，节点/流转会串到同一条流程上"))
+        bo = proj.bo(wf.bo_code)
+        if bo is None:
+            issues.append(Issue(
+                "error", w, f"对象编码 {wf.bo_code} 在 1_业务对象 中不存在，"
+                            f"流程导入后会挂不到任何对象上"))
+        if not (wf.category_id or proj.wf_category_id):
+            issues.append(Issue(
+                "warn", w, "没有流程分类ID，导入后流程会落在「未分类」（不影响流程能跑）"))
+
+        # ---- 节点
+        if not wf.nodes:
+            issues.append(Issue("error", w, "没有任何节点，先在 10_流程节点 里排节点"))
+            continue
+        seen: dict[str, int] = {}
+        starts = 0
+        has_end = False
+        for node in wf.nodes:
+            nw = f"流程节点 {node.name}"
+            if not (node.name or "").strip():
+                issues.append(Issue("error", "10_流程节点", "节点名称为空"))
+                continue
+            seen[node.name] = seen.get(node.name, 0) + 1
+            if node.kind == WF_START:
+                starts += 1
+            if node.kind in (WF_PASSED, WF_REJECTED):
+                has_end = True
+            if node.kind == WF_BRANCH and (node.form_key or "").strip():
+                # 判断节点没有 Properties/FormKey 可写（样本 v30 的 3 个判断节点
+                # 都没有表单），填了也无处落，反而是填错人的信号
+                issues.append(Issue(
+                    "error", nw, "判断节点不能填表单（判断节点没有待办、也没有表单），请清空「表单」列"))
+            if node.kind == WF_ONGOING:
+                ids = [x for x in node.handler_ids if x]
+                names = [x for x in node.handler_names if x]
+                if not ids and not names:
+                    # 自动生成的兜底流程（开始→审批→通过）允许留空：
+                    # 这个 app 不逼人配流程，审批人由项目经理到系统里指定。
+                    # 出包时 Handler 会写成「提交时人工选择下一处理人」，不报错。
+                    issues.append(Issue(
+                        "warn" if getattr(wf, "auto", False) else "error", nw,
+                        "默认流程的审批人留空了，导入后到 管理 › 流程设计 里指定处理人"
+                        if getattr(wf, "auto", False) else
+                        "审批节点没有处理人，导入后待办没人收到；"
+                        "请在「处理人ID」列填角色/用户 id"))
+                elif ids and names and len(ids) != len(names):
+                    # Handler 是「texts 与 ids 一一对应」的紧凑 JSON，
+                    # 长度不一致会错位：显示的是一批人，实际派给另一批
+                    issues.append(Issue(
+                        "error", nw, f"「处理人」{len(names)} 个、「处理人ID」{len(ids)} 个，"
+                                     f"数量必须一一对应（否则待办会派给错的人）"))
+            if node.business_state and node.business_state not in WF_STATE_OPTIONS:
+                issues.append(Issue(
+                    "warn", nw, f"业务状态「{node.business_state}」不在 "
+                                f"{'/'.join(WF_STATE_OPTIONS)} 里，BusinessState 会留空"))
+        for name, count in seen.items():
+            if count > 1:
+                issues.append(Issue(
+                    "error", f"流程节点 {name}", f"节点名称在流程 {wf.name} 里重复 {count} 次，"
+                                                 f"流转按名字找节点会连错"))
+        if starts == 0:
+            issues.append(Issue("error", w, "没有「开始」节点，流程无法发起"))
+        elif starts > 1:
+            issues.append(Issue("error", w, f"有 {starts} 个「开始」节点，每个流程只能有一个"))
+        if not has_end:
+            issues.append(Issue("error", w, "没有「通过」或「驳回」节点，流程跑不到终点"))
+        if not any(n.kind == WF_REJECTED for n in wf.nodes):
+            issues.append(Issue(
+                "warn", w, "没有「驳回」节点：审批人只能退回给上游，不能直接终止"))
+
+        # ---- 流转
+        names = {n.name for n in wf.nodes}
+        for edge in wf.edges:
+            if edge.src not in names or edge.dst not in names:
+                bad = edge.src if edge.src not in names else edge.dst
+                issues.append(Issue(
+                    "error", w, f"流转 {edge.src or '?'} → {edge.dst or '?'} 引用了不存在的节点「{bad}」"
+                                f"（填节点名或「节点序号」都可以）"))
+                continue
+            if edge.condition_field and bo is not None:
+                if bo.field_by_code(edge.condition_field) is None:
+                    issues.append(Issue(
+                        "error", w, f"流转 {edge.src} → {edge.dst} 的条件字段"
+                                    f"「{edge.condition_field}」在对象 {bo.code} 里不存在"))
+        for node in wf.nodes:
+            if node.kind != WF_BRANCH:
+                continue
+            outs = [e for e in wf.edges if e.src == node.name]
+            if len(outs) < 2:
+                issues.append(Issue(
+                    "error", f"流程节点 {node.name}",
+                    f"判断节点只有 {len(outs)} 条出边，至少要 2 条（否则流程会走进死路）"))
+            else:
+                orders = [e.order for e in outs if e.order]
+                if len(orders) != len(set(orders)):
+                    # 顺序重复会让界面上两个按钮抢同一个位置
+                    issues.append(Issue(
+                        "warn", f"流程节点 {node.name}",
+                        "判断节点有多条出边的「顺序」重复，请改成 1、2…"))
+
+        # ---- 回流成环：审批流里有回边是正常的（退回），但会打乱画布分层，
+        # 提示一句免得用户以为是生成器排错了位置
+        if _has_cycle(wf):
+            issues.append(Issue(
+                "warn", w, "流转里存在回到上游的环（退回/返工），流程画布的分层可能不紧凑，"
+                           "导入后可在流程设计器里微调位置"))
+
+
+def _has_cycle(wf) -> bool:
+    """流转里是否有环（有向图 DFS 三色标记）。"""
+    graph: dict[str, list[str]] = {}
+    for e in wf.edges:
+        graph.setdefault(e.src, []).append(e.dst)
+    white, gray, black = 0, 1, 2
+    color = {n.name: white for n in wf.nodes}
+    for start in list(color):
+        if color.get(start, black) != white:
+            continue
+        stack = [(start, iter(graph.get(start, [])))]
+        color[start] = gray
+        while stack:
+            node, kids = stack[-1]
+            moved = False
+            for kid in kids:
+                if color.get(kid, white) == gray:
+                    return True
+                if color.get(kid, white) == white:
+                    color[kid] = gray
+                    stack.append((kid, iter(graph.get(kid, []))))
+                    moved = True
+                    break
+            if not moved:
+                color[node] = black
+                stack.pop()
+    return False
 
 
 def _to_camel(snake: str) -> str:
@@ -460,12 +703,34 @@ def _validate_fields(bo: Bo, issues: list[Issue],
         #            模板说明里也是这么写的。以前和 object 一起卡成 error，
         #            导致 AI 生成的「只带候选值、没带字典 key」的选项字段全部出不了包。
         if f.type_new == "dic" and not f.choices:
-            issues.append(Issue("warn", w,
-                "选项类型没填「选项值」，导入后界面上是个空下拉；如需候选值请补上"))
+            if f.cascade_parent:
+                # 级联字段没选项 = 这个包一定不联动，不是「可能空下拉」。
+                # 级联的过滤逻辑是：选中父值 → 在子字典里找 depend_values_ 含该
+                # 父项 id 的项。字典是空的，任何父值都过滤不出东西。
+                # 2026-11-12 用户实测：包里字典项 0 个，导入后品种分类永远空，
+                # 用户看到的现象就是「级联被吃了」。这种包没有导入价值，直接拦。
+                issues.append(Issue(
+                    "error", w,
+                    f"级联字段「{f.name}」的选项值为空。级联靠字典项过滤，"
+                    f"字典没有候选值就永远联动不出来（导入后父级选完子级仍是空）。"
+                    f"请在「选项值」里按「父选项：子选项1、子选项2」的格式填写分组"))
+            else:
+                issues.append(Issue("warn", w,
+                    "选项类型没填「选项值」，导入后界面上是个空下拉；如需候选值请补上"))
+        elif f.type_new == "dic" and f.cascade_parent and not f.choice_groups:
+            # 有选项但没分组：级联值算不出来，导入后父级选完子级仍全量显示。
+            # 这不是致命错误（可能真的是「所有父级共享全部子项」），但要提醒。
+            issues.append(Issue(
+                "warn", w,
+                f"级联字段「{f.name}」的选项值是平铺写法，没有分组信息，"
+                f"导入后父级选完子级仍会全量显示。按「父选项：子1、子2」逐行填写即可"))
         elif f.type_new == "object":
             _check_object_ref(f, issues, w, obj_pool)
         # 手册：编码不得出现「项目类型ID」这类命名，应直接叫「项目类型」
-        if f.code.endswith("Id") or f.code.endswith("ID"):
+        # 例外：项目对象与系统原生的编码本来就带 Id（stateId / classificationId /
+        # gradeId / projectId…）。对齐就是为了「跟项目完全一致」，再报「建议去掉
+        # Id 后缀」等于让用户跟系统对着干，也会把这份警告刷满整页。
+        if (f.code.endswith("Id") or f.code.endswith("ID")) and not _is_native_code(f.code):
             issues.append(Issue(
                 "warn", w,
                 f"命名不符合规范：{f.code} 建议去掉 Id 后缀（如 {f.code[:-2]}），提升阅读体验",
@@ -542,14 +807,10 @@ def _validate_cascade(form, issues: list[Issue], w: str) -> None:
                 f"控件 {name} 的选项来自值来源而不是层级字典，级联可能不生效"
                 f"（字典类控件才带父子关系）",
             ))
-        # 这一条容易被漏：我们只能把 cascadeEnabled/cascadeParentCode 带进系统，
-        # 而「哪些子项属于哪个父项」存在 iform_cat_dic.depend_values_ 里，
-        # 业务对象导出包不带这个字段（实测 5 个真实包均无）。
-        issues.append(Issue(
-            "info", w,
-            f"控件 {name} 配了级联父级 {parent}：导入后还要在系统的字典管理里"
-            f"把《{f.label}》的子选项挂到《{pf.label}》对应选项下，否则下拉不过滤",
-        ))
+        # 级联值（哪些子项属于哪个父项）现在会写进字段 options 的
+        # selectOptions[].dependValues（2026-11-12 查线上前端源码确认的落点），
+        # 所以这里不再要求用户去字典管理手工挂。真正的前提是「选项值要按分组写」，
+        # 那条在字段校验里已经按 error 拦住/按 warn 提示了。
 
     # 环检测：沿父链走，走回自己就报错
     for start in parents:

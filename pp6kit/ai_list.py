@@ -179,9 +179,16 @@ def build_list(spec: dict, bo: Bo) -> tuple[ListDef, list[str]]:
     if title and bo.field_by_code(title) is None:
         title = ""
 
+    # key/name 优先用传进来的：微调（refine）会显式传「原来的 key」，
+    # 目的是**原地更新**已有的列表模板。早先这里写死成 f"{bo.code}_list"，
+    # 对象一改编码，列表 key 就跟着变，导入时是「新建第二张列表」而不是更新，
+    # 用户会看到两套一模一样、名字还不一样的列表（2026-11-12 用户反馈同源问题）。
+    key = str(spec.get("key") or "").strip() or f"{bo.code}_list"
+    name = str(spec.get("name") or "").strip() or f"{bo.name}列表"
+
     lst = ListDef(
-        key=f"{bo.code}_list",
-        name=f"{bo.name}列表",
+        key=key,
+        name=name,
         bo_code=bo.code,
         views=views,
         columns=columns,
@@ -255,6 +262,8 @@ def to_dict(lst: ListDef, bo: Bo) -> dict:
         "sort": f"{lst.sort_field} {lst.sort_dir}".strip(),
         "titleField": lst.title_field,
         "boardGroup": lst.board_group,
+        # 级联详情字段：前端下拉选完存这里，出包时原样带回
+        "detailField": lst.detail_field or "",
         "gantt": ({"start": lst.gantt_start, "end": lst.gantt_end}
                   if lst.gantt_start else None),
     }

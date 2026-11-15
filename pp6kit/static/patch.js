@@ -1,16 +1,38 @@
-/* 已有包改字段：上传 zip → 选对象 → 填字段 → 在原包上打补丁下载新 zip。
+/* 存量包修订：上传 zip → 选对象 → 填字段 → 在原包上打补丁下载新 zip。
    复用 app.js 的 saveBlob / toast / humanSize；本文件在 app.js 之后加载。 */
 const P = {
   snap: null,
   fields: [],
   selected: new Set(),
   fileName: "",
+  // 勾了「关联项目」的对象（file 集合）与逐字段对齐决策
+  // { file: { 字段编码: true|false } }。默认空 = 只做自动对齐（精确同名 + 同族）
+  link: new Set(),
+  align: {},
+  alignReport: null,
 };
 
 const pEsc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => (
   { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
 ));
 const pId = (id) => document.getElementById(id);
+
+/* 存量包页「业务对象关联项目」的三档（在上传卡片上方，读包前就定）：
+ *   off  全不勾 / on 全勾 / keep 按包内（保留包里现状，不预置）
+ * 存 localStorage（pp6.plPrePatch）。和普通模式那三档分开存：同一档套在
+ * 「Excel 里的对象」和「zip 里的对象」上意思不一样，混用会互相改掉。
+ * localStorage 读不到（隐私模式）就按 keep —— 宁可不动，也别悄悄改用户的包。 */
+const P_PRE_PATCH_KEY = "pp6.plPrePatch";
+const P_PRE_PATCH_MODES = ["off", "on", "keep"];
+
+function pPlPrePatch() {
+  try {
+    const raw = window.localStorage ? window.localStorage.getItem(P_PRE_PATCH_KEY) : null;
+    return P_PRE_PATCH_MODES.indexOf(raw) >= 0 ? raw : "keep";
+  } catch (err) {
+    return "keep";
+  }
+}
 
 /* 前端也能认中文类型名，和后端 fieldtypes.resolve 同一套口径 */
 const P_TYPE_ALIAS = {
@@ -119,6 +141,17 @@ async function pUploadZip(file) {
     P.snap = await res.json();
     P.fileName = file.name;
     P.selected = new Set();
+    // 换包就清掉上一包的对齐勾选，否则会给新包里同名 file 算出奇怪的决策。
+    // 再按初始页那一档预置「关联项目」：on = 每个对象卡片都勾上，off = 全不勾，
+    // keep = 保持现状（不预置）。只是预置勾选，不强制跑对齐分析。
+    P.link = new Set();
+    if (pPlPrePatch() === "on") {
+      (P.snap.objects || []).forEach((o) => P.link.add(o.file));
+    }
+    P.align = {};
+    P.alignReport = null;
+    const alignCard = pId("patchAlignCard");
+    if (alignCard) alignCard.hidden = true;
     if (P.snap.objects.length) P.selected.add(P.snap.objects[0].file);
     if (!P.fields.length) P.fields.push(pEmptyField());
 
@@ -166,6 +199,13 @@ function pRenderObjects() {
         <span class="patch-obj-meta">${pEsc(o.file)} · ${o.fieldCount} 个字段 · ${pEsc(o.tbl || "无表名")}</span>
         ${dup}${noid}
       </label>
+      <label class="patch-obj-link">
+        <input type="checkbox" data-link="${pEsc(o.file)}"
+               ${P.link.has(o.file) ? "checked" : ""}>
+        关联项目
+        <span class="muted">勾选后按项目对象定义对齐字段；已有字段只改类型/选项/长度/必填/索引，
+          编码与物理列名不动</span>
+      </label>
       <details><summary>查看已有字段（${o.fieldCount}）</summary>
         <div class="patch-chips">${chips || "<span class=sub>无</span>"}</div></details>
     </div>`);
@@ -178,6 +218,22 @@ function pRenderObjects() {
       const file = box.dataset.pick;
       if (box.checked) P.selected.add(file); else P.selected.delete(file);
       box.closest(".patch-obj").classList.toggle("on", box.checked);
+      pHint();
+    };
+  });
+  // 「关联项目」勾选：勾上就自动跑一次对齐分析（纯本地，不上传）
+  list.querySelectorAll("[data-link]").forEach((box) => {
+    box.onchange = () => {
+      const file = box.dataset.link;
+      if (box.checked) {
+        P.link.add(file);
+        if (!P.selected.has(file)) P.selected.add(file);
+      } else {
+        P.link.delete(file);
+        delete P.align[file];
+      }
+      pRenderObjects();
+      pAlign();
       pHint();
     };
   });
@@ -270,7 +326,17 @@ function pSpec(targets) {
   const picked = targets || Array.from(P.selected);
   if (!picked.length) throw new Error("请勾选至少一个业务对象");
   const fields = pCollectFields();
-  if (!fields.length) throw new Error("请至少填一个字段编码");
+  // 勾了「关联项目」时允许一个字段都不填：纯对齐（覆盖已有字段定义 + 补链接字段）
+  const linkProject = picked.filter((f) => P.link.has(f));
+  if (!fields.length && !linkProject.length) {
+    throw new Error("请至少填一个字段编码，或勾选「关联项目」");
+  }
+  // 对齐决策只传布尔许可，服务端会重新分析（不信任前端给的 code/定义）
+  const align = {};
+  linkProject.forEach((file) => {
+    const row = P.align[file];
+    if (row && Object.keys(row).length) align[file] = row;
+  });
   return {
     token: P.snap.token,
     targets: picked,
@@ -279,7 +345,68 @@ function pSpec(targets) {
     scope: pId("patchScope").value,
     allCopies: pId("patchAllCopies").checked,
     syncForm: pId("patchSyncForm").checked,
+    linkProject,
+    align,
   };
+}
+
+/* ---------------- ③ 项目对齐分析 ---------------- */
+
+function pAlignRows(report) {
+  if (!report) return "";
+  const lines = [];
+  (report.linkFields || []).forEach((it) => {
+    lines.push(it.action === "add"
+      ? `<div class="pl-line ok">+ 新增 <code>${pEsc(it.code)}</code>（${pEsc(it.fieldName)} ${pEsc(it.type)}/${pEsc(it.length)}）</div>`
+      : `<div class="pl-line">= ${pEsc(it.note || "复用已有链接字段")}</div>`);
+  });
+  (report.aligned || []).forEach((it) => {
+    lines.push(`<div class="pl-line ok">~ 覆盖 <code>${pEsc(it.fieldCode)}</code>
+      （${pEsc(it.fieldName)}）→ ${pEsc(it.type)}
+      ${it.objectType ? "· " + pEsc(it.objectType) : ""}
+      <span class="muted">保留物理列 ${pEsc(it.column || it.newField || "")}${
+        it.projectField ? `（项目侧 ${pEsc(it.projectField)}）` : ""}</span></div>`);
+  });
+  (report.skipped || []).forEach((it) => {
+    lines.push(`<div class="pl-line muted">- 跳过 ${pEsc(it.fieldCode)}：${pEsc(it.message)}</div>`);
+  });
+  (report.conflicts || []).forEach((it) => {
+    lines.push(`<div class="pl-line bad">✗ ${pEsc(it.message)}</div>`);
+  });
+  const s = report.summary || {};
+  lines.push(`<div class="set-note">合计：新增 ${s.linkFields || 0} / 覆盖 ${s.aligned || 0}
+    / 跳过 ${s.skipped || 0}</div>`);
+  return lines.join("");
+}
+
+async function pAlign() {
+  const card = pId("patchAlignCard");
+  const box = pId("patchAlignBox");
+  if (!card || !box) return;
+  if (!P.snap || !P.link.size) {
+    card.hidden = true;
+    P.alignReport = null;
+    return;
+  }
+  card.hidden = false;
+  box.innerHTML = '<div class="sub">正在分析…</div>';
+  try {
+    const spec = pSpec();
+    // 只预览对齐：把用户手填字段清空，报告里就只剩「项目对齐」一节
+    const res = await pApi("/api/patch/dry-run", { ...spec, fields: [], linkProject: Array.from(P.link) });
+    const data = await res.json();
+    P.alignReport = data.projectAlign || null;
+    const mode = pId("patchMode").value;
+    const hasAlign = (P.alignReport && (P.alignReport.aligned || []).length) > 0;
+    box.innerHTML = pAlignRows(P.alignReport)
+      + (hasAlign && mode === "skip"
+        ? '<div class="patch-tag warn">对齐已有字段需要覆盖模式：请把 ④ 的「重名字段」'
+          + '选成「按新定义覆盖原字段」，否则出包会被拦下</div>'
+        : "");
+  } catch (err) {
+    P.alignReport = null;
+    box.innerHTML = `<div class="patch-tag warn">${pEsc(err.message || String(err))}</div>`;
+  }
 }
 
 /* ---------------- 批量录入 ---------------- */
@@ -346,6 +473,12 @@ async function pPreview(btn) {
 async function pBuild(btn) {
   const spec = (() => { try { return pSpec(); } catch (e) { pFail(e); return null; } })();
   if (!spec) return;
+  // 双保险：mode=skip 且存在对齐行 → 先说清楚（后端同样会拦）
+  const hasAlign = (P.alignReport && (P.alignReport.aligned || []).length) > 0;
+  if (hasAlign && spec.mode === "skip") {
+    toast("对齐已有字段需要覆盖模式：请把「重名字段」选成「按新定义覆盖原字段」", 6500);
+    return;
+  }
   const split = pId("patchSplit").checked;
   const jobs = split ? spec.targets.map((t) => [t]) : [spec.targets];
   pBusy(btn, true, "正在生成…");
@@ -527,6 +660,13 @@ function pBind() {
   pId("patchDryRun").onclick = (e) => pPreview(e.currentTarget);
   pId("patchBuild").onclick = (e) => pBuild(e.currentTarget);
   pId("patchWorkbook").onclick = (e) => pWorkbook(e.currentTarget);
+  // 对齐分析：勾了「关联项目」后自动跑（pRenderObjects 里触发），这里给个手动重算入口
+  const reAlign = pId("btnPatchAlign");
+  if (reAlign) reAlign.onclick = () => pAlign();
+  // 模式改了要重新提示「对齐行必须覆盖」，避免用户切回「跳过」还不自知
+  if (modeSel) {
+    modeSel.onchange = () => { pHint(); if (P.link.size) pAlign(); };
+  }
 }
 
 pBind();

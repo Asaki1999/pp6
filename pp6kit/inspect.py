@@ -67,12 +67,42 @@ def _parse_bo(root) -> Bo | None:
         # 处理（XML id 不变）。以前反解不带 id，靠 bind() 的名称匹配静默补——
         # 那条路现已封死（新建同名对象会被误判成更新），反解场景必须自带 id。
         exist_id=ent.attrib.get("id", "") or "",
+        # 对象「选择模式」：流程对象是 workflow，普通对象是 normal
+        # （线上原生包实证：项目流程.zip → project_create 为 mode="workflow"，
+        #  项目.zip / 需求.zip 为 mode="normal"）。
+        # 反解丢掉它，重出包就会把流程对象降级成普通对象，流程 XML 挂不上。
+        flow_driven=(ent.attrib.get("mode", "").strip().lower() == "workflow"),
     )
     if not bo.tbl_name and bo.code:
         from .model import table_name_for
         bo.tbl_name = table_name_for(bo.code)
     logs = _child(root, "boLogTemplateList")
     bo.with_log = bool(logs is not None and _children(logs, "boLogTemplate"))
+
+    # ---- 字典块（P1-3）：以前完全丢弃，导致「反解 → 再出包」把全局字典
+    # 退化成自定义字典（objectType 被打回 对象编码_字段编码），6 个固定候选
+    # key 也一起丢了 —— 线上实测 A12：huiBaoLeiXing 必须是
+    # typeScope="GLOBAL" + typeKey="report_type" + MonthlyReportModules… 这一组。
+    type_meta: dict[str, dict] = {}
+    for dt in _children(_child(root, "dictionaryTypeList"), "dictionaryType"):
+        _key = dt.attrib.get("typeKey", "")
+        if _key:
+            type_meta[_key] = {
+                "name": dt.attrib.get("name", ""),
+                "struType": dt.attrib.get("struType", ""),
+                "sn": dt.attrib.get("sn", ""),
+                "typeScope": (dt.attrib.get("typeScope") or "").upper(),
+            }
+    dic_items_by_type: dict[str, list[dict]] = {}
+    for _d in _children(_child(root, "dictionaryList"), "dictionary"):
+        _key = _d.attrib.get("typeKey", "")
+        if not _key:
+            continue
+        dic_items_by_type.setdefault(_key, []).append({
+            "key": _d.attrib.get("key", ""),
+            "name": _d.attrib.get("name", ""),
+            "sn": int(_d.attrib["sn"]) if _d.attrib.get("sn", "").isdigit() else 0,
+        })
 
     for sn, attr in enumerate(_children(ent, "attribute"), start=1):
         code = attr.attrib.get("code", "")
@@ -92,13 +122,32 @@ def _parse_bo(root) -> Bo | None:
         _on = opts.pop("cascadeEnabled", False)
         _parent = str(opts.pop("cascadeParentCode", "") or "").strip()
         cascade_parent = _parent if _parent and (_on is True or str(_on).lower() == "true") else ""
+        # 全 10 键 / 精简 5 键 两种形态要**原样保留**。见 model.BoField.resolved：
+        # 带 uniqueCheck/columns 这套配套键的字段，出包时必须还是完整 10 键，
+        # 否则反解→再出包会把 productClass 降级成 5 键形态（2026-11-12 实测
+        # 18/19 全过、唯独它掉档）。这里不再删这几个键。
+        type_new = attr.attrib.get("dataTypeNew", "varchar")
+        object_type = attr.attrib.get("objectType", "")
+        dict_ref = ""
+        dict_name = ""
+        dict_stru = ""
+        dict_items: list[dict] = []
+        if type_new == "dic" and object_type in type_meta:
+            meta = type_meta[object_type]
+            if meta.get("typeScope") == "GLOBAL":
+                # 只有 GLOBAL 才落 dict_*：BO_ATTR（自定义）本来就该走
+                # dict_key()，反解成 dict_ref 会把它当成共享字典引用
+                dict_ref = object_type
+                dict_name = meta.get("name", "")
+                dict_stru = meta.get("struType", "") or "1"
+                dict_items = list(dic_items_by_type.get(object_type, []))
         bo.fields.append(BoField(
             bo_code=bo.code,
             code=code,
             name=attr.attrib.get("name", code),
-            type_new=attr.attrib.get("dataTypeNew", "varchar"),
+            type_new=type_new,
             datatype=attr.attrib.get("datatype", ""),
-            object_type=attr.attrib.get("objectType", ""),
+            object_type=object_type,
             length=int(attr.attrib["length"]) if attr.attrib.get("length", "").isdigit() else None,
             precision=int(attr.attrib["precision"]) if attr.attrib.get("precision", "").isdigit() else None,
             is_index=attr.attrib.get("isindex") == "Y",
@@ -109,6 +158,13 @@ def _parse_bo(root) -> Bo | None:
             field_name=attr.attrib.get("fieldName", ""),
             sn=int(attr.attrib.get("sn", sn)) if attr.attrib.get("sn", "").isdigit() else sn,
             cascade_parent=cascade_parent,
+            dict_ref=dict_ref,
+            dict_name=dict_name,
+            dict_stru=dict_stru,
+            dict_items=dict_items,
+            # 全局字典的候选值要落进 choices：Excel「选项值」列只认中文名，
+            # 不填的话确认版 Excel 里这一格是空的，下次出包字典就没值了
+            choices=[i["name"] for i in dict_items if i.get("name")] if dict_ref else [],
         ))
 
     # 父子/平行关系：只取「本对象是子对象」的那条（src == 本对象），
@@ -119,6 +175,14 @@ def _parse_bo(root) -> Bo | None:
             bo.parent_obj = rel.attrib.get("dstObjCode", "")
             bo.parent_field = rel.attrib.get("relField", "")
             bo.rel_type = rel.attrib.get("relType", "PARENT")
+
+    # 老导出包可能没有 mode 属性（2026-11-12 之前的包就见过）。流程对象必然带
+    # processState + processDefId 这套冗余字段，普通对象不会——按这个兜底，
+    # 免得老包反解后降级成普通对象。
+    if not bo.flow_driven:
+        codes = {f.code for f in bo.fields}
+        if "processState" in codes and "processDefId" in codes:
+            bo.flow_driven = True
     return bo
 
 

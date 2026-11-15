@@ -51,9 +51,10 @@
     },
     "attachment": {
       "label": "附件列表",
-      "datatype": "clob",
-      "verified": false,
-      "note": "推断：附件以 JSON 数组存于大文本"
+      "datatype": "varchar",
+      "length": 200,
+      "verified": true,
+      "note": "2026-11-13 在 8112 真实库核对：pp_project_initiation 的 4 个附件列都是 varchar(200)"
     },
     "i18n": {
       "label": "国际化",
@@ -102,6 +103,21 @@
       "length": 255,
       "verified": false,
       "note": "推断：结果按 varchar 存储"
+    },
+    "date": {
+      "label": "日期",
+      "datatype": "date",
+      "format": "yyyy-MM-dd",
+      "verified": true,
+      "length": null,
+      "note": "2026-11-13 实测：pp_qjlc.jie_shu_ 是 date 类型；iform_bo_column.column_type_new_='date'"
+    },
+    "file": {
+      "label": "文件",
+      "datatype": "varchar",
+      "length": 300,
+      "verified": true,
+      "note": "2026-11-13 实测：pp_tr1 的文件列是 varchar(64~640)，长度按需填"
     }
   }
 }

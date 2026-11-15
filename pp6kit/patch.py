@@ -40,7 +40,7 @@ import re
 import tempfile
 import zipfile
 from collections import Counter
-from copy import copy
+from copy import copy, deepcopy
 from datetime import datetime
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -376,7 +376,8 @@ def _attr_line_for(field: BoField, prefix: str) -> str:
     return line
 
 
-def _merge_attr_line(old: dict, raw: dict, field: BoField, prefix: str) -> tuple[str, list[str], list[str]]:
+def _merge_attr_line(old: dict, raw: dict, field: BoField, prefix: str,
+                     align: bool = False) -> tuple[str, list[str], list[str]]:
     """改写一个**已有** attribute：新定义为准，但原有属性一个都不许丢。
 
     为什么不像新增字段那样直接 ``_attr_line_for``
@@ -391,10 +392,48 @@ def _merge_attr_line(old: dict, raw: dict, field: BoField, prefix: str) -> tuple
         sn         行序号，保持原位
         type       角色列（base / role…），不由字段类型决定
 
+    ``align=True``（项目字段对齐）时放开「定义类」键：类型/长度/精度/必填/
+    索引/默认值/options/objectType/name 一律取新值（含清空）。这是架构 F-E
+    指出的必要开关——默认逻辑只在用户显式给了或物理类型变了时才覆盖，
+    对齐要的是「跟项目侧完全一致」，包括把 isindex 从 N 改成 Y。
+
     返回 (新行文本, 改动的键, 原来的类型)。
     """
     p = field.resolved()
     old_type = str(old.get("dataTypeNew") or "")
+    if align:
+        merged: dict[str, object] = dict(old)
+        for key in ("code", "fieldName", "sn", "type"):
+            merged.pop(key, None)          # 下面单独塞回去
+        merged["code"] = old.get("code") or field.code
+        merged["fieldName"] = old.get("fieldName") or p["fieldName"]
+        merged["sn"] = old.get("sn") or p["sn"]
+        if "type" in old:
+            merged["type"] = old["type"]
+        merged["dataTypeNew"] = p["dataTypeNew"]
+        if p.get("datatype"):
+            merged["datatype"] = p["datatype"]
+        if str(field.name or "").strip():
+            merged["name"] = field.name
+        for key in ("isnull", "isindex", "defaultvalue", "format",
+                    "length", "precision", "objectType"):
+            val = p.get(key)
+            if val in (None, ""):
+                merged.pop(key, None)
+            else:
+                merged[key] = val
+        opts = p.get("options")
+        if opts:
+            merged["options"] = gen_bo.json_attr(opts)
+        else:
+            merged.pop("options", None)
+        order = [k for k in old if k in merged]
+        order += [k for k in merged if k not in old]
+        astr = "".join(f' {k}="{esc_attr(merged[k])}"' for k in order)
+        line = f"<{prefix}attribute{astr}/>"
+        changed = [k for k in order if str(merged.get(k, "")) != str(old.get(k, ""))]
+        return line, changed, old_type
+
     # 物理类型没变（varchar 族互改：字符串↔用户↔部门↔选项…）就不动物理列参数，
     # 这和线上「7 类可互改、不 ALTER」的行为对齐
     phys_changed = str(p.get("datatype") or "") != str(old.get("datatype") or "")
@@ -518,6 +557,77 @@ def _rewrite_dict_items(text: str, prefix: str, items: list[tuple[str, str, list
     return text, done
 
 
+def _rewrite_global_items(text: str, prefix: str, ref: str,
+                          items: list[dict], root_close: str) -> tuple[str, int]:
+    """重写**全局字典**（typeScope=GLOBAL）的候选值：同 name 复用原 key。
+
+    为什么单开一个函数而不复用 _rewrite_dict_items（架构 D8）
+    --------------------------------------------------------
+    `tools/check_patch.py` 的 61 条保真断言是硬门槛，改老函数等于动红线。
+    而全局字典的语义本来就不同：
+      · key 是**项目侧固定业务码**（MonthlyReportModules…），不能按 md5 重算，
+        重算出来的码系统里没有 → 导入后空下拉；
+      · 包里已有同名候选值时要沿用**库里原来的 key**（否则线上已存数据对不上）。
+    """
+    if not items:
+        return text, 0
+    tag = f"{prefix}dictionary"
+    pat = re.compile(
+        r"<" + re.escape(tag) + r'\b[^>]*\btypeKey="' + re.escape(ref)
+        + r'"[^>]*(?:/>|>.*?</' + re.escape(tag) + r">)", re.S)
+    old_key: dict[str, str] = {}
+    for frag in pat.findall(text):
+        a = dict(re.findall(r'([\w:.-]+)="([^"]*)"', frag))
+        if a.get("name") and a.get("key"):
+            old_key[a["name"]] = a["key"]
+    text = pat.sub("", text)
+    lines = []
+    for i, item in enumerate(items, start=1):
+        name = str(item.get("name") or "")
+        code = old_key.get(name) or str(item.get("key") or "")
+        if not code:
+            continue
+        sn = item.get("sn") or i
+        # 原生 GLOBAL 字典项**不带** attrs 子元素（项目.zip 逐字节核对）
+        lines.append(f'<{tag} typeKey="{esc_attr(ref)}" key="{esc_attr(code)}" '
+                     f'name="{esc_attr(name)}" sn="{int(sn)}" disabled="false"/>')
+    sep = "\n" if "\n" in text else ""
+    text = _append_to_container(text, f"{prefix}dictionaryList", lines, sep,
+                                "  " if sep else "", root_close)
+    return text, len(lines)
+
+
+def _global_dict_lines(text: str, prefix: str, metas: list[tuple[str, str, str, list[dict]]],
+                       info: dict, root_close: str, sep: str,
+                       indent: str) -> tuple[str, int, int]:
+    """GLOBAL 字典：同 typeKey 不重建类型，只重写/追加候选值。
+
+    metas 每项 = (typeKey, name, struType, items)。返回值 (新文本, 新增类型行数,
+    候选值行数)。
+    """
+    types: list[str] = []
+    type_sn = info.get("typeSn", 0)
+    seen: set[str] = set()
+    item_total = 0
+    for ref, name, stru, items in metas:
+        if ref in seen:
+            continue
+        seen.add(ref)
+        # 包内已有该 typeKey 的类型行就不重建（重复导入同一个字典会让系统里
+        # 出现两套字典，候选值互相盖）
+        if not re.search(r'<[\w:]*dictionaryType\b[^>]*\btypeKey="' + re.escape(ref) + r'"', text):
+            type_sn += 1
+            types.append(f'<{prefix}dictionaryType typeKey="{esc_attr(ref)}" '
+                         f'name="{esc_attr(name or ref)}" struType="{esc_attr(stru or "1")}" '
+                         f'sn="{type_sn}" typeScope="GLOBAL"/>')
+        text, n = _rewrite_global_items(text, prefix, ref, items, root_close)
+        item_total += n
+    if types:
+        text = _append_to_container(text, f"{prefix}dictionaryTypeList", types, sep,
+                                    indent, root_close)
+    return text, len(types), item_total
+
+
 def _dict_lines(fields: list[BoField], prefix: str, info: dict) -> tuple[list[str], list[str], list[str]]:
     """新增 dic 字段需要的字典类型行 / 选项行，规则与 gen_bo._dict_blocks 一致。"""
     type_lines: list[str] = []
@@ -532,6 +642,12 @@ def _dict_lines(fields: list[BoField], prefix: str, info: dict) -> tuple[list[st
 
     for f in fields:
         if f.type_new != "dic" or not f.choices:
+            continue
+        if f.dict_ref:
+            # 防御：引用全局字典的字段由 _global_dict_lines 负责（typeScope=GLOBAL
+            # + 项目侧固定候选码）。走到这里说明调用方漏收，绝不能按自定义字典
+            # 再造一个 `对象_字段` 的 key —— 那样导入端会报「引用的字典不存在」。
+            warns.append(f"{f.code}: 引用全局字典 {f.dict_ref}，字典块交给 GLOBAL 分支处理")
             continue
         key = f.dict_key()
         if key in existing_types:
@@ -598,8 +714,15 @@ def _sn_allocator(info: dict):
     return nxt
 
 
-def _patch_bo_xml(text: str, info: dict, raw_fields: list[dict], mode: str) -> tuple[str, dict]:
-    """在一份 bo XML 上追加/替换字段，返回 (新文本, 变更明细)。"""
+def _patch_bo_xml(text: str, info: dict, raw_fields: list[dict], mode: str,
+                  align_fields: dict[str, BoField] | None = None) -> tuple[str, dict]:
+    """在一份 bo XML 上追加/替换字段，返回 (新文本, 变更明细)。
+
+    align_fields：项目对齐产生的「覆盖定义」行（code → 已算好的 BoField）。
+    这些行**跳过 normalize_field**（字典块不是前端能表达的），并在
+    _merge_attr_line 里走 align=True 强制覆盖定义类键。
+    """
+    align_fields = align_fields or {}
     prefix = _xml_prefix(text, "bodefentity")
     tag_ent = f"{prefix}bodefentity"
     tag_attr = f"{prefix}attribute"
@@ -624,13 +747,18 @@ def _patch_bo_xml(text: str, info: dict, raw_fields: list[dict], mode: str) -> t
     replaced: list[dict] = []
     skipped: list[dict] = []
     dict_rewrites: list[tuple[str, str, list[str]]] = []
+    global_rewrites: list[tuple[str, str, str, list[dict]]] = []
     warns: list[str] = []
     new_fields: list[BoField] = []
     replacements: dict[tuple[int, int], str] = {}
 
     for raw in raw_fields:
         # sn 先占位，真正的值在下面按「新增 or 替换」分别定
-        f = normalize_field(raw, info["code"], 0)
+        is_align = bool(raw.get("align"))
+        if is_align and raw.get("code") in align_fields:
+            f = deepcopy(align_fields[raw["code"]])
+        else:
+            f = normalize_field(raw, info["code"], 0)
         if f.code in seen:
             raise ValueError(f"新增字段里 {f.code!r} 重复了")
         seen.add(f.code)
@@ -646,13 +774,20 @@ def _patch_bo_xml(text: str, info: dict, raw_fields: list[dict], mode: str) -> t
                 # 替换时保留原物理列名，避免线上表被要求改列
                 if old.get("fieldName") and not f.field_name:
                     f.field_name = old["fieldName"]
-                line, keys, old_type = _merge_attr_line(old, raw, f, prefix)
+                line, keys, old_type = _merge_attr_line(old, raw, f, prefix, align=is_align)
                 replacements[(s, e)] = line
                 replaced.append({"code": f.code, "name": old.get("name") or f.name, "sn": f.sn,
-                                 "from": old_type, "to": f.type_new, "attrs": keys})
+                                 "from": old_type, "to": f.type_new, "attrs": keys,
+                                 "aligned": is_align})
                 # 选项值改了就重写这个字段的字典项，否则包变了、选项还是老的
-                if f.type_new == "dic" and f.choices:
-                    dict_rewrites.append((f.dict_key(), f.name, list(f.choices)))
+                if f.type_new == "dic" and (f.choices or f.dict_items):
+                    if f.dict_ref:
+                        # GLOBAL：不造新 key，只声明/复用项目侧 typeKey 与固定候选码
+                        global_rewrites.append(
+                            (f.dict_ref, f.dict_name, f.dict_stru or "1",
+                             [dict(i) for i in (f.dict_items or [])]))
+                    else:
+                        dict_rewrites.append((f.dict_key(), f.name, list(f.choices)))
             else:
                 skipped.append({"code": f.code, "name": f.name,
                                 "reason": "包里已有同名字段"})
@@ -667,6 +802,13 @@ def _patch_bo_xml(text: str, info: dict, raw_fields: list[dict], mode: str) -> t
         line = _attr_line_for(f, prefix)
         new_fields.append(f)
         added.append({"code": f.code, "name": f.name, "type": f.type_new, "sn": f.sn, "line": line})
+        # 新增字段也可能是「引用项目侧全局字典」的（对齐后新加的汇报类型这种）：
+        # 它的 typeKey 必须声明成 GLOBAL + 固定候选码，否则 _dict_lines 会按
+        # 自定义字典造一个 `对象_字段` 的 key，导入端报「引用的字典不存在」。
+        if f.type_new == "dic" and f.dict_ref:
+            global_rewrites.append(
+                (f.dict_ref, f.dict_name, f.dict_stru or "1",
+                 [dict(i) for i in (f.dict_items or [])]))
 
     # 先做替换（从后往前，避免位移），再在最后一个 attribute 之后追加。
     # 替换时只换 <.../> 本身，原有缩进留在 out[:s] 里，不要重复补缩进。
@@ -701,6 +843,13 @@ def _patch_bo_xml(text: str, info: dict, raw_fields: list[dict], mode: str) -> t
         out = _append_to_container(out, f"{prefix}dictionaryList", item_lines, sep, indent, root_close)
     # 已有 dic 字段的选项值：整组替换（同名复用 key，保住库里已存的值）
     out, rewritten = _rewrite_dict_items(out, prefix, dict_rewrites, root_close)
+    # 对齐到项目侧全局字典：声明（或复用）typeScope="GLOBAL" 的 typeKey，
+    # 候选值用项目侧固定业务码，不造 `对象_字段` 新 key
+    g_types = g_items = 0
+    if global_rewrites:
+        out, g_types, g_items = _global_dict_lines(
+            out, prefix, global_rewrites, info, root_close, sep, indent)
+        rewritten += g_items
 
     # 自检：补丁后的 XML 必须仍能解析，且 attribute 数量符合预期
     try:
@@ -720,6 +869,8 @@ def _patch_bo_xml(text: str, info: dict, raw_fields: list[dict], mode: str) -> t
         "warnings": warns,
         "dictTypes": len(type_lines),
         "dictItems": len(item_lines),
+        "globalDictTypes": g_types,
+        "globalDictItems": g_items,
         "dictRewritten": rewritten,
         "fieldCountBefore": len(spans),
         "fieldCountAfter": n_after,
@@ -755,7 +906,37 @@ def _fields_for(spec: dict, file: str, info: dict) -> list[dict]:
     return list(spec.get("fields") or [])
 
 
-def _report_text(spec: dict, changed: dict, kept: int, dropped: int) -> str:
+def _align_field(raw: dict, bo_code: str) -> BoField:
+    """把 projlink 的「覆盖定义」行翻成 BoField（含 GLOBAL 字典块）。"""
+    f = normalize_field(raw, bo_code, 0)
+    meta = raw.get("dict")
+    if meta is not None:
+        f.dict_ref = meta.ref
+        f.dict_name = meta.name
+        f.dict_stru = meta.stru_type
+        f.dict_items = [{"key": i.key, "name": i.name, "sn": i.sn} for i in meta.items]
+        f.choices = [i.name for i in meta.items]
+    return f
+
+
+def _align_rows(data: bytes, spec: dict, chosen: dict) -> tuple[dict, dict, dict]:
+    """算存量包侧的项目对齐 → (对齐行, 链接字段行, 视图/报告数据)。"""
+    from . import projlink
+
+    plans = projlink.analyze_package(data, chosen, spec)
+    rows: dict[str, list[dict]] = {}
+    links: dict[str, list[dict]] = {}
+    for file, plan in (plans.get("objects") or {}).items():
+        aligns, link_raw = projlink.plan_to_raw_rows(plan)
+        rows[file] = aligns
+        if link_raw:
+            links[file] = [link_raw]
+    plans["report"] = projlink.package_report(plans)
+    return rows, links, plans
+
+
+def _report_text(spec: dict, changed: dict, kept: int, dropped: int,
+                 align_report: dict | None = None) -> str:
     lines = [
         "PP6 包补丁报告",
         f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
@@ -770,18 +951,30 @@ def _report_text(spec: dict, changed: dict, kept: int, dropped: int) -> str:
             lines.append(f"      + {a['code']}（{a['name']}）  {a['type']}  sn={a['sn']}")
         for a in d["replaced"]:
             span = f"{a['from']}→{a['to']}" if a.get("from") and a.get("from") != a.get("to") else a.get("to") or ""
-            lines.append(f"      ~ {a['code']}（{a['name']}）  按新定义覆盖  {span}  sn={a['sn']}")
+            # 对齐行与用户手填行分开列（PRD P0-5 要求），用户一眼能看出
+            # 「这条是勾了关联项目自动做的」还是「我自己要改的」
+            mark = "~ 对齐" if a.get("aligned") else "~"
+            lines.append(f"      {mark} {a['code']}（{a['name']}）  "
+                         f"{'按新定义覆盖' if not a.get('aligned') else '按项目侧定义覆盖'}  "
+                         f"{span}  sn={a['sn']}")
             if a.get("attrs"):
                 lines.append(f"          改写属性：{' / '.join(a['attrs'])}")
         for a in d["skipped"]:
             lines.append(f"      = {a['code']}  已存在，跳过")
         if d["dictTypes"] or d["dictItems"]:
             lines.append(f"      字典类型 +{d['dictTypes']}，选项 +{d['dictItems']}")
+        if d.get("globalDictTypes") or d.get("globalDictItems"):
+            lines.append(f"      全局字典：类型 +{d['globalDictTypes']}，"
+                         f"候选值 {d['globalDictItems']} 条（用项目侧固定 key）")
         if d.get("dictRewritten"):
             lines.append(f"      已有字典的选项值重写 {d['dictRewritten']} 条")
     warns = [w for d in changed.values() for w in d["warnings"]]
     if warns:
         lines += ["", "提示:"] + [f"  - {w}" for w in dict.fromkeys(warns)]
+    if align_report and not align_report.get("noop", True):
+        # 独立一节：勾了「关联项目」才会出现（没勾时报告与以前逐字相同）
+        from . import projlink as _projlink
+        lines += [""] + _projlink.report_lines(align_report)
     lines += [
         "",
         "未改动的条目均为原包字节原样复制（含 ZipInfo 元数据）。",
@@ -800,14 +993,45 @@ def build_patch(data: bytes, spec: dict) -> tuple[bytes, str, dict]:
     if scope not in ("full", "bo-only"):
         raise ValueError("scope 只能是 full 或 bo-only")
     chosen = _resolve_targets(data, spec)
-    if not any(_fields_for(spec, f, o) for f, o in chosen.items()):
-        raise ValueError("还没有填写要新增的字段")
+
+    # 项目对齐：勾了「关联项目」的对象会额外产生两类 raw 行
+    # （覆盖已有字段的定义 + 新增链接字段）。没勾时三步都返回空，
+    # 存量包行为与以前**逐字节相同**（回归基线）。
+    align_rows, link_rows, align_plans = _align_rows(data, spec, chosen)
+    align_report = align_plans.get("report") or {}
+    # 模式守卫只针对「对齐命中包里**已存在**的字段」：这种情况必须覆盖，
+    # 否则出来的包和原包一样却报告「已对齐」。纯新增字段的对齐行在 skip 模式下
+    # 照常允许（它本来就走「新增字段」分支，不涉及覆盖）。
+    def _hits_existing(file: str) -> bool:
+        have = {str(f.get("code") or "") for f in (chosen[file].get("fields") or [])}
+        return any(r.get("code") in have for r in align_rows.get(file, []))
+
+    if mode == "skip" and any(_hits_existing(f) for f in chosen):
+        raise ValueError(
+            "对齐已有字段需要覆盖模式：请把「重名字段」选成「按新定义覆盖原字段」"
+            "（勾了「关联项目」时，对齐行会改写包里已有字段的类型/长度/选项）")
+
+    if not any(_fields_for(spec, f, o) or align_rows.get(f) or link_rows.get(f)
+               for f, o in chosen.items()):
+        raise ValueError("还没有填写要新增的字段，也没有可对齐的字段")
 
     patched: dict[str, bytes] = {}
     changed: dict[str, dict] = {}
     untouched: dict[str, dict] = {}
     for file, info in chosen.items():
-        raws = _fields_for(spec, file, info)
+        existing_codes = {str(f.get("code") or "") for f in (info.get("fields") or [])}
+        aligns = list(align_rows.get(file, []))
+        align_codes = {r["code"] for r in aligns}
+        # ① 新字段如果被对齐命中，就以**对齐行**为准（它带着项目侧的字典块，
+        #    用户手填那行只剩类型/名称，用它落地会造出一个假字典）；
+        #    ② 包里已存在的字段相反：用户显式填的 code 优先，对齐行让位。
+        user_raws = [r for r in _fields_for(spec, file, info)
+                     if not (str(r.get("code") or "").strip() in align_codes
+                             and str(r.get("code") or "").strip() not in existing_codes)]
+        taken = {str(r.get("code") or "").strip() for r in user_raws if str(r.get("code") or "").strip() in existing_codes}
+        aligns = [r for r in aligns if r["code"] not in taken]
+        align_fields = {r["code"]: _align_field(r, info["code"]) for r in aligns}
+        raws = user_raws + aligns + link_rows.get(file, [])
         if not raws:
             continue
         with zipfile.ZipFile(io.BytesIO(data)) as zin:
@@ -815,10 +1039,8 @@ def build_patch(data: bytes, spec: dict) -> tuple[bytes, str, dict]:
         parsed = _parse_bo_xml(text)
         if parsed is None:
             raise ValueError(f"{file}: 不是可解析的业务对象 XML")
-        new_text, detail = _patch_bo_xml(text, parsed, raws, mode)
+        new_text, detail = _patch_bo_xml(text, parsed, raws, mode, align_fields)
         if new_text == text:
-            # 一个字都没变（典型：字段名和包里已有字段重复 + 模式=跳过）。
-            # 以前照样记进 changed、报告里写「+ 字段」，用户拿到的是原包。
             untouched[file] = detail
             continue
         patched[file] = new_text.encode("utf-8")
@@ -852,7 +1074,7 @@ def build_patch(data: bytes, spec: dict) -> tuple[bytes, str, dict]:
             zout.writestr(info, patched.get(item.filename) or zin.read(item.filename))
             info.external_attr = original_attr
             kept += 1
-        report = _report_text(spec, changed, kept, dropped)
+        report = _report_text(spec, changed, kept, dropped, align_report)
         # zip comment 上限 64KB，超了按字节截断（末尾半个汉字无害，读时 replace）
         zout.comment = ("CONFIG_SYNC_NOTE:" + report).encode("utf-8")[:65000]
 
@@ -866,6 +1088,8 @@ def build_patch(data: bytes, spec: dict) -> tuple[bytes, str, dict]:
         verbs.append("加字段")
     if any(d["replaced"] for d in changed.values()):
         verbs.append("改字段")
+    if not align_report.get("noop", True):
+        verbs.append("对齐项目")
     name = package_name(labels or "业务对象", "+".join(verbs) or "补丁", stamp)
     payload = {
         "ok": True,
@@ -876,6 +1100,8 @@ def build_patch(data: bytes, spec: dict) -> tuple[bytes, str, dict]:
         "report": report,
         "scope": scope,
         "mode": mode,
+        # 前端「项目对齐分析」卡片直接吃这份（与 /api/parse 的 projectAlign 同构）
+        "projectAlign": align_report,
     }
     return buf.getvalue(), name, payload
 
@@ -906,6 +1132,9 @@ def _project_with_fields(data: bytes, spec: dict):
         proj, notes = inspect_path(src)
     chosen = _resolve_targets(data, spec)
     mode = str(spec.get("mode") or "skip").lower()
+    # 勾了「关联项目」时，导出的 Excel 也必须带对齐结果（主理人 Q2）：
+    # 否则用户导出的底稿与出包产物不一致，下次走主流程又变回去。
+    align_rows, link_rows, _plans = _align_rows(data, spec, chosen)
     touched: set[str] = set()
     for file, info in chosen.items():
         bo = proj.bo(info["code"])
@@ -946,10 +1175,36 @@ def _project_with_fields(data: bytes, spec: dict):
                         name=f.code,
                         label=f.name,
                         field_type=control_for(f),
-                        value_source=(f.dict_key() if f.type_new == "dic"
-                                      else (f.object_type if f.type_new == "object" else "")),
+                        # 取值来源只有 BoField.value_source() 一处真相
+                        # （全局字典要靠 dict_ref，dict_key() 会算错）
+                        value_source=f.value_source(),
                         full_row=f.type_new == "clob",
                     ))
+        # 对齐结果并进 Excel：已有字段只覆盖定义（code/fieldName 由反解结果带）
+        for raw in align_rows.get(file, []):
+            af = _align_field(raw, bo.code)
+            hit = bo.field_by_code(af.code)
+            if hit is None:
+                continue
+            af.sn = hit.sn
+            af.field_name = hit.field_name or af.field_name
+            bo.fields[bo.fields.index(hit)] = af
+            touched.add(bo.code)
+        for raw in link_rows.get(file, []):
+            lf = normalize_field(raw, bo.code, 0)
+            if bo.field_by_code(lf.code) is not None:
+                continue
+            lf.sn = alloc_sn()
+            bo.fields.append(lf)
+            bo.project_link = True
+            touched.add(bo.code)
+            for form in proj.forms:
+                if form.bo_code != bo.code or any(x.name == lf.code for x in form.fields):
+                    continue
+                form.fields.append(FormField(
+                    form_key=form.key, name=lf.code, label=lf.name,
+                    field_type="select", value_source=lf.value_source(),
+                ))
     return proj, notes, touched
 
 

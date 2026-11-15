@@ -26,7 +26,11 @@ SYSTEM = """你在帮用户**修改**一个已经设计好的业务对象。
 
 规则（必须遵守）：
 1. 输出**完整的**新 JSON，结构和 current 一致（不要只输出 diff）
-2. 没提到的字段：name / code / type / length / choices 全部原样照抄，一个字都不改
+2. 没提到的字段：name / code / type / length / choices / **cascadeParent** /
+   分组 values 全部原样照抄，一个字都不改。
+   **字段级 cascadeParent（级联父字段编码）尤其不能丢**——current 里给了的，
+   输出里必须原样带回，哪怕这次修改跟它毫无关系。
+   候选值里出现「父值：子1、子2」的，整行原样保留，不要拍平。
 3. 没提到的表单分组、列表列：原样保留
 4. 新增字段：code 用**语义化英文小驼峰**，type 只能从这 14 种里选：
    varchar / number / datetime / clob / user / department / attachment /
@@ -48,6 +52,10 @@ SYSTEM = """你在帮用户**修改**一个已经设计好的业务对象。
 8. 改类型：如果改成 dic 但原来没有候选值，在 choices 里给几个合理的默认值
 9. 用户说"精简/合并"时，优先删掉重复含义的，不要动系统字段（id/创建人/创建时间等）
 10. **每个字段都必须带上 values 字段**（非选项字段给空数组 []），不要省略
+11. **改对象编码**：用户说「编码改成 xxx / 换个编码 / 不要叫这个」时，改 bo.code，
+    并保持 name 不变。编码只能是小写字母+数字+下划线、字母开头
+    （例：project_apply、contract_v2）。**不要**只改 name 就算改了编码——
+    两者是独立字段，改哪个就输出哪个
 
 输出格式（只输出 JSON，不要解释）：
 {
@@ -71,12 +79,24 @@ def _compact(payload: dict) -> dict:
         }
         if f.get("length"):
             item["length"] = f["length"]
-        if f.get("choices"):
+        if f.get("choiceGroups"):
+            # 级联分组必须以「父：子1、子2」的分组写法给模型看——
+            # 它回传什么我们就收什么。扁平给回去，模型照抄扁平，
+            # 分组就永久丢了（2026-11-12 品种分类级联失效的根因之一）。
+            item["values"] = [f"{p}：{'、'.join(kids)}"
+                              for p, kids in f["choiceGroups"].items()]
+            item["cascadeParent"] = f.get("cascadeParent") or ""
+        elif f.get("choices"):
             # 用 values 命名，和 build_bo 的读取端一致（提示词也让模型写 values），
             # 避免「当前结果里叫 choices、输出要求叫 values」让模型犯迷糊
             item["values"] = f["choices"]
         if f.get("objectType") and f.get("type") == "object":
             item["objectType"] = f["objectType"]
+        # 字段级级联必须让模型看见，否则它「原样照抄」时根本抄不到，
+        # 每微调一次级联声明就被抹一遍（2026-11-12 实测：改一次编码
+        # 整包 cascadeEnabled 全消失）
+        if f.get("cascadeParent") and "cascadeParent" not in item:
+            item["cascadeParent"] = f["cascadeParent"]
         if f.get("readonly"):
             item["readonly"] = True
         if f.get("isMultiple"):
@@ -137,14 +157,39 @@ def refine(payload: dict, cfg: dict, timeout: int = 150) -> dict:
         + "\n\n===== 修改要求 =====\n"
         + instruction
     )
-    # 输出是完整 JSON，字段多时容易被 token 截断，给足额度
-    text, used = llm.chat_any(
-        ai_bo._fast_cfg(cfg),
-        [{"role": "system", "content": SYSTEM},
-         {"role": "user", "content": user}],
-        timeout=timeout, max_tokens=6000,
-    )
-    spec = ai_bo._extract_json(text)
+    # 输出是完整 JSON（要回传全部字段），max_tokens 必须按字段数算。
+    # 2026-11-12 用户截图实测：48 个字段时 6000 token 断在字符串中间
+    # （「Unterminated string starting at...」），指令越小越显得莫名其妙。
+    # 每字段约 120~200 token（编码+名称+类型+候选值），按 240 留余量，
+    # 另加 2000 推理余量（deepseek-flash 一次推理烧 1800+）。
+    _n_fields = len((current.get("bo") or {}).get("fields") or [])
+    _budget = max(8000, min(32000, 4000 + _n_fields * 240))
+    _msgs = [
+        {"role": "system", "content": SYSTEM},
+        {"role": "user", "content": user},
+    ]
+    text, used = llm.chat_any(ai_bo._fast_cfg(cfg), _msgs,
+                              timeout=timeout, max_tokens=_budget)
+    try:
+        spec = ai_bo._extract_json(text)
+    except json.JSONDecodeError:
+        # 截断时重试一次：预算翻倍，并明确要求输出完整 JSON；再失败才报错
+        text2, used2 = llm.chat_any(ai_bo._fast_cfg(cfg), [
+            *_msgs,
+            {"role": "assistant", "content": text[-2000:]},
+            {"role": "user", "content":
+                f"你上一次的输出被截断了，不是合法 JSON。请重新输出**完整**的 JSON"
+                f"（共 {_n_fields} 个字段，一个都不能少，note 留空、写得紧凑些），"
+                f"并照常遵守修改要求：{instruction}"},
+        ], timeout=timeout, max_tokens=min(32000, _budget * 2))
+        text, used = text2, used2
+        try:
+            spec = ai_bo._extract_json(text)
+        except json.JSONDecodeError as exc:
+            raise llm.LlmError(
+                f"模型输出两次都被截断（当前 {_n_fields} 个字段太长）。"
+                f"请再发一次试试；还不行就先在预览里删几个不要的字段，改完再加回来"
+            ) from exc
 
     # 关联对象归一必须用**完整对象清单**，不能信前端传的 objects：
     # 前端 refine 时传的是 state.data.objects（parse 出的本包对象，可能就 1 个），
@@ -152,7 +197,31 @@ def refine(payload: dict, cfg: dict, timeout: int = 150) -> dict:
     # 降级成「选项」字段——纠错一次就把关联字段改坏了。
     from . import objects as _objects
     known = _objects.ensure()
-    bo, notices = ai_bo.build_bo(spec.get("bo") or {}, known, strict_objects=True)
+    # prefer_code=True：微调时显式给的编码必须照用。
+    # 默认逻辑是「name 优先重新推导编码」（防止 AI 把整段标题当对象名生成拼音长串），
+    # 但这条规则在微调场景下会把用户刚改的编码悄悄改回原名推导值——用户看到的就是
+    # 「AI 说改好了，页面还是旧编码」（2026-11-12 实测复现）。
+    bo, notices = ai_bo.build_bo(spec.get("bo") or {}, known,
+                                 strict_objects=True, prefer_code=True)
+
+    # 编码变更要显式说出来：它会连带改物理表名 pp_<code> 和字典 key 前缀，
+    # 用户需要知道这不是「只改个显示名」。
+    _old_code = str((payload.get("bo") or {}).get("code") or "").strip()
+    _code_change = ""
+    if _old_code and bo.code != _old_code:
+        _code_change = f"对象编码 {_old_code} → {bo.code}（物理表名 {bo.tbl_name}）"
+        notices.insert(0, _code_change)
+        # 改成系统里已存在的编码 = 导入时会命中那个对象（更新而不是新建）。
+        # 这一步必须说出来，否则用户以为自己在「新造一个」，实际覆盖了线上对象。
+        _hit = _objects.lookup(bo.code)
+        if _hit.get("exists"):
+            notices.insert(0,
+                f"⚠ 编码 {bo.code} 系统里已有同名对象（id {_hit.get('id', '')}），"
+                f"导入会更新它而不是新建；想新建请换一个编码")
+
+    # 微调也可能把级联子字段的候选值改拍平了（模型重排 values 时常见），
+    # 补一轮归属映射，别让级联在纠错后失效
+    notices.extend(ai_bo.fix_cascade_groups(bo, cfg))
 
     # 兜底：模型经常「改类型时把候选值弄丢」，或者干脆不回传 choices。
     # 按字段编码把旧候选值补回去，只有模型明确给了新值才覆盖。
@@ -199,6 +268,18 @@ def refine(payload: dict, cfg: dict, timeout: int = 150) -> dict:
         except Exception as exc:
             notices.append(f"表单没能同步更新（{str(exc)[:60]}），沿用上一版布局")
 
+    # 表单控件的取值来源（字典 key / 对象编码）是派生数据，永远以当前对象为准。
+    # 对象编码一改，字典 key 全变（pp_<编码>_<字段>）；异常回退旧布局、或模型
+    # 原样照抄旧值时，控件里留的就是失效 key，导出校验直接中止
+    # （2026-11-12 用户截图：innovationPipeline 等四个控件引用的字典不存在）。
+    if form_payload:
+        _src = {x.code: (x.dict_key() if x.type_new == "dic" else x.object_type)
+                for x in bo.fields if x.type_new in ("dic", "object")}
+        for ff in form_payload.get("fields") or []:
+            _nm = str(ff.get("name") or "").strip()
+            if _nm in _src and ff.get("type") in ("select", "dictionary"):
+                ff["valueSource"] = _src[_nm]
+
     # 列表：沿用原 key，列按新字段重算（被删掉的列要丢掉）
     list_payload = None
     old_list = payload.get("list") or {}
@@ -231,6 +312,10 @@ def refine(payload: dict, cfg: dict, timeout: int = 150) -> dict:
             list_payload = old_list
 
     changes = [str(x) for x in (spec.get("changes") or []) if str(x).strip()][:8]
+    # 编码变更由我们自己算（不依赖模型是否把它写进 changes）。
+    # 否则会出现「代码确实改了、但对话里一条变化都没列」——用户仍然以为没生效。
+    if _code_change and _code_change not in changes:
+        changes.insert(0, _code_change)
 
     # 关系识别：纠错后字段可能变了（加了关联字段/删了字段），重新出建议。
     # 和 ai_generate_bo / ai_from_sheet 同构，保证前端预览页三块（对象下拉、

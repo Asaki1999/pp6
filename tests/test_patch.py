@@ -291,3 +291,23 @@ def _():
     _, _, name, _, _ = add_field(
         [{"code": "name", "name": "项目名称", "type": "user"}], mode="replace")
     assert "改字段" in name or "加字段+改字段" in name, name
+
+
+@case("PAT21", "patch", "对齐行强制覆盖定义类键（isindex N→Y 也要生效，列名不动）",
+      "P0", ["align=True", "fieldName/sn 不变"])
+def _():
+    from pp6kit.model import BoField
+
+    old = {"code": "code", "fieldName": "contract_no_", "name": "项目编号",
+           "datatype": "varchar", "dataTypeNew": "varchar", "isnull": "Y",
+           "isindex": "N", "sn": "3", "length": "50"}
+    field = BoField(bo_code="contract", code="code", name="项目编号",
+                    type_new="varchar", length=64, is_index=True, is_null=True)
+    line, changed, old_type = patch._merge_attr_line(old, {}, field, "tns:", align=True)
+    got = attrs(line)
+    assert got["isindex"] == "Y", got          # 原值是 N，对齐要能翻过来
+    assert got["length"] == "64", got
+    assert got["fieldName"] == "contract_no_", got   # 物理列名铁律
+    assert got["sn"] == "3", got                     # 行序号不动
+    assert old_type == "varchar"
+    assert "isindex" in changed

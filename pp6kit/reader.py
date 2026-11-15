@@ -11,6 +11,8 @@ from .model import (
     FORM_BUNDLE,
     FORM_KIND_LABEL,
     OP_BY_LABEL,
+    WF_KIND_BY_LABEL,
+    WF_ONGOING,
     Bo,
     BoField,
     DataSet,
@@ -19,6 +21,9 @@ from .model import (
     HideRule,
     ListDef,
     Project,
+    WfEdge,
+    WfNode,
+    Workflow,
     parse_json,
     split_list,
     table_name_for,
@@ -137,20 +142,88 @@ def _parse_choices(value) -> list[str]:
 
     支持 `月报,季报,周报` / `月报，季报` / 换行分隔。
     去重保序（重复项导入后会变成两个同名选项）。
+
+    **分组写法**（级联字段用）：一行一个父选项，父与子用「：」分隔，子项逗号分隔——
+        ```
+        中药：OTC、RX、双跨、其他
+        化药：OTC、RX、转增加
+        大健康：大健康
+        ```
+    这种写法下，这里只返回「所有父选项 + 所有子选项」的并集（用于告诉用户
+    这字段有多少候选值），真正的分组结构由 :func:`_parse_choice_groups` 给出。
     """
     if value is None:
         return []
     text = str(value).strip()
     if not text:
         return []
-    # 中文逗号、英文逗号、分号、竖线、换行都当分隔符
-    parts = re.split(r"[,，;；|\n\r]+", text)
     out: list[str] = []
-    for p in parts:
-        p = p.strip()
-        if p and p not in out:
-            out.append(p)
+
+    def _add(x: str) -> None:
+        x = x.strip()
+        if x and x not in out:
+            out.append(x)
+
+    # 先按行切：分组写法里「父：子、子」是一行，不能被逗号拆散
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if _GROUP_SEP.search(line):
+            parent, kids = _GROUP_SEP.split(line, 1)
+            _add(parent)
+            for k in re.split(r"[,，;；|、/]+", kids):
+                _add(k)
+            continue
+        for p in re.split(r"[,，;；|\n\r]+", line):
+            _add(p)
     return out
+
+
+# 分组分隔符：「父：子1、子2」/「父: 子1,子2」/「父>子」
+_GROUP_SEP = re.compile(r"\s*[：:>＞]\s*")
+
+
+def _parse_choice_groups(value) -> dict[str, list[str]]:
+    """把「父：子1、子2」这种分组写法解析成 {父: [子...]}。
+
+    不是分组写法的返回空 dict（调用方退回扁平处理）。
+    允许同一父选项写多行（追加子项），也允许分组里出现重复子项（去重保序）。
+    """
+    if value is None:
+        return {}
+    text = str(value).strip()
+    if not text or not _GROUP_SEP.search(text):
+        return {}
+    groups: dict[str, list[str]] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or not _GROUP_SEP.search(line):
+            continue
+        parent, kids = _GROUP_SEP.split(line, 1)
+        parent = parent.strip()
+        if not parent:
+            continue
+        bucket = groups.setdefault(parent, [])
+        for k in re.split(r"[,，;；|、/]+", kids):
+            k = k.strip()
+            if k and k not in bucket:
+                bucket.append(k)
+    return groups
+
+
+def _node_ref(raw, name_by_id: dict[str, str]) -> str:
+    """把「节点序号」换成「节点名称」；已经是名字或认不出来的原样返回。
+
+    Excel 里「退回节点」「起点节点」「终点节点」三列用户既可能写序号也可能写名字
+    （样本 node2 的退回是 [1]，界面上显示「申请人」）。生成器只按名字连边，
+    所以读表时就统一形态；认不出来**不在这里报错**——留给 validate 汇总报
+    「引用了不存在的节点」，用户跑一次就能看到全部问题。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    return name_by_id.get(text, text)
 
 
 def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
@@ -176,6 +249,9 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
                 proj.module_id = str(val or "").strip()
             elif key == "默认分类ID":
                 proj.type_id = str(val or "").strip()
+            elif key == "流程分类ID":
+                # 流程分类与对象分类是两套 ID，不能互相顶替（见 model.Project）
+                proj.wf_category_id = str(val or "").strip()
             elif key == "输出目录":
                 proj.out_dir = str(val or "out").strip()
 
@@ -217,6 +293,9 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
                     desc=str(get("desc") or "").strip(),
                     with_log=bool(get("with_log") is None or truthy(get("with_log"))),
                     flow_driven=truthy(get("flow_driven")),
+                    # 老模板没有「关联项目」这一列 → get() 返回 None → False，
+                    # 产物与改造前逐字节一致（回归 PL12 守的就是这条）
+                    project_link=truthy(get("link_project")),
                     parent_obj=str(get("parent_obj") or "").strip(),
                     parent_field=str(get("parent_field") or "").strip(),
                     # 关系类型缺省 PARENT（父子）；空值时若填了父对象也按 PARENT 走
@@ -224,6 +303,9 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
                     exist_id=str(get("exist_id") or "").strip(),
                 )
             )
+            # 原始填法留一份：非法值（如「可能」）由 validate 报「按否处理」，
+            # 而不是在 reader 里静默吞掉——用户得知道自己填的那一格没生效。
+            proj.bos[-1].project_link_raw = str(get("link_project") or "").strip()
 
     # ---- 字段
     if spec.S_FIELD in wb.sheetnames:
@@ -263,6 +345,12 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
                 auto_notes.append(f"字段「{fname}」未填编码，已自动生成 {code}")
             taken.add(code)
             sn = _int(get("sn"), None)
+            # 「扩展参数」里除了 options 本体，还可能带四个全局字典控制键
+            # （dict_ref/dict_name/dict_stru/dict_items）——确认版 Excel 靠它们
+            # 往返不丢字典引用。读进模型后就从 options 里摘出来，避免污染 XML。
+            raw_opts = parse_json(get("options"), f"[{spec.S_FIELD}] 第{row_no}行", errors)
+            ctrl = {k: raw_opts.pop(k) for k in
+                    ("dict_ref", "dict_name", "dict_stru", "dict_items") if k in raw_opts}
             f = BoField(
                 bo_code=bo_code,
                 code=code,
@@ -275,12 +363,18 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
                 is_index=truthy(get("is_index")),
                 is_null=True if get("is_null") is None else truthy(get("is_null")),
                 default_value=str(get("default_value") or "").strip(),
-                options=parse_json(get("options"), f"[{spec.S_FIELD}] 第{row_no}行", errors),
+                options=raw_opts,
                 desc=str(get("desc") or "").strip(),
                 field_name=str(get("field_name") or "").strip(),
                 sn=sn or (len(bo.fields) + 1),
                 choices=_parse_choices(get("options_text")),
+                choice_groups=_parse_choice_groups(get("options_text")),
                 cascade_parent=str(get("cascade_parent") or "").strip(),
+                dict_ref=str(ctrl.get("dict_ref") or "").strip(),
+                dict_name=str(ctrl.get("dict_name") or "").strip(),
+                dict_stru=str(ctrl.get("dict_stru") or "").strip(),
+                dict_items=(list(ctrl.get("dict_items") or [])
+                            if isinstance(ctrl.get("dict_items"), list) else []),
             )
             bo.fields.append(f)
 
@@ -389,6 +483,9 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
                     tree=truthy(get("tree")),
                     parent_field=str(get("parent_field") or "").strip(),
                     title_field=fixed_title,
+                    # 级联详情字段同样纠错：填了不存在的字段编码按没填处理
+                    detail_field=_fix_columns(lst_bo, [str(get("detail_field") or "").strip()],
+                                              f"列表 {key}(级联详情)", auto_notes)[0],
                 )
             )
 
@@ -450,6 +547,155 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
                 )
             )
 
+    # ---- 流程头（9_流程）
+    #
+    # 三张表互相引用：节点挂在流程名下，流转指向节点名或序号。读取顺序必须是
+    # 流程 → 节点 → 流转，因为「序号 → 节点名」这张对照表要等节点读完才建得全。
+    #
+    # 归一失败的**不在 reader 报错**（除了流程名不存在这种硬错），而是原样留下，
+    # 交给 validate 统一报「引用了不存在的节点」——一次能看到全部问题，
+    # 而不是修一个错再跑一遍又冒出下一个。
+    if spec.S_WF in wb.sheetnames:
+        ws = wb[spec.S_WF]
+        for row_no, get in SheetReader(ws, spec.COLUMNS[spec.S_WF], errors, spec.S_WF).rows():
+            name = str(get("name") or "").strip()
+            if not name:
+                continue
+            if any(w.name == name for w in proj.workflows):
+                errors.append(
+                    f"[{spec.S_WF}] 第{row_no}行: 流程名称「{name}」重复。"
+                    f"节点和流转都按名字关联流程，重名会串到同一条流程上，请改掉一个")
+                continue
+            wf = Workflow(
+                name=name,
+                # 与表单/列表一致：只有一个对象时把写错的对象编码自动归位
+                bo_code=_resolve_bo_code(proj, str(get("bo_code") or "").strip(), "流程", auto_notes),
+                workflow_type=str(get("workflow_type") or "normal").strip() or "normal",
+                category_id=str(get("category_id") or "").strip(),
+                module_id=str(get("module_id") or "").strip(),
+                is_active=True if get("is_active") is None else truthy(get("is_active")),
+                desc=str(get("desc") or "").strip(),
+                exist_id=str(get("exist_id") or "").strip(),
+            )
+            # 标题格式留空要保留 dataclass 里的默认模板，不能被空串覆盖
+            title_format = str(get("title_format") or "").strip()
+            if title_format:
+                wf.title_format = title_format
+            proj.workflows.append(wf)
+
+    # ---- 流程节点（10_流程节点）
+    if spec.S_WF_NODE in wb.sheetnames:
+        ws = wb[spec.S_WF_NODE]
+        # 每个流程下一个「下一个可用序号」，用来给「节点序号」留空的行补号
+        next_id: dict[str, int] = {}
+        for row_no, get in SheetReader(ws, spec.COLUMNS[spec.S_WF_NODE], errors,
+                                       spec.S_WF_NODE).rows():
+            wf_name = str(get("wf") or "").strip()
+            node_name = str(get("name") or "").strip()
+            if not wf_name or not node_name:
+                continue
+            wf = next((w for w in proj.workflows if w.name == wf_name), None)
+            if wf is None:
+                errors.append(
+                    f"[{spec.S_WF_NODE}] 第{row_no}行: 流程名称「{wf_name}」在 {spec.S_WF} 里不存在。"
+                    f"先在 9_流程 里加一行这个流程")
+                continue
+            if wf.node_by_name(node_name):
+                errors.append(
+                    f"[{spec.S_WF_NODE}] 第{row_no}行: 流程「{wf_name}」里节点名称「{node_name}」重复。"
+                    f"流转按名字找节点，重名会连错线，请改成能区分的名字")
+                continue
+            kind_raw = str(get("kind") or "审批").strip()
+            kind = WF_KIND_BY_LABEL.get(kind_raw)
+            if kind is None:
+                # 认不出的类型不猜「判断」这种会改变图结构的，按最普通的审批处理
+                kind = WF_ONGOING
+                note = (f"流程「{wf_name}」节点「{node_name}」的类型「{kind_raw}」认不出，"
+                        f"已按「审批」处理（可选：开始 / 审批 / 判断 / 通过 / 驳回）")
+                if note not in auto_notes:
+                    auto_notes.append(note)
+            handler_type = str(get("handler_type") or "角色").strip()
+            if handler_type not in ("角色", "人员", "无"):
+                note = (f"流程「{wf_name}」节点「{node_name}」的处理人类型「{handler_type}」认不出，"
+                        f"已按「角色」处理（可选：角色 / 人员 / 无）")
+                if note not in auto_notes:
+                    auto_notes.append(note)
+                handler_type = "角色"
+            # 序号：留空/写 0 就按该流程内的行序补号（判断节点也占号，与样本
+            # v30 的 13 个 activity Id 一致）
+            nid = _int(get("id"), 0) or 0
+            if nid <= 0:
+                nid = next_id.get(wf_name, 1)
+            next_id[wf_name] = max(next_id.get(wf_name, 1), nid + 1)
+            wf.nodes.append(WfNode(
+                wf=wf_name,
+                name=node_name,
+                kind=kind,
+                id=nid,
+                handler_type=handler_type,
+                handler_names=split_list(get("handler_names")),
+                handler_ids=split_list(get("handler_ids")),
+                expect_days=_int(get("expect_days"), 2),
+                form_key=str(get("form_key") or "").strip(),
+                business_state=str(get("business_state") or "").strip(),
+                go_back=split_list(get("go_back")),
+                pick_next=truthy(get("pick_next")),
+                allow_handover=truthy(get("allow_handover")),
+                color=str(get("color") or "").strip(),
+                notes=str(get("notes") or "").strip(),
+            ))
+
+    # ---- 节点名 ↔ 序号归一
+    #
+    # 用户的写法很随意：「退回节点」和流转的「起点/终点」可能写 1、2，也可能写
+    # 「部门审批」。生成器只按**节点名**连边，所以这里统一换成名字；
+    # 认不出来的原样保留（既不报错也不丢弃），validate 会报「引用了不存在的节点」。
+    for wf in proj.workflows:
+        name_by_id = {str(n.id): n.name for n in wf.nodes}
+        for node in wf.nodes:
+            node.go_back = [_node_ref(x, name_by_id) for x in node.go_back]
+
+    # ---- 流程流转（11_流程流转）
+    if spec.S_WF_EDGE in wb.sheetnames:
+        ws = wb[spec.S_WF_EDGE]
+        for row_no, get in SheetReader(ws, spec.COLUMNS[spec.S_WF_EDGE], errors,
+                                       spec.S_WF_EDGE).rows():
+            wf_name = str(get("wf") or "").strip()
+            src_raw = str(get("src") or "").strip()
+            dst_raw = str(get("dst") or "").strip()
+            if not wf_name or not src_raw or not dst_raw:
+                continue
+            wf = next((w for w in proj.workflows if w.name == wf_name), None)
+            if wf is None:
+                errors.append(
+                    f"[{spec.S_WF_EDGE}] 第{row_no}行: 流程名称「{wf_name}」在 {spec.S_WF} 里不存在")
+                continue
+            name_by_id = {str(n.id): n.name for n in wf.nodes}
+            src = _node_ref(src_raw, name_by_id)
+            dst = _node_ref(dst_raw, name_by_id)
+            cond_raw = str(get("condition") or "无条件").strip()
+            is_cond = cond_raw not in ("", "无条件")
+            field_raw = str(get("condition_field") or "").strip()
+            if is_cond and field_raw:
+                # 条件字段允许写中文名，按列表那套反查对成字段编码
+                bo = proj.bo(wf.bo_code)
+                field_raw = _fix_columns(bo, [field_raw], f"流程 {wf_name}", auto_notes)[0]
+            inform_raw = get("inform")
+            wf.edges.append(WfEdge(
+                wf=wf_name,
+                src=src,
+                dst=dst,
+                name=str(get("name") or "").strip(),
+                condition_field=field_raw if is_cond else "",
+                condition_op=str(get("condition_op") or "").strip() if is_cond else "",
+                condition_value=str(get("condition_value") or "").strip() if is_cond else "",
+                value_label=str(get("value_label") or "").strip(),
+                order=_int(get("order"), 0) or 0,
+                # 留空 = 交给生成器按源节点种类推导（判断节点否，其余是）
+                inform=None if (inform_raw is None or str(inform_raw).strip() == "")
+                else truthy(inform_raw),
+            ))
+
     stats = {
         "业务对象": len(proj.bos),
         "字段": sum(len(b.fields) for b in proj.bos),
@@ -459,6 +705,8 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
         "数据集": len(proj.datasets),
         "脚本": len(proj.form_scripts),
         "隐藏规则": sum(len(f.hide_rules) for f in proj.forms),
+        "流程": len(proj.workflows),
+        "流程节点": sum(len(w.nodes) for w in proj.workflows),
     }
     # 自动补齐的东西：只放数量进 stats（stats 会被拼成一行打印，放 list 会很难看），
     # 明细挂在 proj.auto_notes 上供 UI 展示。除了自动生成的编码，

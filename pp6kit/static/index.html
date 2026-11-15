@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>导入包生成 · PP6 Studio</title>
+<title>普通模式 · PP6 Studio</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Ctext x='16' y='23' font-size='20' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle'%3EP%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -25,41 +25,42 @@
     <div class="side-scroll">
       <div class="side-label">工作区</div>
       <nav class="modes" aria-label="工作区导航">
-        <button class="mode active" data-mode="import" title="导入包生成 (1)">
+        <button class="mode active" data-mode="import" title="普通模式 (1)：普通业务对象 + 表单/列表/数据集，出一个同步包">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 3v11m0 0 4-4m-4 4-4-4"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
           </svg>
-          <span class="mode-label">导入包生成</span><kbd>1</kbd>
+          <span class="mode-label">普通模式</span><kbd>1</kbd>
         </button>
-        <button class="mode" data-mode="patch" title="已有包改字段 (2)：导入前改类型 / 改选项值">
+        <button class="mode" data-mode="workflow" title="流程模式 (2)：流程对象包 + 流程 XML，两步导入">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="5" cy="6" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="12" cy="18" r="2.2"/>
+            <path d="M7.2 6h9.6"/><path d="M6.2 8 10.8 16"/><path d="M17.8 8 13.2 16"/>
+          </svg>
+          <span class="mode-label">流程模式</span><kbd>2</kbd>
+        </button>
+        <button class="mode" data-mode="patch" title="存量包修订 (3)：在已有 zip 上改字段类型 / 选项值">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="3" y="3" width="18" height="18" rx="3"/><path d="M12 8v8M8 12h8"/>
           </svg>
-          <span class="mode-label">已有包改字段</span><kbd>2</kbd>
+          <span class="mode-label">存量包修订</span><kbd>3</kbd>
         </button>
-        <button class="mode" data-mode="query" title="数据查询 (3)">
+        <button class="mode" data-mode="query" title="数据查询 (4)：用一句话查库">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6"/><path d="M4.5 11.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6"/>
           </svg>
-          <span class="mode-label">数据查询</span><kbd>3</kbd>
+          <span class="mode-label">数据查询</span><kbd>4</kbd>
         </button>
-        <button class="mode" data-mode="settings" title="设置 (4)">
+        <button class="mode" data-mode="settings" title="系统设置 (5)：大模型、数据库连接与本地配置">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M4 7h8M17 7h3M4 17h3M12 17h8"/><circle cx="14.5" cy="7" r="2.5"/><circle cx="9.5" cy="17" r="2.5"/>
           </svg>
-          <span class="mode-label">设置<span class="ai-dot" id="aiDot"></span></span><kbd>4</kbd>
+          <span class="mode-label">系统设置<span class="ai-dot" id="aiDot"></span></span><kbd>5</kbd>
         </button>
       </nav>
 
-      <div class="side-label side-label-2">导入目标</div>
-      <div class="side-path">
-        <span>系统管理</span><i>›</i><span>发布管理</span><i>›</i><span>导入同步包</span>
-      </div>
-      <div class="side-tip">生成的 zip 整包一把导入「系统管理 › 发布管理 › 导入同步包」，无需手工改 XML；发布说明写进 zip 注释 <code>CONFIG_SYNC_NOTE:</code>，变更区不是必经路径。</div>
-
       <div class="side-label side-label-2">快捷键</div>
       <div class="side-keys">
-        <div><kbd>1</kbd>–<kbd>4</kbd><span>切换工作区</span></div>
+        <div><kbd>1</kbd>–<kbd>5</kbd><span>切换工作区</span></div>
         <div><kbd>⌘K</kbd><span>回到生成页</span></div>
       </div>
     </div>
@@ -75,10 +76,9 @@
 
     <header class="topbar">
       <div class="ctx">
-        <nav class="ctx-crumb"><span>工作区</span><i>/</i><b id="ctxCrumb">导入包生成</b></nav>
         <div class="ctx-row">
-          <h2 class="ctx-title" id="ctxTitle">导入包生成</h2>
-          <span class="ctx-desc" id="ctxDesc">描述需求或上传 Excel，生成系统可导入的同步包</span>
+          <h2 class="ctx-title" id="ctxTitle">普通模式</h2>
+          <span class="ctx-desc" id="ctxDesc">普通业务对象 + 表单/列表/数据集，出一个同步包；流程对象看「流程模式」</span>
         </div>
       </div>
       <div class="top-actions">
@@ -106,7 +106,7 @@
         <div class="card-head">
           <div>
             <h3>大模型</h3>
-            <div class="sub">导入包生成、数据查询共用这一个 Key，配一次两边都能用</div>
+            <div class="sub">生成页和数据查询共用这一个 Key，配一次两边都能用</div>
           </div>
           <span class="set-status" id="setLlmStatus">未配置</span>
         </div>
@@ -176,7 +176,7 @@
           <div class="set-kv">
             <div><span>产品</span><b>PP6 Studio / PowerProject V6</b></div>
             <div><span>版本</span><b>1.0.0</b></div>
-            <div><span>四个工作区</span><b>导入包生成 · 已有包改字段 · 数据查询 · 设置</b></div>
+            <div><span>五个工作区</span><b>普通模式 · 流程模式 · 存量包修订 · 数据查询 · 系统设置</b></div>
             <div><span>共用能力</span><b>大模型只配一次</b></div>
             <div><span>配置位置</span><b><code>~/.pp6kit/nlq.json</code></b></div>
           </div>
@@ -244,6 +244,15 @@
       </div>
     </section>
 
+    <!-- 第 1 步：对象级选择放在**导入前**，不再导入后弹窗问一遍。
+         两档共享一份状态（普通 / 流程两个菜单同一档），存 localStorage。 -->
+    <div class="pl-pre" id="plPreImportBar">
+      <b>第 1 步 · 业务对象关联项目</b>
+      <label><input type="radio" name="plPreImport" value="off" checked> 不关联</label>
+      <label><input type="radio" name="plPreImport" value="on"> 全部关联</label>
+      <span class="sub">导入前先选：全部关联=这份 Excel 里每个对象都关联项目；不关联=一个都不关联。导入后不再弹选择框。</span>
+    </div>
+
     <section class="ai-box ai-box-lite">
       <div class="ai-head">
         <div>
@@ -256,7 +265,7 @@
           <input type="file" id="fileInput" accept=".xlsx,.xlsm" hidden>
           <span>选择 Excel 文件</span>
         </label>
-        <span class="sub" id="reimportHint">已有 <code>1_业务对象 / 2_字段</code> 等标准页签的，会直接进预览</span>
+        <span class="sub" id="reimportHint">选完直接出包；有相近字段会先弹窗确认。改完 Excel 再选一次同一个文件即可重新解析</span>
         <button class="link" id="btnDemo">载入示例看效果</button>
       </div>
     </section>
@@ -313,17 +322,30 @@
     </div>
 
     <div class="stats" id="stats"></div>
+    <div class="stats-note" id="statsNote" hidden></div>
     <div class="banner" id="banner" hidden></div>
     <!-- P0-5 交付报告：buildZip() 成功后回填实测，失败不清空 -->
     <div id="pp6zipBuildReport" hidden></div>
+
+    <!-- 「关联项目」入口条：开关本身在下面「业务对象」页签的卡片右上角，
+         结果页首屏是模块勾选，用户滚不到也注意不到（2026-11-14 反馈「我还是没看到」）。
+         这里只做跳转，不碰任何出包逻辑。 -->
+    <div class="pl-step3" id="plStep3">第 3 步 / 共 3 步 · 核对下面的预览，确认无误后点「下载导入包 zip」</div>
+    <div class="pl-entry" id="plEntry" hidden>
+      <div class="pl-entry-main">
+        <b>关联项目</b>
+        <span class="sub" id="plEntryText"></span>
+      </div>
+      <button class="btn ghost sm" id="plEntryGo">去设置</button>
+    </div>
 
     <div class="card mod-card">
       <div class="card-head">
         <div>
           <h3>要导出哪些模块</h3>
           <div class="sub">
-            默认全选，出的是<b>一个整包</b>（直接上传即可）。
-            只想更新某一块时，取消勾选其它模块，会按模块单独出包。
+            这里只出<b>普通业务对象</b>和它们的表单/列表，默认全选打成一个整包（直接上传即可）。
+            流程模式的对象在左侧「流程模式」里单独导出，不混在这一个包里。
           </div>
         </div>
         <div class="mod-actions">
@@ -333,14 +355,18 @@
       </div>
       <div class="mod-list" id="modList"></div>
       <div class="pack-bar">
-        <span class="sub" id="packHint">已选全部模块 → 出整包（bo/form/data_template 同包，注释 CONFIG_SYNC_NOTE:）· 导入：系统管理 › 发布管理 › 导入同步包</span>
-        <button class="btn primary" id="btnPack">下载导入包 zip</button>
+        <span class="sub" id="packHint">已选全部模块 → 出整包（bo/form/data_template 同包，注释 CONFIG_SYNC_NOTE:）· 导入：系统管理 › 发布管理 › 导入同步包 · 流程对象不在此包，见左侧「流程模式」</span>
+        <div class="ai-btns">
+          <button class="btn ghost" id="btnWorkflow" hidden>下载流程 XML</button>
+          <button class="btn primary" id="btnPack">下载导入包 zip</button>
+        </div>
       </div>
     </div>
 
     <nav class="tabs" id="tabs">
       <button class="tab active" data-panel="objects">业务对象</button>
       <button class="tab" data-panel="relations">所属关系 <span class="badge" id="relBadge">0</span></button>
+      <button class="tab" data-panel="projlink">项目对齐 <span class="badge" id="plBadge">0</span></button>
       <button class="tab" data-panel="fields">字段体检 <span class="badge" id="fieldBadge">0</span></button>
       <button class="tab" data-panel="forms">表单预览</button>
       <button class="tab" data-panel="lists">列表 / 数据集</button>
@@ -356,6 +382,16 @@
       </div>
       <div id="relBox"></div>
     </div>
+    <div class="panel" data-panel="projlink" hidden>
+      <div class="pl-toolbar">
+        <span class="sub">勾了「关联项目」的对象：已自动补「所属项目」链接字段，
+          与项目对象同名/近义的字段（含相似字段）已照项目定义原样覆盖，差异见下方对照</span>
+        <span class="pl-toolbar-btns">
+          <button class="btn ghost" id="btnPlModal">查看字段差异</button>
+        </span>
+      </div>
+      <div id="plBox"></div>
+    </div>
     <div class="panel" data-panel="fields" hidden></div>
     <div class="panel" data-panel="forms" hidden></div>
     <div class="panel" data-panel="lists" hidden></div>
@@ -364,9 +400,18 @@
   </section>
 </main>
 
-<!-- ========== 已有包改字段：在原 zip 上打最小补丁 ========== -->
+<!-- ========== 存量包修订：在原 zip 上打最小补丁 ========== -->
 <main id="mode-patch" hidden>
   <div class="patch-wrap">
+
+    <!-- 对象级选择同样放在**导入前**：按包内 = 保留包里的现状，不强制点分析 -->
+    <div class="pl-pre" id="plPrePatchBar">
+      <b>业务对象关联项目</b>
+      <label><input type="radio" name="plPrePatch" value="off"> 不关联</label>
+      <label><input type="radio" name="plPrePatch" value="on"> 关联</label>
+      <label><input type="radio" name="plPrePatch" value="keep" checked> 按包内</label>
+      <span class="sub">读包时按这一档预置每个对象的「关联项目」勾选；勾了才按项目定义对齐字段。</span>
+    </div>
 
     <section class="card">
       <div class="card-head">
@@ -448,6 +493,20 @@
           </div>
         </div>
       </div>
+    </section>
+
+    <section class="card" id="patchAlignCard" hidden>
+      <div class="card-head">
+        <div>
+          <h3>③ 项目对齐分析</h3>
+          <div class="sub">勾了「关联项目」的对象自动算：新增哪个链接字段、覆盖哪些已有字段
+            （只改类型/选项/长度/必填/索引，编码与物理列名不动）、哪些跳过</div>
+        </div>
+        <div class="card-actions">
+          <button class="btn ghost" id="btnPatchAlign">重新分析</button>
+        </div>
+      </div>
+      <div id="patchAlignBox" class="patch-body"></div>
     </section>
 
     <section class="card" id="patchBuildCard" hidden>
@@ -555,6 +614,99 @@
   </div>
 </main>
 
+<main id="mode-workflow" hidden>
+  <div class="wf-layout">
+
+    <!-- 第 1 步：对象级选择放在**导入前**（和普通模式共享同一档状态） -->
+    <div class="pl-pre" id="plPreWorkflowBar">
+      <b>第 1 步 · 业务对象关联项目</b>
+      <label><input type="radio" name="plPreWorkflow" value="off" checked> 不关联</label>
+      <label><input type="radio" name="plPreWorkflow" value="on"> 全部关联</label>
+      <span class="sub">导入前先选：全部关联=这份 Excel 里每个对象都关联项目；不关联=一个都不关联。导入后不再弹选择框。</span>
+    </div>
+
+    <!-- 流程这一侧自成闭环：对象包和 XML 都在这里出，
+         不该逼用户先跑去「普通模式」传一遍 Excel -->
+    <section class="card wf-import" id="wfImport">
+      <div class="card-head">
+        <div>
+          <h3>导入 Excel</h3>
+          <div class="sub">
+            同一份填写表：<b>「流程驱动=是」的对象</b>连同它的表单/列表在这里出包，
+            <code>9_流程</code> 出流程定义；普通对象走左侧「普通模式」。
+          </div>
+        </div>
+        <div class="wf-actions">
+          <span class="wf-file" id="wfFileTag" hidden></span>
+          <button class="btn primary" id="btnWfPick">选择 Excel</button>
+          <input type="file" id="wfFileInput" accept=".xlsx,.xlsm" hidden>
+        </div>
+      </div>
+      <div class="wf-import-stat" id="wfImportStat">还没有导入：点右上「选择 Excel」，或把 .xlsx 直接拖到这里</div>
+    </section>
+
+    <!-- 一句话生成/修改流程：节点顺序、处理人、分支条件都能说，比在 Excel 里填三张表快 -->
+    <section class="card wf-ai" id="wfAi">
+      <div class="card-head">
+        <div>
+          <h3>用一句话生成或修改流程</h3>
+          <div class="sub">
+            改已有流程时先在下面选中它，AI 按那条改；没说到的流程不动。生成的是<b>新草稿</b>，不会改你原来的文件。
+          </div>
+        </div>
+      </div>
+      <div class="wf-ai-body">
+        <textarea id="wfAiText" rows="2"
+          placeholder="例：采购申请要三级审批——先部门经理，金额≥10万再加财务和总经理，最后归档；金额小于5000只要部门经理"></textarea>
+        <div class="wf-ai-foot">
+          <span class="sub" id="wfAiHint">Enter 生成，Shift+Enter 换行 · 处理人写角色名，具体角色 ID 到系统里对</span>
+          <button class="btn primary" id="wfAiSend">生成流程</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="wf-side">
+      <div class="card wf-list-card">
+        <div class="card-head"><div><h3>流程清单</h3><div class="sub">点一个查看；不带标记的是 9_流程 里配的</div></div></div>
+        <div class="wf-list" id="wfList"></div>
+      </div>
+    </aside>
+
+    <section class="wf-main">
+      <div class="card wf-head-card">
+        <div class="card-head">
+          <div>
+            <h3>流程详情</h3>
+            <div class="sub">
+              流程对象走「导出流程对象包」→ <code>业务对象 › 导入</code>；
+              流程定义走「下载流程 XML」→ <code>流程设计 › 导入</code>（裸 XML，不进同步包）。
+            </div>
+          </div>
+          <div class="wf-actions">
+            <button class="btn ghost" id="btnWfObjects" disabled
+                    title="把流程模式的对象及其表单/列表打成一个同步包">导出流程对象包</button>
+            <button class="btn primary" id="btnWfDownload" disabled>下载流程 XML</button>
+          </div>
+        </div>
+        <div class="wf-empty" id="wfEmpty">
+          <div class="wf-empty-title">还没有可预览的流程</div>
+          <div class="wf-empty-sub" id="wfEmptySub">
+            点上面的「选择 Excel」（或把文件拖进那个虚线框），流程对象和节点安排会出现在这里。
+          </div>
+        </div>
+        <div class="wf-body" id="wfBody" hidden>
+          <div class="wf-meta" id="wfMeta"></div>
+          <div class="wf-tbl-title">节点 <span class="muted" id="wfNodeCount"></span></div>
+          <div class="wf-rows" id="wfNodes"></div>
+          <div class="wf-tbl-title">流转 <span class="muted" id="wfEdgeCount"></span></div>
+          <div class="wf-rows" id="wfEdges"></div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</main>
+
     </div><!-- /workspace -->
 
     <div class="bottom-dock">
@@ -570,7 +722,7 @@
           <span class="status-led"></span>
           <span id="statusText">就绪</span>
           <span class="status-sep">·</span>
-          <span id="statusMode">导入包生成</span>
+          <span id="statusMode">普通模式</span>
         </div>
         <div class="status-right">
           <span>本地服务</span><span class="status-sep">·</span>
@@ -585,7 +737,38 @@
 
 <div class="toast" id="toast" hidden></div>
 
+<!-- 第 1 步（业务对象关联项目）已经不在这里了：它改成初始页上的 #plPreImportBar
+     三档控件，导入前就定好，导入后不再弹窗问一遍。 -->
+
+<!-- 「相近字段确认」弹窗：勾了「关联项目」的对象里，只有**直接对应**（同名同族）
+     的字段自动覆盖；语义相近 / 可能相关 / 需确认的，逐条列出来由用户勾。
+     默认全部不勾 = 保留我方，勾上「按项目覆盖」才覆盖。 -->
+<div class="pl-mask" id="plMask" hidden>
+  <div class="pl-modal pl-modal-wide" role="dialog" aria-modal="true" aria-labelledby="plModalTitle">
+    <div class="pl-modal-head">
+      <div>
+        <h3 id="plModalTitle">这些字段和项目相近，要按项目定义覆盖吗？</h3>
+        <div class="sub pl-step2">第 2 步 / 共 3 步 · 确认相近字段</div>
+      </div>
+      <button class="pl-modal-close" id="plModalClose" title="关闭（Esc）">×</button>
+    </div>
+    <div class="pl-modal-body" id="plModalBody"></div>
+    <div class="pl-modal-foot">
+      <div class="pl-foot-left">
+        <button class="link" id="plPickAll">全选</button>
+        <button class="link" id="plPickNone">全不选</button>
+        <button class="link" id="plBackEdit" title="回到第 1 步，改完 Excel 再选一次同一个文件">返回修改 Excel</button>
+      </div>
+      <div class="pl-foot-right">
+        <button class="btn ghost" id="plLater">保留我的</button>
+        <button class="btn primary" id="plApplyPicked">按勾选覆盖</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script src="/static/relations.js"></script>
+<script src="/static/projlink.js"></script>
 <script src="/static/app.js"></script>
 <script src="/static/patch.js"></script>
 <script src="/static/query.js"></script>

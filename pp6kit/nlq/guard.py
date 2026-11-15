@@ -429,7 +429,12 @@ def is_read_only(sql: str) -> bool:
     if len(statements) != 1:
         return False
     ast = statements[0]
-    if not isinstance(ast, (exp.Select, exp.Union, exp.Subquery)):
+    # SHOW / DESC / EXPLAIN 也是只读的（看表结构、看执行计划），
+    # 探索真实库时天天要用。它们同样要过下面的禁节点检查——
+    # 比如 EXPLAIN DELETE 里的 Delete 节点会被揪出来。
+    # EXPLAIN 在 sqlglot 里也解析成 Describe，所以不需要单独列 Explain
+    if not isinstance(ast, (exp.Select, exp.Union, exp.Subquery,
+                            exp.Show, exp.Describe)):
         return False
     for node in ast.walk():
         if isinstance(node, FORBIDDEN_NODES):

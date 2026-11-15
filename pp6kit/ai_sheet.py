@@ -94,6 +94,11 @@ SHEET_EXTRA = """
    要人填写/选择的，不要设只读。
 3. `values` 只要真正的取值：说明里混着「候选值：」「半自动？可编辑」这类
    解释文字时，把它们剔掉，只留「立项中、待启动、在研」这样的值。
+   **候选值是分组的（说明里出现「随"XX"字段联动」+ 每行「父值：子1、子2」）时，
+   必须按分组原样保留**：一条 value 写「父值：子1、子2」（例如
+   `"values": ["中药：OTC、RX、双跨、其他", "化药：OTC、RX、双跨、其他", "大健康：大健康"]`），
+   同时给这个字段填 `cascadeParent` = 父字段编码（「随"品种类别"联动」→ 品种类别字段的编码）。
+   不要把分组拍平成不相关的候选值——拍平后级联联动就没了。
 4. 对象名用表单标题去掉公司简称和「表单」二字（「三九项目立项信息表单」→「项目立项信息」）。
 5. 分组〔提报信息〕〔品种基本信息〕保留：同组字段排相邻，顺序按文档。
 6. **文档里出现的每个字段都要输出，一个都不能少**；字段多时宁可写得紧凑
@@ -484,25 +489,88 @@ def analyze(summary: dict, cfg: dict, known_objects: list | None = None,
     if hint.strip():
         user += "\n\n===== 项目经理补充说明 =====\n" + hint.strip()[:600]
 
+    # 期望字段数：表格概要里能数出来的所有字段/列
+    def _expect() -> int:
+        n = 0
+        for sh in summary["sheets"]:
+            n += len(sh.get("fields") or sh.get("columns") or [])
+        return n
+    n_expect = _expect()
+
     from .ai_bo import _fast_cfg
     t0 = time.time()
-    # 表单规格动辄 40~60 个字段，3000 token 会被截断成半个 JSON
-    budget = 6000 if summary["sheets"][0].get("kind") == "form" else 3000
-    text, used = llm.chat_any(_fast_cfg(cfg), [
+    # max_tokens 必须按字段数算，不能用固定值：表单规格 48 个字段时
+    # 6000 token 在第 16 个字段中间就断了（2026-11-12 尹姣定表实测，
+    # 结尾停在 "values": ["自研），_extract_json 只能从残骸里抢出十几个字段，
+    # 用户看到的就是「一张表只生成了 18 个字段」。
+    # 每个字段约 120~200 token（编码+名称+类型+候选值），按 240 留余量；
+    # 另加 2000 的推理余量 —— deepseek-flash 一次推理就能烧 1800+ token。
+    budget = max(8000, min(32000, 4000 + n_expect * 240))
+    msgs = [
         {"role": "system", "content": ai_bo.SYSTEM + SHEET_EXTRA + known},
         {"role": "user", "content": user},
-    ], timeout=timeout, max_tokens=budget)
+    ]
+    text, used = llm.chat_any(_fast_cfg(cfg), msgs, timeout=timeout,
+                              max_tokens=budget)
 
     try:
         spec = ai_bo._extract_json(text)
-    except json.JSONDecodeError as exc:
-        raise llm.LlmError(
-            f"模型输出不是合法 JSON（{exc.msg}）。表格可能列太多，试着删掉无关的表再传"
-        ) from exc
+    except json.JSONDecodeError:
+        # 截断/残缺时重试一次：预算翻倍，并明确要求输出完整 JSON。
+        # 只有这一轮还失败才把「不是合法 JSON」抛给用户。
+        text2, used2 = llm.chat_any(_fast_cfg(cfg), [
+            *msgs,
+            {"role": "assistant", "content": text[-2000:]},
+            {"role": "user", "content":
+                f"你上一次的输出在第 {len(text)} 个字符处被截断了，不是合法 JSON。"
+                f"请重新输出**完整**的 JSON（共 {n_expect} 个字段，一个都不能少）；"
+                f"字段多就写得紧凑些（note 留空），不要省略任何字段。"},
+        ], timeout=timeout, max_tokens=min(32000, budget * 2))
+        text, used = text2, used2
+        spec = ai_bo._extract_json(text)
+
+    # 字段数核对 + 缺失补齐：截断修复后仍可能少字段（模型偷懒）。
+    # 缺了就再发一轮，只要缺失字段的 JSON，合并进 spec。
+    def _spec_names(sp: dict) -> set[str]:
+        return {(f.get("name") or "").strip()
+                for f in (sp.get("fields") or (sp.get("bo") or {}).get("fields") or [])}
+
+    _got = _spec_names(spec)
+    if n_expect and len(_got) < n_expect:
+        _labels: list[str] = []
+        for sh in summary["sheets"]:
+            for f in sh.get("fields") or []:
+                _labels.append(f.get("label") or "")
+            for c in sh.get("columns") or []:
+                _labels.append(c.get("header") or "")
+        _missing = [x for x in _labels if x and x not in _got]
+        if _missing:
+            text3, _ = llm.chat_any(_fast_cfg(cfg), [
+                {"role": "system", "content": ai_bo.SYSTEM + SHEET_EXTRA + known},
+                {"role": "user", "content":
+                    user + "\n\n===== 补充任务 =====\n"
+                    f"你之前只输出了 {len(_got)} 个字段，下面这些字段漏掉了：\n"
+                    + "、".join(_missing)
+                    + "\n\n请**只**输出这些缺失字段，格式为 {\"fields\": [...]}，"
+                      "结构与之前一致（含 code/name/type/values/sourceColumn），"
+                      "不要重复已输出的字段。"},
+            ], timeout=timeout, max_tokens=min(16000, 2000 + len(_missing) * 240))
+            try:
+                extra = ai_bo._extract_json(text3)
+                extra_fields = extra.get("fields") or (extra.get("bo") or {}).get("fields") or []
+                have = _spec_names(spec)
+                added = [f for f in extra_fields
+                         if (f.get("name") or "").strip() not in have]
+                if added:
+                    (spec.setdefault("fields", []) or spec["fields"]).extend(added)
+            except json.JSONDecodeError:
+                pass
 
     # values（候选值）在 build_bo 里统一落到 choices，这里不再单独处理
     bo, notices = ai_bo.build_bo(spec, pool, strict_objects=True)
     notices.extend(_avoid_dict_key_clash(bo))
+    # 级联字段的分组候选值若被模型拍平，单独补一轮归属映射
+    notices.extend(ai_bo.fix_cascade_groups(bo, cfg))
 
     # 把「来源列」还给前端，预览时能对照原表
     src = {}

@@ -347,3 +347,29 @@ def _():
     codes = [o["code"] for o in r["objects"]]
     assert len(codes) == 2
     assert len(set(codes)) == 2, f"编码没去重：{codes}"
+
+
+@case("RDR24", "reader", "「关联项目」列：填是才勾、留空/老模板按否、非法值交给校验",
+      "P0", ["缺列容忍", "留空=零变化", "非法值按否"])
+def _():
+    yes = parse({
+        spec.S_BO: [bo(**{"对象名称": "合同", "对象编码": "contract", "关联项目": "是"})],
+        spec.S_FIELD: [field("contract", "合同编号", "字符串")],
+    })
+    assert yes["objects"][0]["projectLink"] is True
+
+    # 老模板没有这一列 → get() 返回 None → 否（产物与改造前逐字节一致）
+    blank = parse({
+        spec.S_BO: [bo(**{"对象名称": "合同", "对象编码": "contract"})],
+        spec.S_FIELD: [field("contract", "合同编号", "字符串")],
+    })
+    assert blank["objects"][0]["projectLink"] is False
+
+    # 填了认不出的值：按否处理，并让 validate 明说（不静默吞掉）
+    weird = parse({
+        spec.S_BO: [bo(**{"对象名称": "合同", "对象编码": "contract", "关联项目": "可能"})],
+        spec.S_FIELD: [field("contract", "合同编号", "字符串")],
+    })
+    assert weird["objects"][0]["projectLink"] is False
+    msgs = warnings_of(weird)
+    assert any("按「否」处理" in m for m in msgs), msgs

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import io
 import json
 import re
@@ -19,15 +20,19 @@ from urllib.parse import quote
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import ai_bo, ai_form, ai_list, ai_sheet, objects
+from . import ai_bo, ai_form, ai_list, ai_sheet, ai_wf, objects
 from . import patch as bo_patch
-from .builder import build, package_name
+from .builder import build, ensure_default_workflow, ensure_project_links, package_name
 from .model import (
     FORM_BUNDLE,
     FORM_CREATE,
     EMPTY_OPERATORS,
     HIDE_OPERATORS,
     OP_BY_LABEL,
+    WF_KIND_BY_LABEL,
+    WF_ONGOING,
+    WF_START,
+    WF_STATE_BY_KIND,
     Bo,
     BoField,
     Form,
@@ -71,6 +76,65 @@ def _relations_header(headers) -> str | None:
     """用户确认的关系决策走请求头 X-Relations（JSON 稀疏覆盖）。"""
     raw = (headers.get("X-Relations") or "").strip()
     return raw or None
+
+
+def _projlink_header(headers) -> str | None:
+    """「关联项目」的对齐决策走请求头 X-Project-Link（单一决策头，架构 R5）。
+
+    parse（分析）/ build / confirmed-excel 三个入口共用同一个头：以前 PRD 写的是
+    X-Align，和 X-Relations 各一套会造成「两个头都带、谁优先」的口径问题。
+    """
+    raw = (headers.get("X-Project-Link") or "").strip()
+    return raw or None
+
+
+def _object_scope(headers) -> str:
+    """X-Object-Scope：同步包默认只出普通对象，流程对象走「流程模式」工作区。
+
+    - plain（默认）：只出普通对象
+    - workflow：只出流程对象（「导出流程对象包」按钮用）
+    - all：两类都出（兼容旧客户端；不传就无法区分是哪个页面在请求，
+      所以默认给 plain —— 这是产品行为，不是技术默认）
+    """
+    raw = (headers.get("X-Object-Scope") or "").strip().lower()
+    return raw if raw in ("plain", "workflow", "all") else "plain"
+
+
+def _tmp_file(name: str) -> Path:
+    """临时文件名带上 pid + 随机后缀，**不能用固定名**。
+
+    踩过的坑（2026-11-13，两条回归流水线同时跑）：``work_dir()`` 是固定路径
+    ``$TMPDIR/pp6kit-work``，里面再写固定名 ``.build.xlsx`` / ``.upload.xlsx``，
+    而每个调用都在 ``finally`` 里删它 —— A 的清理会删掉 B 正在读的文件，
+    表现为随机几条用例报 ``No such file or directory`` / ``Truncated file header``。
+    同样的坑在真实场景里是「桌面壳两个实例同时出包」「两个标签页同时解析」。
+
+    后缀用 pid + 8 位随机，同一进程内并发（ThreadingHTTPServer）也不会撞。
+    """
+    import os
+    import uuid
+
+    stem, suffix = Path(name).stem, Path(name).suffix
+    return work_dir() / f"{stem}-{os.getpid()}-{uuid.uuid4().hex[:8]}{suffix}"
+
+
+def _tmp_dir(name: str) -> Path:
+    """临时**目录**同样要带 pid + 随机后缀，理由与 ``_tmp_file`` 相同。
+
+    这里比单文件更危险：固定目录 + ``rmtree`` 会让两个实例互相删掉对方刚生成的
+    成果。实测（2026-11-13，冻结包开两个实例并发导出流程）：
+    实例 A 生成完正要读文件，实例 B 的 rmtree 把它删了 → FileNotFoundError；
+    或者 B 的 mkdir 撞上 A 刚建好的目录 → FileExistsError。
+    两者都会让用户拿到 400，而不是一份 XML。
+
+    调用方负责在用完后 ``shutil.rmtree(..., ignore_errors=True)`` 收尾。
+    """
+    import os
+    import uuid
+
+    path = work_dir() / f"{name}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _snippets() -> dict:
@@ -157,7 +221,7 @@ def mod_payload(proj) -> list[dict]:
         "list": len(proj.lists),
         "dataset": sum(1 for d in proj.datasets if d.ds_type != mod_def.DS_FILTER),
         "filter": sum(1 for d in proj.datasets if d.ds_type == mod_def.DS_FILTER),
-        "workflow": 0,
+        "workflow": len(proj.workflows),
     }
     detail: dict[str, list[str]] = {
         "bo": [f"{b.name}（{b.code}）" for b in proj.bos],
@@ -165,7 +229,7 @@ def mod_payload(proj) -> list[dict]:
         "list": [f"{x.name}" for x in proj.lists],
         "dataset": [f"{d.name}" for d in proj.datasets if d.ds_type != mod_def.DS_FILTER],
         "filter": [f"{d.name}" for d in proj.datasets if d.ds_type == mod_def.DS_FILTER],
-        "workflow": [],
+        "workflow": [w.name for w in proj.workflows],
     }
     out = []
     for m in mod_def.MODULES:
@@ -185,8 +249,89 @@ def mod_payload(proj) -> list[dict]:
     return out
 
 
-def parse_excel(data: bytes) -> dict:
-    tmp = work_dir() / ".upload.xlsx"
+def _wf_payload(proj) -> list[dict]:
+    """流程预览载荷：给左侧「流程」工作区用。
+
+    为什么单独给一份而不是让前端读 XML：流程的节点/流转是**表格里的业务语义**
+    （谁审、什么条件、多久办结），前端拿 XML 还得再解一遍双层 JSON。
+    这里只挑人要看的那几列，字段名与 `Workflow/WfNode/WfEdge` 保持一一对应，
+    以后加列不用改前端结构。
+
+    任何异常都不许冒泡：流程详情挂了不该让整个 Excel 解析失败，
+    所以调用方用 try/except 兜住（见 parse_excel）。
+    """
+    out: list[dict] = []
+    kinds = {v: k for k, v in WF_KIND_BY_LABEL.items()}      # 英文 State → 中文标签
+    for wf in proj.workflows:
+        bo = proj.bo(wf.bo_code)
+
+        def _field_label(code: str) -> str:
+            f = bo.field_by_code(code) if bo else None
+            return (f.name if f else "") or code
+
+        nodes = []
+        for i, n in enumerate(wf.nodes, start=1):
+            nodes.append({
+                "id": n.id or i,
+                "name": n.name,
+                "kind": kinds.get(n.kind, n.kind),
+                # 处理人为空时留空串，前端显示「—」；不在这里编「（未填）」，
+                # 免得把「真的没配」和「配了一个空名字」混成一句话
+                "handler": "、".join(n.handler_names),
+                "handlerType": n.handler_type,
+                "formKey": n.form_key,
+                "state": n.business_state or WF_STATE_BY_KIND.get(n.kind, ""),
+                "goBack": "、".join(n.go_back),
+                "days": n.expect_days if n.kind == WF_ONGOING else None,
+            })
+        edges = []
+        # 用生成器同一套规则算流转：11_流程流转 留空时它会把节点自动串成直线，
+        # 预览必须显示**将要生成的样子**，而不是表里的原始行数（那会是 0 条，
+        # 用户会以为流程断了）。所以这里复用 _resolve_edges，不另写一套推导。
+        try:
+            from .gen_workflow import _resolve_edges
+            resolved = _resolve_edges(wf, wf.nodes, lambda _msg: None)
+        except Exception:                        # noqa: BLE001
+            resolved = []
+        for e in resolved:
+            rules = e.get("rules") or []
+            if rules:
+                field, op, value, label = rules[0]
+                cond = f"{_field_label(field)} {op or '等于'} {label or value}"
+                if len(rules) > 1:
+                    cond += f" 等 {len(rules)} 个条件"
+            else:
+                cond = "无条件"
+            edges.append({
+                "src": e["src"].name, "dst": e["dst"].name,
+                "name": e["name"] or ("提交" if e["src"].kind == WF_START else "同意"),
+                "condition": cond,
+                "order": e.get("order", 0),
+            })
+        out.append({
+            "name": wf.name,
+            "boCode": wf.bo_code,
+            "boName": bo.name if bo else "",
+            "active": wf.is_active,
+            # 自动兜底的「开始→审批→通过」，前端加个标记，别让人以为是自己配的
+            "auto": wf.auto,
+            "nodeCount": len(wf.nodes),
+            # 算的是「将要生成」的流转数，不是表里的行数（空表会自动串线，见上）
+            "edgeCount": len(edges),
+            "nodes": nodes,
+            "edges": edges,
+        })
+    return out
+
+
+def parse_excel(data: bytes, projlink_header: str | None = None) -> dict:
+    """解析一份填写表，返回预览用的 view model。
+
+    projlink_header：X-Project-Link 请求头。解析页每个对象卡片上的「关联项目」
+    开关就是靠它生效的（勾选 → 前端带这个头重新 POST /api/parse）。None = 只按
+    Excel 的「关联项目」列走，与加开关之前逐字节相同。
+    """
+    tmp = _tmp_file(".upload.xlsx")
     tmp.write_bytes(data)
     try:
         proj, read_errors, stats = read_workbook(tmp)
@@ -205,23 +350,35 @@ def parse_excel(data: bytes) -> dict:
     for bo in proj.bos:
         if not bo.tbl_name:
             bo.tbl_name = table_name_for(bo.code)
-    notices.extend(blueprint.expand(proj))
-    stats = {
-        "业务对象": len(proj.bos),
-        "字段": sum(len(b.fields) for b in proj.bos),
-        "表单": len(proj.forms),
-        "表单控件": sum(len(f.fields) for f in proj.forms),
-        "列表": len(proj.lists),
-        "数据集": sum(1 for d in proj.datasets if d.ds_type != mod_def.DS_FILTER),
-        "筛选器": sum(1 for d in proj.datasets if d.ds_type == mod_def.DS_FILTER),
-        "流程": 0,
-    }
-    issues = [Issue("error", "读取", e) for e in read_errors] + validate(proj)
+    # ---- 顺序很重要，四条约束同时成立（主理人 2026-11-14 复审）：
+    #   ① project_align 必须在 apply **之前**算：apply 会把字段改名，而前端的
+    #      决策头（X-Project-Link）用的正是**对齐前**的编码；
+    #   ② relationships 也在 apply 之前算：对齐会把「项目状态」变成指向
+    #      project_state 的 object 字段，跑到后面会被 R2 规则当成
+    #      「新对象该挂到 project_state 下」的假建议；
+    #   ③ apply 必须在 validate / fieldcheck / 渲染之前：预览的字段编码要与
+    #      出包产物一致（预览=产物），否则对象卡片还是 projectState、页签却说
+    #      会变成 stateId，两边对不上；
+    #   ④ apply 在 ensure_project_links 之前：链接字段由 builder 补，
+    #      apply 只负责「对齐 + 改名 + 重写引用」。
+    from . import projlink as _projlink
 
-    # 字段体检：跨对象/跨表单找疑似重复、类型冲突、候选值不一致。
-    # 单独一栏，不进 issues —— 它不影响出包，只是帮人核对。
-    from . import fieldcheck
-    field_findings = fieldcheck.check(proj)
+    # 解析页每张对象卡片上的「关联项目」开关（决策头里的 linked）必须在 analyze
+    # **之前**落到模型：analyze 是按 bo.project_link 决定「哪些对象进对齐清单」的，
+    # 晚一步的话刚勾上的对象在页签里根本不会出现（用户会以为开关没生效）。
+    # 这里刻意不传 project 做 code 校验：Excel 里的对象可能刚被改名/删掉，一个过期
+    # code 不该让整次解析 400 —— apply_linked 会把它降级成一条「已忽略」提示。
+    decisions = None
+    if projlink_header:
+        decisions = _projlink.parse_decisions(projlink_header)
+        notices.extend(_projlink.apply_linked(proj, decisions))
+
+    try:
+        project_align = _projlink.analyze(proj, decisions=decisions)
+    except Exception as exc:                     # noqa: BLE001
+        project_align = {"status": "unavailable", "notice": f"项目对齐分析失败：{exc}",
+                         "snapshotSource": "unavailable", "snapshotSourceLabel": "无",
+                         "warnings": [], "summary": {}, "items": []}
 
     # 所属关系识别：只给建议，默认不建立，用户确认后才生效。
     # 识别失败绝不影响解析结果本身。
@@ -232,10 +389,83 @@ def parse_excel(data: bytes) -> dict:
         relationships = {"status": "unavailable", "notice": "关系识别失败",
                          "parentOptions": [], "items": []}
 
+    # 预览应用**全部**对齐项（精确同名 + 相似，2026-11-14 用户口径：勾了
+    # 「关联项目」就照项目定义原样覆盖，不再逐条问）；决策头里的 align 只剩
+    # 向后兼容的「显式 false = 不对齐」。差异明细由上面的 analyze 算好后原样
+    # 返回给前端（projectAlign.diffs），弹窗只是事后对照，不影响出包。
+    align_errors: list[Issue] = []
+
+    def _align_error(message: str) -> None:
+        """记一条对齐错误，同一件事只记一次（apply 与 ensure_project_links 都会报）。"""
+        for got in align_errors:
+            if got.message == message or message.endswith(got.message):
+                return
+        align_errors.append(Issue("error", "项目对齐", message))
+
+    def _report_align_failure(message: str) -> None:
+        """把对齐阶段的 ValueError 降级成校验错误，同一件事只报一条。
+
+        「对象 project 不能关联自己」这类问题 validate 里有更具体的说法
+        （「不能勾『关联项目』：自己关联自己没有意义」），这里就不再重复占一行，
+        否则用户看到两条一模一样意思的错误，不知道该改哪个（主理人复验）。
+        """
+        if "不能关联自己" in message:
+            return
+        _align_error(message)
+
+    try:
+        # 带 decisions：与出包走同一个函数，预览里看到的编码/长度就是包里那份。
+        # 开关只改 project_link（已在上面 apply_linked 落过），这里不会重复加字段。
+        _projlink.apply(proj, decisions)
+    except ValueError as exc:
+        # 对齐失败不能把整个解析变成 500——用户还要看别的校验结果去修表
+        _report_align_failure(str(exc))
+
+    notices.extend(blueprint.expand(proj))
+    # 预览必须与出包一致（本函数开头那句「预览看到的即最终产出」）：
+    # 链接字段与标准全套表单里的「所属项目」控件只在 ensure_project_links 里补，
+    # 预览不补的话用户看不到它会多出一个字段。
+    try:
+        notices.extend(ensure_project_links(proj))
+    except ValueError as exc:
+        # 链接字段补不出来（自关联 / project_id_ 被占）同样降级成校验错误，
+        # 页面照常给出其余结果，用户改完表再上传
+        _report_align_failure(str(exc))
+    # 与 build() 同一处逻辑：不填流程的对象自动补「开始→审批→通过」，
+    # 否则预览页（左侧「流程」工作区）会显示「没有流程」，跟出包结果不一致。
+    notices.extend(
+        f"自动生成默认流程：{line}" for line in ensure_default_workflow(proj)
+    )
+    stats = {
+        "业务对象": len(proj.bos),
+        "字段": sum(len(b.fields) for b in proj.bos),
+        "表单": len(proj.forms),
+        "表单控件": sum(len(f.fields) for f in proj.forms),
+        "列表": len(proj.lists),
+        "数据集": sum(1 for d in proj.datasets if d.ds_type != mod_def.DS_FILTER),
+        "筛选器": sum(1 for d in proj.datasets if d.ds_type == mod_def.DS_FILTER),
+        "流程": len(proj.workflows),
+    }
+    issues = ([Issue("error", "读取", e) for e in read_errors] + align_errors
+              + validate(proj))
+
+    # 字段体检：跨对象/跨表单找疑似重复、类型冲突、候选值不一致。
+    # 单独一栏，不进 issues —— 它不影响出包，只是帮人核对。
+    from . import fieldcheck
+    field_findings = fieldcheck.check(proj)
+
+    # 流程预览：坏了也不许拖垮整包解析，降级成空数组 + 一条提示
+    try:
+        workflows = _wf_payload(proj)
+    except Exception as exc:                     # noqa: BLE001
+        workflows = []
+        notices.append(f"流程预览生成失败：{exc}")
+
     return {
         "ok": True,
         "stats": stats,
         "modules": mod_payload(proj),
+        "workflows": workflows,
         "fieldChecks": fieldcheck.to_payload(field_findings),
         "fieldCheckWarn": sum(1 for f in field_findings if f.level == "warn"),
         "settings": {
@@ -254,6 +484,12 @@ def parse_excel(data: bytes) -> dict:
                 "moduleId": bo.module_id,
                 "typeId": bo.type_id,
                 "withLog": bo.with_log,
+                # 前端要区分「这一条在同步包里」还是「在流程对象包里」：
+                # 流程模式的对象不随同步包出，界面得说清楚它去哪了
+                "flowDriven": bool(bo.flow_driven),
+                # 勾了「关联项目」的对象卡片上给一个 chip，一眼看出它会多出
+                # 「所属项目」字段并被对齐
+                "projectLink": bool(bo.project_link),
                 "fields": _field_payload(bo),
             }
             for bo in proj.bos
@@ -283,20 +519,29 @@ def parse_excel(data: bytes) -> dict:
         ],
         "notes": notices,
         "relationships": relationships,
+        # 项目字段对齐（view model 契约见架构 §2.4，前端零业务规则）
+        "projectAlign": project_align,
         "errorCount": sum(1 for i in issues if i.level == "error"),
         "warnCount": sum(1 for i in issues if i.level == "warn"),
     }
 
 
 def build_zip(data: bytes, codes: list[str] | None = None,
-              relations_header: str | None = None) -> tuple[bytes, str]:
+              relations_header: str | None = None,
+              object_scope: str = "all",
+              projlink_header: str | None = None) -> tuple[bytes, str]:
     """codes：要出包的模块；None/空 = 全部。
     relations_header：X-Relations 请求头（稀疏决策）。None = 不覆盖，按 Excel 原样。
+    projlink_header：X-Project-Link 请求头（关联项目/对齐决策）。None = 只按自动判定。
+    object_scope：出哪一类业务对象（按「选择模式」分）：
+        all      全部，兼容旧调用（CLI / 回归）
+        plain    只出普通对象——同步包用这个
+        workflow 只出流程对象（连带它的表单/列表/数据集）——「流程模式」工作区用这个
 
-    返回的 zip 内部按模块分目录，每个模块一个独立小包（001-表单.zip），
-    外加一份「按模块导入顺序.txt」——因为系统是逐个模块导入的，混在一起没法用。
+    流程对象在系统里是流程模式（bo XML ``mode="workflow"``），要和流程定义
+    配套导入，所以从同步包里分出去单独出一包。
     """
-    tmp_xlsx = work_dir() / ".build.xlsx"
+    tmp_xlsx = _tmp_file(".build.xlsx")
     tmp_xlsx.write_bytes(data)
     work = work_dir() / f".run-{datetime.now().strftime('%H%M%S%f')}"
     try:
@@ -312,23 +557,77 @@ def build_zip(data: bytes, codes: list[str] | None = None,
             if decisions:
                 rel_notices = _relations.apply_confirmations(proj, decisions)
 
+        # 关联项目：对齐必须发生在 validate 之前（对齐改名后若还留着旧编码，
+        # validate 会报一堆「控件引用不存在的字段」假错）、slice_by_mode 之前
+        # （切片是浅拷贝，Bo 实例共享）、build 之前（生成器读最终模型）。
+        from . import projlink as _projlink
+        align_report: dict = {}
+        if projlink_header is not None or any(
+                getattr(b, "project_link", False) for b in proj.bos):
+            align_decisions = _projlink.parse_decisions(projlink_header, proj)
+            align_report = _projlink.apply(proj, align_decisions)
+
         issues = [Issue("error", "读取", e) for e in read_errors] + validate(proj)
         errors = [i for i in issues if i.level == "error"]
         if errors:
             raise ValueError("存在校验错误，已中止：\n" + "\n".join(str(e) for e in errors[:20]))
 
+        # 校验按**整份 Excel** 走（用户看到的问题要是完整的），切分只影响出包。
+        scope = (object_scope or "all").strip().lower()
+        if scope in ("plain", "workflow"):
+            from .builder import slice_by_mode
+            proj = slice_by_mode(proj, scope == "workflow")
+            if not proj.bos:
+                if scope == "workflow":
+                    raise ValueError("这份 Excel 里没有流程驱动对象：到「1_业务对象」把"
+                                     "「流程驱动」改成「是」，流程对象才会被列出来")
+                raise ValueError("这份 Excel 里的业务对象全是流程模式，同步包里没有可出的"
+                                 "内容：流程对象请到左侧「流程模式」工作区导出")
+
         res = build(proj, _snippets(), work, codes=codes)
         if rel_notices:
             res.notices.extend(rel_notices)
+        for line in align_report.get("notices") or []:
+            # 快照不可用这类「降级说明」即使一条都没对齐也要让用户看到
+            if line not in res.notices:
+                res.notices.append(line)
         if not res.deliverables:
             raise ValueError("选中的模块没有可生成的内容")
 
+        # 只勾了「流程」时，deliverables 里只有一个 .xml：再往下走会把它丢进
+        # zipfile.ZipFile(src) → BadZipFile，前端只看到「File is not a zip file」。
+        # 这里提前拦住并说清楚该怎么拿（流程是裸 XML，系统的流程导入是另一个入口）。
+        if not any(d.module == "all" or mod_def.of(d.module).zipped
+                   for d in res.deliverables):
+            raise ValueError("流程是裸 XML，不走同步包：请点「下载流程 XML」，"
+                             "或到 管理 › 流程设计 › 导入 单独上传")
+
         lines = [
-            "PowerProject 导入包生成报告",
+            "PowerProject 同步包生成报告",
             f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             "",
             "读取概况: " + "  ".join(f"{k}={v}" for k, v in stats.items() if v),
             "",
+        ]
+        if align_report and not align_report.get("noop", True):
+            _s = align_report.get("summary") or {}
+            # 一行汇总（PRD P1-2 要求 zip comment 里能一眼看到做过对齐）
+            lines.insert(4, f"项目对齐: 新增 {_s.get('linkFields', 0)} / "
+                            f"对齐 {_s.get('aligned', 0)} / 跳过 {_s.get('skipped', 0)}")
+        if scope == "workflow":
+            # 这一包是从「流程模式」工作区导出的：只有流程模式的对象，
+            # 普通对象在同步包里。两边导入入口不同，写清楚免得上错菜单。
+            lines += [
+                "【这是流程对象包】",
+                "  只含流程模式的对象（mode=workflow）及其表单 / 列表 / 数据集。",
+                "  导入：管理 › 业务对象 › 导入（和普通对象同一个入口，但建议先导普通包，",
+                "        流程对象的父子关系要能找到已存在的父对象）。",
+                "  流程定义是裸 XML，另点「下载流程 XML」，到 管理 › 流程设计 › 导入。",
+                "",
+                "  ⚠ 本包**不含**普通业务对象——那部分走左侧「普通模式」出包。",
+                "",
+            ]
+        lines += [
             "【怎么导入】",
             "  下载的这个 zip 直接上传即可（结构同系统导出的 config-sync-*.zip）：",
             "      bo/001-xxx.xml            表结构",
@@ -345,9 +644,27 @@ def build_zip(data: bytes, codes: list[str] | None = None,
         for i, d in enumerate(mods, 1):
             lines.append(f"  {i}. {d.label:<12} {len(d.items)} 项   →  {d.menu}")
             for a in d.items:
-                lines.append(f"       · {a.kind} {a.key}")
+                # 流程对象在系统里是「流程模式」(mode="workflow")，普通对象是
+                # 普通模式。报告里标出来，导出后不用解包也能确认这个对象带上
+                # 审批入口、流程 XML 能挂上它。
+                mark = ""
+                if d.module == "bo":
+                    bo = proj.bo(a.key)
+                    if bo is not None and bo.flow_driven:
+                        mark = "  (流程模式)"
+                lines.append(f"       · {a.kind} {a.key}{mark}")
+        if any(d.module == "workflow" for d in res.deliverables):
+            # 流程的 XML 确实**不在**这个 zip 里（_pack_all 会跳过），
+            # 不写清楚用户会以为包里漏了
+            lines.append("")
+            lines.append("  ⚠ 流程是裸 XML，需在 管理 › 流程设计 › 导入 单独上传（本包不含流程）；"
+                         "页面底部「下载流程 XML」可以直接拿到。")
         if res.notices:
             lines += ["", "提示:"] + [f"  - {n}" for n in dict.fromkeys(res.notices)]
+        if align_report and not align_report.get("noop", True):
+            # 独立小节：用户要能从报告里逐条看到「哪个字段对齐成了什么、哪些跳过了」
+            lines += ["", "项目对齐:"] + [f"  {x}"
+                                         for x in _projlink.report_lines(align_report)[1:]]
         warns = [i for i in issues if i.level == "warn"]
         if warns:
             lines += ["", "警告:"] + [f"  - {i}" for i in warns]
@@ -393,7 +710,8 @@ def build_zip(data: bytes, codes: list[str] | None = None,
         # 下载文件名要能看出是干什么的：{业务名}-导入包-{日期}.zip
         # （以前是 config-sync-20261110-221234.zip，落地到下载目录完全认不出）
         stamp = datetime.now().strftime("%Y%m%d")
-        name = package_name(res.biz_label or "导入包", "导入包", stamp)
+        name = package_name(res.biz_label or "导入包",
+                            "流程对象" if scope == "workflow" else "导入包", stamp)
         return buf.getvalue(), name
     finally:
         tmp_xlsx.unlink(missing_ok=True)
@@ -401,13 +719,14 @@ def build_zip(data: bytes, codes: list[str] | None = None,
 
 
 def confirmed_excel(data: bytes, relations_header: str | None = None,
-                    name: str = "") -> tuple[bytes, str]:
-    """把「确认版 Excel」返回给用户：原始 Excel + 已确认的关系写回三列。
+                    name: str = "", projlink_header: str | None = None
+                    ) -> tuple[bytes, str]:
+    """把「确认版 Excel」返回给用户：原始 Excel + 已确认的关系/对齐写回。
 
     不原地覆盖用户文件——确认版始终作为**新** xlsx 返回，
     下次打开这份才能继承决定；未确认的自动建议不写入。
     """
-    tmp = work_dir() / ".confirm.xlsx"
+    tmp = _tmp_file(".confirm.xlsx")
     tmp.write_bytes(data)
     try:
         proj, read_errors, _stats = read_workbook(tmp)
@@ -419,6 +738,18 @@ def confirmed_excel(data: bytes, relations_header: str | None = None,
             decisions = _relations.parse_decisions(relations_header)
             if decisions:
                 rel_notices = _relations.apply_confirmations(proj, decisions)
+
+        # 与 build_zip 完全同构：先对齐（写模型），再补链接字段，最后校验。
+        # 确认版里必须有这条字段行/控件行，否则用户下次打开看不到「所属项目」，
+        # 再上传又会被当成「没关联项目」跑一遍。
+        from . import projlink as _projlink
+        if projlink_header is not None or any(
+                getattr(b, "project_link", False) for b in proj.bos):
+            align_decisions = _projlink.parse_decisions(projlink_header, proj)
+            _projlink.apply(proj, align_decisions)
+        for note in ensure_project_links(proj):
+            if note not in rel_notices:
+                rel_notices.append(note)
 
         issues = [Issue("error", "读取", e) for e in read_errors] + validate(proj)
         errors = [i for i in issues if i.level == "error"]
@@ -439,7 +770,7 @@ def confirmed_excel(data: bytes, relations_header: str | None = None,
 
 
 def inspect_zip(data: bytes) -> tuple[bytes, str]:
-    tmp = work_dir() / ".upload-inspect.zip"
+    tmp = _tmp_file(".upload-inspect.zip")
     tmp.write_bytes(data)
     try:
         proj, notes = inspect_path(tmp)
@@ -451,7 +782,7 @@ def inspect_zip(data: bytes) -> tuple[bytes, str]:
         tmp.unlink(missing_ok=True)
 
 
-# ---------------------------------------------------------------- 已有包改字段
+# ---------------------------------------------------------------- 存量包修订
 # 「反解」是把包拆成 Excel 再重造一份；这里走的是另一条路：**在原包上打补丁**。
 # 上传一次 zip 拿 token，之后预览/出包/导 Excel 都用 token 复用，
 # 免得每次操作都把几 MB 的包重新 POST 一遍。
@@ -528,7 +859,6 @@ _KIND_TO_MODULE = {
     "data_template": "data_template",   # 需要再细分列表/数据集/筛选器
     "workflow": "workflow",
 }
-_IMPORT_BUILD = work_dir() / "import-build"
 _PROJ_CACHE: dict[str, object] = {}
 
 
@@ -540,7 +870,7 @@ def _cache_proj(data: bytes):
     hit = _PROJ_CACHE.get(key)
     if hit is not None:
         return hit
-    tmp = work_dir() / ".cache.xlsx"
+    tmp = _tmp_file(".cache.xlsx")
     tmp.write_bytes(data)
     try:
         proj, read_errors, _ = read_workbook(tmp)
@@ -558,22 +888,92 @@ def _cache_proj(data: bytes):
     return proj
 
 
-def import_module(data: bytes, code: str) -> tuple[bytes, str]:
+def import_module(data: bytes, code: str,
+                  projlink_header: str | None = None) -> tuple[bytes, str]:
     """只生成某一个模块的独立 zip（页面上的「导入」按钮）。
 
     与 build_zip 的区别：不打包汇总，直接给系统能吃的那个单包。
+    projlink_header：X-Project-Link（关联项目 / 对齐决策）。这条路径在界面上比
+    「下载导入包」更显眼（每个模块行上都有一个「导入」），漏了它就是
+    「勾了『关联项目』→ 点导入 → 包里还是没有 projectId」。
     """
     if code not in mod_def.BY_CODE:
         raise ValueError(f"未知模块 {code}")
+    if not mod_def.of(code).zipped:
+        # 流程是裸 XML。这个接口只回 zip：不拦住就会把 .xml 当 application/zip
+        # 发出去（前端那个按钮虽然被禁用，接口是公开的，curl 一下就能踩到）
+        raise ValueError(f"「{mod_def.label(code)}」是裸 XML，不走模块包："
+                         f"请用「下载流程 XML」按钮（/api/workflow）")
+    # **必须深拷贝**：_cache_proj() 是跨请求共享的同一个 Project，apply 会改字段
+    # 定义、改名、重写引用——直接改缓存的话，下一次「没带头」的请求也会带着
+    # projectId（用户会看到开关关不掉，且顺序不同结果不同，极难排查）。
+    # 副本上对齐是安全的：_cache_proj 已经 blueprint.expand 过，build() 内部再
+    # expand 一次是幂等的，ensure_project_links 也只在副本上加字段。
+    proj = copy.deepcopy(_cache_proj(data))
+    if projlink_header:
+        from . import projlink as _projlink
+
+        decisions = _projlink.parse_decisions(projlink_header)
+        _projlink.apply(proj, decisions)
+    work = _tmp_dir("import-build")
+    try:
+        res = build(proj, _snippets(), work, codes=[code])
+        if not res.deliverables:
+            raise ValueError(f"「{mod_def.label(code)}」没有可导入的内容")
+        d = res.deliverables[0]
+        return d.path.read_bytes(), d.filename
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def workflow_files(data: bytes) -> tuple[bytes, str, str]:
+    """流程定义是裸 XML：一条流程回一个 .xml，多条回一个 zip（内含 {流程名}.xml）。
+
+    返回 (body, filename, content_type)。
+
+    为什么不复用 ``import_module``：那个接口的语义是「单模块单 zip」，
+    而 9_流程 是多行表，多流程时它只会静默给出第一条（见架构文档 D3 方案 B 的否决理由）。
+    """
     proj = _cache_proj(data)
-    _IMPORT_BUILD.mkdir(parents=True, exist_ok=True)
-    shutil.rmtree(_IMPORT_BUILD, ignore_errors=True)
-    _IMPORT_BUILD.mkdir(parents=True, exist_ok=True)
-    res = build(proj, _snippets(), _IMPORT_BUILD, codes=[code])
-    if not res.deliverables:
-        raise ValueError(f"「{mod_def.label(code)}」没有可导入的内容")
-    d = res.deliverables[0]
-    return d.path.read_bytes(), d.filename
+    # 与 build/parse 同一套兜底：流程驱动对象即使不填 9_流程 也有默认三步，
+    # 否则这里会先拦住，用户点了「下载流程 XML」却被告知「9_流程 是空的」。
+    # _cache_proj 有缓存，ensure_default_workflow 幂等（按 bo_code 判重），不会越调越多。
+    ensure_default_workflow(proj)
+    if not proj.workflows:
+        raise ValueError(
+            "这份 Excel 里没有流程驱动对象：到「1_业务对象」把「流程驱动」改成「是」，"
+            "就会自动生成 开始 → 部门审批 → 通过")
+
+    # 只把**流程层面**的错误当阻断条件：用户可能只想先拿流程 XML，
+    # 表单/列表那半边的问题不该拦住这个下载入口。
+    errors = [i for i in validate(proj)
+              if i.level == "error" and str(i.where).startswith("流程")]
+    if errors:
+        raise ValueError("流程定义有错误，已中止：\n"
+                         + "\n".join(str(e) for e in errors[:20]))
+
+    out = _tmp_dir("workflow-out")
+    try:
+        res = build(proj, _snippets(), out, codes=["workflow"])
+        files = [d for d in res.deliverables if d.module == "workflow"]
+        if not files:
+            raise ValueError("没有生成出流程定义，检查 9_流程 与 10_流程节点 是否填了")
+        # 先把字节读进内存再清理目录 —— 出包目录用完即删，不给并发留窗口
+        blobs = [(d.filename, d.path.read_bytes()) for d in files]
+        label = res.biz_label
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+
+    if len(blobs) == 1:
+        return blobs[0][1], blobs[0][0], "application/xml; charset=utf-8"
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for filename, content in blobs:
+            z.writestr(filename, content)
+    stamp = datetime.now().strftime("%Y%m%d")
+    name = package_name(label or "导入包", f"流程{len(blobs)}条", stamp)
+    return buf.getvalue(), name, "application/zip"
 
 
 # ---------------------------------------------------------------- 自然语言查询
@@ -800,6 +1200,17 @@ def ai_generate_bo(payload: dict) -> dict:
     }
 
 
+def ai_workflow(data: bytes, instruction: str, focus: str = "") -> tuple[bytes, str, dict]:
+    """一句话生成/修改流程：返回新的 xlsx + 文件名 + 摘要（前端 toast 用）。"""
+    from .builder import safe_filename
+
+    body, summary = ai_wf.generate(data, instruction, focus, _llm_conf())
+    stamp = datetime.now().strftime("%Y%m%d-%H%M")
+    names = [w["name"] for w in summary.get("workflows") or []]
+    label = names[0] if len(names) == 1 else (f"{len(names)}条流程" if names else "流程")
+    return body, f"{safe_filename(label)}-流程草稿-{stamp}.xlsx", summary
+
+
 def ai_from_sheet(data: bytes, hint: str = "", with_form: bool = True,
                   with_list: bool = True, sheet: str = "") -> dict:
     """非标准 Excel → 标准「对象 + 表单 + 列表」。
@@ -978,19 +1389,38 @@ def ai_apply_bo(payload: dict, relations_header: str | None = None) -> tuple[byt
         # 否则会生成「控件 xxx 在对象字段中不存在」的坏表单
         # 下拉类控件的取值来源以「字段本身」为准：object → 对象编码，dic → 字典 key。
         # 预览往返里前端可能没带 valueSource，漏了它就成空下拉。
-        src_of = {f.code: f.object_type for f in bo.fields
-                  if f.type_new in ("object", "dic") and f.object_type}
+        #
+        # ⚠ dic 的字典 key 是派生数据（对象编码_字段编码），**必须用当前对象算**，
+        # 不能信预览里带过来的 valueSource——用户改过对象编码后，旧 key 全部失效，
+        # 校验会报「控件引用的字典在对象里不存在」直接中止出包
+        # （2026-11-12 用户截图：innovationPipeline 等四个控件全中招）。
+        src_of = {}
+        for f in bo.fields:
+            if f.type_new == "dic":
+                # dic 一律用 dict_key()（对象编码_字段编码），**绝不**采信
+                # object_type——AI 路径里它可能还是裸字段编码（2026-11-12 实测：
+                # 裸编码压过正确 key，整包 dic 控件的取值来源全错）。
+                # dict_key 与 _dict_blocks 生成字典 / model.resolved 写 XML 用
+                # 同一规则，三处天然一致。
+                src_of[f.code] = f.dict_key()
+            elif f.type_new == "object":
+                src_of[f.code] = f.object_type
         for ff in form_data["fields"]:
             fname = (ff.get("name") or "").strip()
             ftype = ff.get("type") or "text"
             if fname and ftype not in CONTAINERS and fname not in valid:
                 continue
+            if fname in src_of and ftype in ("select", "dictionary"):
+                # dic/object 控件：取值来源永远重算，陈旧值直接丢弃
+                vs = src_of[fname]
+            else:
+                vs = ff.get("valueSource") or src_of.get(fname) or ""
             form.fields.append(FormField(
                 form_key=form.key,
                 name=fname,
                 label=ff.get("label") or fname,
                 field_type=ftype,
-                value_source=(ff.get("valueSource") or src_of.get(fname) or ""),
+                value_source=vs,
                 cascade_parent=(ff.get("cascadeParent") or ""),
                 placeholder=ff.get("placeholder") or "请输入",
                 required=bool(ff.get("required")),
@@ -1067,6 +1497,8 @@ def ai_apply_bo(payload: dict, relations_header: str | None = None) -> tuple[byt
             board_group=list_data.get("boardGroup") or "",
             gantt_start=((list_data.get("gantt") or {}).get("start") or ""),
             gantt_end=((list_data.get("gantt") or {}).get("end") or ""),
+            # 级联详情字段：用户在预览的下拉里选的（前端 state 带回来）
+            detail_field=(list_data.get("detailField") or "").strip(),
         ))
     else:
         proj.lists.append(ListDef(
@@ -1638,7 +2070,10 @@ class Handler(BaseHTTPRequestHandler):
                 ".css": "text/css; charset=utf-8",
                 ".svg": "image/svg+xml",
             }.get(target.suffix, "application/octet-stream")
-            self._send(200, target.read_bytes(), ctype)
+            # 本地工具没有构建流程，前端改完刷新就该看到——浏览器默认会按
+            # 无校验头做启发式缓存，结果改了 CSS/JS 刷新还是旧样子（排查过一次）
+            self._send(200, target.read_bytes(), ctype,
+                       extra={"Cache-Control": "no-cache, must-revalidate"})
         elif path == "/api/nlq/config":
             self._json(nlq_config())
         elif path == "/api/nlq/test":
@@ -1669,10 +2104,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         try:
             if self.path == "/api/parse":
-                self._json(self._safe_parse())
+                # 「关联项目」开关走同一个决策头。/校验放在路由层：头非法是**请求**
+                # 的问题（与 /api/build 4xx 一个口径），不能被 _safe_parse 的
+                # 「坏文件 → 200 + ok:false」兜底吞掉，否则前端只看到一句话。
+                pl_header = _projlink_header(self.headers)
+                if pl_header:
+                    from .projlink import parse_decisions as _pl_decisions
+                    _pl_decisions(pl_header)
+                self._json(self._safe_parse(pl_header))
             elif self.path == "/api/build":
                 body, name = build_zip(self._body(), _codes(self.headers),
-                                       _relations_header(self.headers))
+                                       _relations_header(self.headers),
+                                       _object_scope(self.headers),
+                                       _projlink_header(self.headers))
                 # X-Build-Report 的数据从「返回的 zip 字节」实测读取，不是推测；
                 # build_zip() 本身一行未动，blob / X-Filename / Content-* 全不变。
                 extra = None
@@ -1705,12 +2149,18 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     extra = None                  # 头是纯附加，任何异常都不阻断下载
                 self._send(200, body, "application/zip", name, extra=extra)
-            elif self.path == "/api/confirmed-excel":
+            elif self.path.split("?")[0] == "/api/confirmed-excel":
+                # 必须**先剥掉 query 再比**：前端带的是 `?name=xxx.xlsx`，
+                # 直接 `self.path == "/api/confirmed-excel"` 永远不成立 →
+                # 按钮点了必 404（2026-11-14 加「关联项目」开关时发现的老 bug，
+                # 从初始提交起就在；不修的话确认版 Excel 这条路根本走不到，
+                # 页面上的开关决策也就写不回 Excel）
                 from urllib.parse import parse_qs, urlparse
                 qs = parse_qs(urlparse(self.path).query)
                 body, name = confirmed_excel(
                     self._body(), _relations_header(self.headers),
-                    (qs.get("name") or [""])[0])
+                    (qs.get("name") or [""])[0],
+                    _projlink_header(self.headers))
                 self._send(200, body,
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                            name)
@@ -1789,6 +2239,20 @@ class Handler(BaseHTTPRequestHandler):
                 with_list = (qs.get("list") or ["1"])[0] != "0"
                 self._json(ai_from_sheet(self._body(), hint=hint, sheet=sheet,
                                          with_form=with_form, with_list=with_list))
+            elif self.path.startswith("/api/ai/workflow"):
+                # 和 /api/ai/sheet 同一套：xlsx 走二进制 body，说明和当前流程名放 query
+                from urllib.parse import parse_qs, urlparse
+                qs = parse_qs(urlparse(self.path).query)
+                instruction = (qs.get("instruction") or [""])[0]
+                focus = (qs.get("focus") or [""])[0]
+                body, name, summary = ai_workflow(self._body(), instruction, focus)
+                # HTTP 头只能放 latin-1：摘要先转 JSON 再 URL 编码，前端 decodeURIComponent
+                self._send(
+                    200, body,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    name,
+                    extra={"X-AI-Summary": quote(json.dumps(summary, ensure_ascii=False))},
+                )
             elif self.path == "/api/ai/bo/apply":
                 body, name = ai_apply_bo(json.loads(self._body()),
                                          _relations_header(self.headers))
@@ -1796,8 +2260,16 @@ class Handler(BaseHTTPRequestHandler):
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", name)
             elif self.path.startswith("/api/import/") and self.command == "POST":
                 code = self.path[len("/api/import/"):].split("?")[0]
-                body, name = import_module(self._body(), code)
+                # 与 build / confirmed-excel 同一个决策头：模块行上的「导入」
+                # 也得按页面上的「关联项目」开关出包
+                body, name = import_module(self._body(), code,
+                                           _projlink_header(self.headers))
                 self._send(200, body, "application/zip", name)
+            elif self.path == "/api/workflow":
+                # 流程是裸 XML：单条回 application/xml，多条回 zip。
+                # ctype 由 workflow_files 决定（它比路由更清楚这次是哪种）
+                body, name, ctype = workflow_files(self._body())
+                self._send(200, body, ctype, name)
             else:
                 self._send(404, b"not found", "text/plain")
         except nlq_guard.SqlRejected as exc:
@@ -1808,10 +2280,15 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             self._json({"ok": False, "error": str(exc)}, 400)
 
-    def _safe_parse(self) -> dict:
+    def _safe_parse(self, projlink_header: str | None = None) -> dict:
+        """解析接口的兜底：坏文件一律 200 + {ok:false}（前端按 ok 判断）。
+
+        决策头本身非法（不是 JSON / version≠1）在路由层就已经抛出来了，
+        不会走到这里——那是**请求**的问题，与 /api/build 的 WEB25 用例同口径回 400。
+        """
         try:
             data = self._body()
-            return parse_excel(data)
+            return parse_excel(data, projlink_header)
         except Exception as exc:
             traceback.print_exc()
             return {"ok": False, "error": str(exc)}

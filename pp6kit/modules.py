@@ -76,7 +76,10 @@ MODULES: tuple[Module, ...] = (
     Module("list", "列表", "data_template", "管理 › 列表 › 导入", 40,
            "列表页展示的列与视图。", "列表"),
     Module("workflow", "流程", "workflow", "管理 › 流程设计 › 导入", 50,
-           "流程定义是裸 XML，解压后直接上传。", "流程", zipped=False),
+           # 以前这里写「解压后直接上传」——那时流程还得自己在设计器里导出。
+           # 现在生成器直接出裸 XML，谈不上解压，语义改成「单独上传」。
+           "流程定义是裸 XML，不进同步包；生成后到 管理 › 流程设计 › 导入 单独上传。",
+           "流程", zipped=False),
 )
 
 BY_CODE: dict[str, Module] = {m.code: m for m in MODULES}

@@ -6,7 +6,7 @@ import json
 import re
 
 from .ids import new_id
-from .model import Bo, camel_to_snake
+from .model import PROCESS_STATE_CODES, Bo, camel_to_snake
 from .xmlw import DECL_PLAIN, cdata, el, json_attr, wrap
 
 BO_NS = 'xmlns:tns="http://www.ankepower.com/iform-bo-def" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
@@ -20,7 +20,7 @@ ATTR_ORDER = [
 ]
 
 
-def _attr_line(field) -> str:
+def _attr_line(field, bo: Bo | None = None) -> str:
     p = field.resolved()
     ordered = {}
     for key in ATTR_ORDER:
@@ -29,8 +29,98 @@ def _attr_line(field) -> str:
         val = p[key]
         if val is None:
             continue
+        if key == "options":
+            # 级联值落点：selectOptions[].dependValues。
+            # 必须在序列化前注入 —— model.resolved() 拿不到 bo，算不出父选项短码。
+            if bo is not None:
+                sel = _select_options(field, bo)
+                if sel:
+                    val = {**val, "selectOptions": sel}
+            # options 内的键序照系统导出包的顺序原样写。
+            # 依据：用户 2026-11-12 导出的 config-sync 包，带级联的 dic 字段是
+            #   isMultiple, isDefault, uniqueCheck, optionSource, columns,
+            #   identities, format, formula, cascadeEnabled, cascadeParentCode
+            # 无级联的字段是 isMultiple, optionSource, isDefault。
+            # JSON 对象本身无序，但导出/导入往返及结构 diff 会因此产生假差异，
+            # 而且设计器按原序回写时顺序不同，包就永远对不齐。
+            val = _ordered_options(val)
         ordered[key] = json_attr(val) if key == "options" else val
     return el("tns:attribute", ordered, indent=2)
+
+
+# options 的键序。系统导出包里同一个键在两种字段上位置不同，实测规律：
+#   无级联 / 级联链上的普通字段：isMultiple, optionSource, [cascade两键], isDefault
+#   带「完整 options」的级联字段（如 productClass）：
+#       isMultiple, isDefault, uniqueCheck, optionSource, columns,
+#       identities, format, formula, cascadeEnabled, cascadeParentCode
+# 所以键序不能只靠一张表，按「有没有那 5 个配套空键」分两套。
+_OPTION_KEY_ORDER_FULL = [
+    "isMultiple", "isDefault", "uniqueCheck", "optionSource",
+    "columns", "identities", "format", "formula",
+    "cascadeEnabled", "cascadeParentCode",
+]
+_OPTION_KEY_ORDER_LITE = [
+    "isMultiple", "optionSource", "cascadeEnabled", "cascadeParentCode",
+    "isDefault",
+]
+
+
+def _ordered_options(opts: dict) -> dict:
+    order = _OPTION_KEY_ORDER_FULL if "uniqueCheck" in opts else _OPTION_KEY_ORDER_LITE
+    out = {k: opts[k] for k in order if k in opts}
+    for k, v in opts.items():
+        out.setdefault(k, v)
+    return out
+
+
+def _parent_code(label: str, field: Bo, bo: Bo) -> str:
+    """父选项在本对象父字段字典里的短码（= 父字段字典项的 key_）。"""
+    parent = bo.field_by_code(field.cascade_parent)
+    scope = parent.dict_key() if parent else f"{bo.code}_{field.cascade_parent}"
+    return _choice_code(label, 0, None, scope=scope)
+
+
+def _select_options(field, bo: Bo) -> list[dict]:
+    """字段 options 里的 selectOptions —— 级联值（dependValues）真正的落点。
+
+    依据（2026-11-12，两处独立证据）：
+
+    1. 线上前端源码 `filterTableSelectOptions(options, parentValues)`：
+           return options.filter(o => {
+               const dep = normalize(o.dependValues);
+               return dep.some(v => parentValues.includes(v));   // 与父值求交集
+           })
+       子项靠**自己的 dependValues** 判断属于哪些父值，空数组永远过滤不出来。
+    2. 选项管理弹窗里「级联值」是 selectOptions 的独立一列（multiple select），
+       保存时走 `dependValues: JSON.stringify(values)`，与 attrs 无关。
+
+    值本身是**父选项的字典 key**（8 位短码），因为父字段下拉的 value 就是它。
+    同一份 Excel 反复出包时短码稳定（_choice_code 是 md5），所以级联关系也稳定。
+
+    没有分组的普通选项字段不写 selectOptions —— 系统对这类字段的约定是不带这个键，
+    多写会让包与系统产物不一致（见 tests/test_bo.py BO22）。
+    """
+    if not field.choice_groups:
+        return []
+    items: list[dict] = []
+    # value 必须与 dictionaryList 里同名字典项的 key 完全相同 —— 系统靠它
+    # 把「选项显示值」和「字典项」对上。两边都用 _choice_code(scope=dict_key)，
+    # 所以短码天然一致；一旦不一致，下拉会显示空白。
+    key = field.dict_key()
+    used: set[str] = set()
+    codes = {label: _choice_code(label, i, used, scope=key)
+             for i, label in enumerate(field.sub_choices(), start=1)}
+    for label in field.sub_choices():
+        parents = [p for p, kids in field.choice_groups.items() if label in kids]
+        items.append({
+            "value": codes[label],
+            "label": label,
+            "text": label,
+            "disabled": 0,
+            "dependValues": [_parent_code(p, field, bo) for p in parents],
+            "data": {},
+        })
+    return items
 
 
 def _dict_blocks(bo: Bo) -> tuple[str, str]:
@@ -65,10 +155,52 @@ def _dict_blocks(bo: Bo) -> tuple[str, str]:
     # 每个字典内部单独去重：key_ 只要求同字典内唯一（库里没有 unique 索引，
     # 跨字典重复很常见，见 _choice_code 注释）
     codes_by_type: dict[str, set[str]] = {}
+    # GLOBAL 字典的候选值只声明一次（同一个 typeKey 可能被多个字段引用）
+    seen_item: set[tuple[str, str]] = set()
 
     for f in sorted(bo.fields, key=lambda x: x.sn):
-        if f.type_new != "dic" or not f.choices:
+        if f.type_new != "dic":
             continue
+        # ⚠ 就算没有候选值也要声明 dictionaryType（空字典）：
+        # 表单控件引用的 key 必须在对象里存在，漏声明会让导出校验直接中止
+        # （2026-11-12 用户截图：模型有一轮没给 4 个字段的候选值，
+        #  整包被「引用的字典在对象里不存在」拦死）。空下拉由字段级
+        #  warn 提醒用户补值，而不是让整包出不去。
+        #
+        # ---- GLOBAL 分支（项目对齐 R4 / 反解 P1-3）----
+        # 引用项目侧的共享字典时必须写 typeScope="GLOBAL" + 原 typeKey +
+        # 原候选值 key/sn，**不能**再生成 `合同_汇报类型` 这种新 key：
+        # 线上真值（项目.zip）是 typeKey="report_type" struType="1"，
+        # 6 个 key 是固定业务码（MonthlyReportModules/…/BiweeklyReportModules）。
+        # 候选值原样照抄的原因：短码是业务常量，md5 重算出来的码系统里没有，
+        # 导入后是空下拉（PL11 守的就是这条）。
+        if f.dict_ref:
+            key = f.dict_ref
+            if key not in seen_type:
+                seen_type.add(key)
+                types.append(el("tns:dictionaryType", {
+                    "typeKey": key,
+                    "name": f.dict_name or key,
+                    "struType": f.dict_stru or "1",
+                    "sn": len(types) + 1,
+                    "typeScope": "GLOBAL",
+                }, indent=2))
+            for item in f.dict_items or []:
+                item_key = str(item.get("key") or "")
+                if not item_key or (key, item_key) in seen_item:
+                    continue
+                seen_item.add((key, item_key))
+                # 原生 GLOBAL 字典项**不带** attrs 子元素（项目.zip 逐字节核对），
+                # 照抄即可，不要沿用 BO_ATTR 那套 tag 样式
+                dics.append(el("tns:dictionary", {
+                    "typeKey": key,
+                    "key": item_key,
+                    "name": str(item.get("name") or item_key),
+                    "sn": int(item.get("sn") or len(dics) + 1),
+                    "disabled": "false",
+                }, indent=2))
+            continue
+
         key = f.dict_key()
         if not key:
             continue
@@ -99,11 +231,20 @@ def _dict_blocks(bo: Bo) -> tuple[str, str]:
                 "sn": len(types) + 1,
                 "typeScope": "BO_ATTR",
             }, indent=2))
-        for i, label in enumerate(f.choices, start=1):
+        # 级联分组：本字段的字典项 = 分组里出现的全部子项（去重）。
+        # 父选项由父字段自己的字典提供，不重复写在这里。
+        labels = f.sub_choices() if f.choice_groups else list(f.choices)
+        for i, label in enumerate(labels, start=1):
             # attrs 子元素：选项的展示样式（tag 形状/颜色）。原生「推送工作区」
             # 导出的每个 dictionary 都带这段默认样式 JSON（2026-11-11 risk 包
             # 与项目立项包逐字节核对），缺失不影响功能但会让 XML 与系统产物
             # 不一致，选项在界面上也没有 tag 外观。
+            #
+            # ⚠ 级联值**不能**塞进这里。2026-11-12 查线上前端源码确认：
+            # 选项管理表格里「级联值」是独立的一列：
+            #   {field:"dependValues", title:"级联值", type:"select", multiple:true}
+            # 而 attrs 只承载颜色（getOptions 里是 data:{attrs:e.color}）。
+            # 塞进 attrs 系统根本不读。真正的位置见 _select_options()。
             dic_children = el("tns:attrs", "", cdata(
                 '{"backgroundColor":"","shape":"tag","effect":"light",'
                 '"type":"custom","color":"#000000","boardColor":"","icon":""}'
@@ -112,7 +253,7 @@ def _dict_blocks(bo: Bo) -> tuple[str, str]:
                 "typeKey": key,
                 # 选项值用英文短码，对标线上真实数据；
                 # 界面显示的是 name（中文），两列各司其职
-                "key": _choice_code(label, i, used, scope=key),
+                "key": _code_for_field(f, label, i, used, key),
                 "name": label,
                 "sn": i,
                 "disabled": "false",
@@ -137,6 +278,10 @@ def choice_conflicts(bo: Bo) -> list[str]:
     for f in sorted(bo.fields, key=lambda x: x.sn):
         if f.type_new != "dic" or not f.choices:
             continue
+        if f.dict_ref:
+            # GLOBAL 字典的 key 是系统常量（report_type 的 6 个业务码），
+            # 不参与 md5 撞码检查——它们根本不是本地算出来的
+            continue
         key = f.dict_key()
         bucket = seen.setdefault(key, {})
         for i, label in enumerate(f.choices, start=1):
@@ -149,6 +294,17 @@ def choice_conflicts(bo: Bo) -> list[str]:
                     f"算出了同一个选项值 {code!r}，导入后会互相覆盖")
             bucket[code] = label
     return bad
+
+
+def _code_for_field(field: Bo, label: str, i: int, used: set, scope: str) -> str:
+    """字典项短码。``processState`` 用平台系统常量，其余走 md5。
+
+    为什么单独一个函数：字典块（_dict_blocks）和条件值换算（dict_choice_codes）
+    必须用**同一条**规则，否则对象 XML 里的码和流程 XML 里的 BusinessState 会分叉。
+    """
+    if field.code == "processState" and label in PROCESS_STATE_CODES:
+        return PROCESS_STATE_CODES[label]
+    return _choice_code(label, i, used, scope=scope)
 
 
 def _choice_code(label: str, sn: int, used: set[str] | None = None,
@@ -216,14 +372,20 @@ def render(bo: Bo, bo_id: str | None = None, log_enable: bool = True,
         "dsAlias": "",
         "desc": bo.desc or "",
         "moduleId": bo.module_id or "",
-        "mode": "normal",
+        # 对象「选择模式」：流程驱动 = 流程模式（workflow），普通业务 = normal。
+        # 依据线上原生导出（PP6/业务对象/项目流程.zip → project_create.xml）：
+        #   <tns:bodefentity ... mode="workflow">
+        # 对照普通对象（项目.zip / 需求.zip）都是 mode="normal"。
+        # 写死 normal 的后果：系统把流程对象当普通业务对象，流程 XML 导进去
+        # 挂不上对象，对象上也没有流程状态/审批入口。
+        "mode": "workflow" if bo.flow_driven else "normal",
     }
 
     body = [
         el("tns:options", "", cdata(json_attr(options)), indent=2),
     ]
     for f in sorted(bo.fields, key=lambda x: x.sn):
-        body.append(_attr_line(f))
+        body.append(_attr_line(f, bo))
 
     entity = wrap("tns:bodefentity", body, ent_attrs, indent=1)
 
@@ -295,6 +457,10 @@ def dict_choice_codes(bo: Bo, field_code: str) -> dict[str, str]:
     target = bo.field_by_code(field_code)
     if target is None or target.type_new != "dic" or not target.choices:
         return {}
+    if target.dict_ref:
+        # 全局字典的候选值 key 是项目侧固定业务码，直接照抄（不走 md5）
+        return {str(i.get("name") or ""): str(i.get("key") or "")
+                for i in (target.dict_items or []) if i.get("key")}
     key = target.dict_key()
     if not key:
         return {}
@@ -304,8 +470,17 @@ def dict_choice_codes(bo: Bo, field_code: str) -> dict[str, str]:
     for f in sorted(bo.fields, key=lambda x: x.sn):
         if f.type_new != "dic" or not f.choices or f.dict_key() != key:
             continue
-        for i, label in enumerate(f.choices, start=1):
-            code = _choice_code(label, i, used, scope=key)
+        # 按**字典里真实写出去的那批选项**迭代，必须与 _dict_blocks 同源：
+        # 分组级联字段的 choices 是「父选项名 ∪ 子选项名」，而字典块只写
+        # sub_choices()（子选项）。若照 choices 迭代，父选项名（中药/化药）
+        # 也会被算出一个 md5 短码——字典里根本没有这个 key，于是流程条件
+        # 与隐藏规则填父选项名时会指向一个不存在的选项值，而且因为
+        # `value in codes` 命中了，连「不在选项里」的提示都不会报。
+        # 子选项的短码不受影响：_choice_code 的 md5 只用 (scope, 选项名)，
+        # 不含序号（QA 2026-11-13 实测 OTC / RX / 转增加 两条路径完全一致）。
+        labels = f.sub_choices() if f.choice_groups else list(f.choices)
+        for i, label in enumerate(labels, start=1):
+            code = _code_for_field(f, label, i, used, key)
             if f.code == field_code:
                 out[label] = code
     return out

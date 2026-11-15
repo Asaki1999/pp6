@@ -193,3 +193,75 @@ def _():
         base = name.split("/")[-1].rsplit(".", 1)[0]
         stem = re.sub(r"^\d+-", "", base)
         assert re.match(r"^[a-z0-9_]+$", stem), name
+
+
+@case("BLD16", "builder", "同步包只出普通对象，流程对象单独一包", "P0",
+      ['同步包不含 mode="workflow" 的对象',
+       "流程对象包只含流程对象",
+       "两包各自带自己的表单，包名能区分"])
+def _():
+    """用户 2026-11-14 的要求：流程对象从同步包挪到「流程定义」工作区。
+
+    在此之前所有对象混在一个包里，流程对象要额外配流程 XML，
+    导起来得分两步找东西；分两包后各自成套。
+    """
+    sheets = {
+        S.S_BO: [
+            {"对象名称": "合同", "对象编码": "contract",
+             "物理表名": "pp_contract", "流程驱动": "是"},
+            {"对象名称": "供应商", "对象编码": "supplier",
+             "物理表名": "pp_supplier", "流程驱动": "否"},
+        ],
+        S.S_FIELD: [field("contract", "名称", "字符串"),
+                    field("supplier", "名称", "字符串")],
+        S.S_FORM: [
+            {"表单key": "create_contract", "表单名称": "新建合同",
+             "对象编码": "contract", "表单类型": "新建表单"},
+            {"表单key": "create_supplier", "表单名称": "新建供应商",
+             "对象编码": "supplier", "表单类型": "新建表单"},
+        ],
+        S.S_FORMFIELD: [
+            {"表单key": "create_contract", "字段编码": "mingCheng",
+             "显示标签": "名称", "控件类型": "text"},
+            {"表单key": "create_supplier", "字段编码": "mingCheng",
+             "显示标签": "名称", "控件类型": "text"},
+        ],
+    }
+    data = xlsx(sheets)
+
+    plain, plain_name = webui.build_zip(data, ["bo", "form"], object_scope="plain")
+    wf, wf_name = webui.build_zip(data, ["bo", "form"], object_scope="workflow")
+
+    plain_bos = {n: t for n, t in texts(plain).items() if n.startswith("bo/")}
+    wf_bos = {n: t for n, t in texts(wf).items() if n.startswith("bo/")}
+    assert len(plain_bos) == 1 and "code=\"supplier\"" in next(iter(plain_bos.values()))
+    assert 'mode="normal"' in next(iter(plain_bos.values()))
+    assert len(wf_bos) == 1 and "code=\"contract\"" in next(iter(wf_bos.values()))
+    assert 'mode="workflow"' in next(iter(wf_bos.values()))
+
+    # 表单跟着对象走：两包都不该出现对方的表单
+    plain_forms = [n for n in unzip(plain) if n.startswith("form/")]
+    wf_forms = [n for n in unzip(wf) if n.startswith("form/")]
+    assert plain_forms and all("supplier" in n for n in plain_forms), plain_forms
+    assert wf_forms and all("contract" in n for n in wf_forms), wf_forms
+
+    assert "流程对象" in wf_name and "流程对象" not in plain_name, (plain_name, wf_name)
+
+
+@case("BLD17", "builder", "只有流程对象时同步包给出明确指引而不是空包", "P1",
+      ["400 说明去「流程定义」导出", "同一份表走 workflow 能出包"])
+def _():
+    sheets = {
+        S.S_BO: [{"对象名称": "合同", "对象编码": "contract",
+                  "物理表名": "pp_contract", "流程驱动": "是"}],
+        S.S_FIELD: [field("contract", "名称", "字符串")],
+    }
+    try:
+        webui.build_zip(xlsx(sheets), ["bo"], object_scope="plain")
+    except ValueError as exc:
+        assert "流程模式" in str(exc), exc
+    else:
+        raise AssertionError("全是流程对象时同步包不该出包")
+
+    body, _ = webui.build_zip(xlsx(sheets), ["bo"], object_scope="workflow")
+    assert pick(body, "bo/").count("<tns:bodefentity") == 1

@@ -22,10 +22,11 @@ async function qApi(path, body) {
 /* ---------------- 模式切换 ---------------- */
 /* 上下文栏 / 状态栏跟着工作区走，避免「切了页面但标题还是上一个」 */
 const MODE_META = {
-  import:   { title: "导入包生成",   desc: "描述需求或上传 Excel，出整包（bo/form/data_template 同包）；发布说明写进 zip 注释 CONFIG_SYNC_NOTE:，导入走系统管理 › 发布管理 › 导入同步包，变更区非必经" },
-  patch:    { title: "已有包改字段", desc: "在原 zip 的 bo/*.xml 上打最小补丁，除新增字段外字节原样保留；对齐系统管理 › 发布管理 › 导入同步包，变更区非必经；反解会重造包，补字段请用这里" },
-  query:    { title: "数据查询",     desc: "用一句话查数据库，生成 SQL 并查看结果" },
-  settings: { title: "设置",         desc: "大模型、数据库连接与本地配置" },
+  import:   { title: "普通模式", desc: "普通业务对象 + 表单/列表/数据集，出一个同步包（导入走 发布管理 › 导入同步包）；流程对象看「流程模式」" },
+  patch:    { title: "存量包修订", desc: "在原 zip 的 bo/*.xml 上打最小补丁，除新增字段外字节原样保留；对齐系统管理 › 发布管理 › 导入同步包，变更区非必经；反解会重造包，补字段请用这里" },
+  query:    { title: "数据查询",   desc: "用一句话查数据库，生成 SQL 并查看结果" },
+  workflow: { title: "流程模式",   desc: "流程对象（含表单/列表）出对象包，流程定义单独下 XML" },
+  settings: { title: "系统设置",   desc: "大模型、数据库连接与本地配置" },
 };
 
 function switchMode(mode) {
@@ -33,6 +34,7 @@ function switchMode(mode) {
   document.getElementById("mode-import").hidden = mode !== "import";
   document.getElementById("mode-patch").hidden = mode !== "patch";
   document.getElementById("mode-query").hidden = mode !== "query";
+  document.getElementById("mode-workflow").hidden = mode !== "workflow";
   document.getElementById("mode-settings").hidden = mode !== "settings";
   // 底部 dock 只放状态栏：主操作统一留在卡片里，
   // 避免切换工作区时操作条忽隐忽现、工作区高度跟着跳。
@@ -45,7 +47,6 @@ function switchMode(mode) {
     if (el) el.textContent = text;
   };
   put("ctxTitle", meta.title);
-  put("ctxCrumb", meta.title);
   put("ctxDesc", meta.desc);
   put("statusMode", meta.title);
   put("statusText", "就绪");
@@ -57,9 +58,10 @@ function switchMode(mode) {
 
   if (mode === "query") loadConfig();
   if (mode === "settings") loadConfig();
+  if (mode === "workflow" && window.Workflow) window.Workflow.render();
 }
 
-/* 键盘：1–4 直达工作区，⌘/Ctrl+K 回生成页；输入时不抢按键 */
+/* 键盘：1–5 直达工作区，⌘/Ctrl+K 回生成页；输入时不抢按键 */
 document.addEventListener("keydown", (e) => {
   const t = e.target;
   const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" ||
@@ -70,7 +72,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-  const hit = { "1": "import", "2": "patch", "3": "query", "4": "settings" }[e.key];
+  const hit = { "1": "import", "2": "workflow", "3": "patch", "4": "query", "5": "settings" }[e.key];
   if (hit) { e.preventDefault(); switchMode(hit); }
 });
 

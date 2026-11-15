@@ -238,6 +238,16 @@ def refresh(cfg: dict | None = None) -> dict:
                            if k == prefix or k.startswith(prefix + "_")}
             it["lists"] = {k: v for k, v in lists.items()
                            if any(x.get("boCode") == prefix for x in v) or k.startswith(prefix + "_")}
+
+        # 顺手刷一次「项目字段快照」（同一根只读 cursor，不多开连接）。
+        # 主理人 Q4：不做「上传项目 zip」的界面/接口，快照就靠这条自动刷新 +
+        # 随包快照兜底。失败只吞掉——对象清单刷成功才是这里的主职责，
+        # 快照刷不到不该让整个 refresh 变成红灯。
+        try:
+            from . import projlink as _projlink
+            _projlink.save_snapshot_from_cursor(cur)
+        except Exception:
+            pass
     finally:
         conn.close()
 

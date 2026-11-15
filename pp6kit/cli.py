@@ -64,8 +64,28 @@ def cmd_check(args) -> int:
     from .validate import validate
 
     proj, read_errors, stats = read_workbook(Path(args.xlsx))
+    # 与 build / 界面预览同一套兜底：流程驱动对象没配流程时补三步，
+    # 否则 check 会显示「没有流程」而 build 却出得去，两边对不上
+    from .builder import ensure_default_workflow
+    made = ensure_default_workflow(proj)
+    if made:
+        stats["流程"] = len(proj.workflows)
     print("读取概况: " + "  ".join(f"{k}={v}" for k, v in stats.items() if v))
+    for line in made:
+        print(f"  · 自动生成默认流程：{line}")
     _print_auto_notes(proj)
+    # 关联项目：CLI 没有弹窗，只做「精确同名 + 同族」的自动对齐，
+    # 相似项一条都不动，改为打印提示（PRD P2-1）
+    from . import projlink as _projlink
+    try:
+        report = _projlink.apply(proj)
+        for line in _projlink.report_lines(report):
+            print(f"  {line}")
+        for line in _projlink.similar_notices(proj):
+            print(f"  {line}")
+    except ValueError as exc:
+        print(f"✗ 项目字段对齐失败：{exc}")
+        return 1
     issues = []
     if read_errors:
         from .validate import Issue
@@ -86,6 +106,19 @@ def cmd_build(args) -> int:
     proj, read_errors, stats = read_workbook(xlsx)
     print("读取概况: " + "  ".join(f"{k}={v}" for k, v in stats.items() if v))
     _print_auto_notes(proj)
+
+    # 关联项目对齐：必须发生在 validate 之前（改名后旧编码会让校验报一堆假错），
+    # 也在 build 之前（生成器读的是最终模型）。无决策头 = 只自动对齐。
+    from . import projlink as _projlink
+    try:
+        align_report = _projlink.apply(proj)
+        for line in _projlink.report_lines(align_report):
+            print(f"  {line}")
+        for line in _projlink.similar_notices(proj):
+            print(f"  {line}")
+    except ValueError as exc:
+        print(f"\n✗ 项目字段对齐失败：{exc}")
+        return 1
 
     from .validate import Issue
 
@@ -110,6 +143,9 @@ def cmd_build(args) -> int:
         print(f"  {i}. {d.label:<6} {d.filename:<24} {len(d.items):>3} 项  {d.bytes:>7} B   →  {d.menu}")
         for a in d.items:
             print(f"       · {a.kind} {a.key}")
+        if d.module == "workflow":
+            # 流程是裸 XML：不压包、也不能塞进同步包，直接把路径给出来
+            print(f"       裸 XML 路径：{d.path}（原样上传，不要再压 zip）")
     if res.notices:
         print("\n提示:")
         for n in dict.fromkeys(res.notices):
@@ -239,7 +275,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("xlsx")
     p.add_argument("-o", "--out", help="输出目录")
     p.add_argument("-m", "--modules", default="",
-                   help="只出这些模块，逗号分隔：bo,dataset,filter,form,list（默认全部）")
+                   help="只出这些模块，逗号分隔：bo,dataset,filter,form,list,workflow（默认全部）。"
+                        "workflow 产物是裸 XML（out/workflow/{流程名}.xml），不进同步包")
     p.set_defaults(func=lambda a: cmd_build(a))
 
     p = sub.add_parser("inspect", help="导出包反解成 Excel")

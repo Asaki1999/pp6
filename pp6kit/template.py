@@ -27,6 +27,7 @@ def _settings_rows(proj: Project) -> list[tuple[str, str, str]]:
         "文件前缀": proj.file_prefix,
         "默认模块ID": proj.module_id,
         "默认分类ID": proj.type_id,
+        "流程分类ID": proj.wf_category_id,
         "输出目录": proj.out_dir,
     }
     return [(k, values.get(k, ""), note) for k, _default, note in spec.SETTING_ROWS]
@@ -38,15 +39,22 @@ def sheet_data(proj: Project) -> dict[str, list[list]]:
     out[spec.S_SETTINGS] = [list(r) for r in _settings_rows(proj)]
 
     for bo in proj.bos:
+        # 值列表的位序必须与 spec.COLUMNS[S_BO] 逐位对齐：「关联项目」插在
+        # 「流程驱动」之后（第 10 位）。
+        # ⚠ 故意**不补** exist_id（架构 §0.3 F-A）：COLUMNS 有 15 列而这里只写
+        # 14 个值，补上会让「确认版 Excel」多出一列值，破坏既有 diff 与回归。
         out[spec.S_BO].append([
             bo.code, bo.name, bo.tbl_name, bo.bo_type, bo.module_id, bo.type_id,
             bo.pk, "是" if bo.with_log else "否", "是" if bo.flow_driven else "否",
+            "是" if bo.project_link else "否",
             bo.parent_obj, bo.parent_field, bo.rel_type or "PARENT", bo.desc,
         ])
         for f in sorted(bo.fields, key=lambda x: x.sn):
             # 类型列写系统界面的叫法（单行文本/数字/日期控件…），
             # 和下拉选项里看到的词一致，用户改起来不用翻译
             type_text = fieldtypes.ui_label(f.type_new)
+            # 字段名/编码/物理列名都写**对齐后**的值：确认版 Excel 是用户的
+            # 下一份底稿，必须与出包结果一致，否则下次上传又变回去。
             out[spec.S_FIELD].append([
                 bo.code, f.sn, f.code, f.field_name, f.name, type_text, f.object_type,
                 # 选项值：一行一个（Excel 里 Alt+Enter 换行），比逗号串好读好改
@@ -54,7 +62,9 @@ def sheet_data(proj: Project) -> dict[str, list[list]]:
                 f.cascade_parent,
                 f.length, f.precision,
                 "是" if f.is_index else "否", "是" if f.is_null else "否",
-                f.default_value, _dump_json(f.options), f.desc,
+                # excel_options 带上 dict_ref/dict_name/dict_stru/dict_items 四个
+                # 控制键：全局字典只有靠它们才能往返不丢（resolved() 会剥掉）
+                f.default_value, _dump_json(f.excel_options()), f.desc,
             ])
 
     for form in proj.forms:
@@ -95,7 +105,85 @@ def sheet_data(proj: Project) -> dict[str, list[list]]:
                 rule.value, rule.value_label,
                 "是" if rule.clear_on_hide else "否",
             ])
+
+    # ---- 流程三张表
+    # 反解一份流程 XML 后也要能原样落回这三张表（P2 的 inspect 反解会复用这里），
+    # 所以列的写回顺序严格按 spec.COLUMNS 来，不要在这里调整。
+    for wf in proj.workflows:
+        out[spec.S_WF].append([
+            wf.name, wf.bo_code, wf.workflow_type, wf.category_id, wf.title_format,
+            wf.module_id, "是" if wf.is_active else "否", wf.exist_id, wf.desc,
+        ])
+        for n in wf.nodes:
+            out[spec.S_WF_NODE].append([
+                wf.name, n.id, n.name,
+                _WF_KIND_TO_LABEL.get(n.kind, n.kind),
+                n.handler_type, ",".join(n.handler_names), ",".join(n.handler_ids),
+                n.expect_days, n.form_key, n.business_state,
+                ",".join(n.go_back),
+                "是" if n.pick_next else "否",
+                "是" if n.allow_handover else "否",
+                n.color, n.notes,
+            ])
+        for e in wf.edges:
+            out[spec.S_WF_EDGE].append([
+                wf.name, e.src, e.dst, e.name,
+                "字段条件" if e.condition_field else "无条件",
+                e.condition_field, e.condition_op, e.condition_value, e.value_label,
+                e.order or "",
+                "" if e.inform is None else ("是" if e.inform else "否"),
+            ])
     return out
+
+
+# XML 里的 State → 模板里给用户看的中文词（与 spec.S_WF_NODE 的下拉一致）
+_WF_KIND_TO_LABEL = {
+    "Start": "开始", "Ongoing": "审批", "Branch": "判断",
+    "Passed": "通过", "Rejected": "驳回",
+}
+
+
+def write_workflows(wb, proj: Project) -> None:
+    """只重写 9_流程 / 10_流程节点 / 11_流程流转，其它 sheet 原样保留。
+
+    为什么不一整本重建（build_workbook）：用户上传的 Excel 可能有自己的批注、
+    额外列、甚至别的 sheet，AI 只改流程，不该把整本重排一遍。
+    同理也不整表覆盖：先按**表头文字**把列对位，对不上就明确报错，
+    免得把「节点名称」写进「节点类型」那一列。
+    """
+    data = sheet_data(proj)
+    for name in (spec.S_WF, spec.S_WF_NODE, spec.S_WF_EDGE):
+        cols = spec.COLUMNS[name]
+        if name not in wb.sheetnames:
+            ws = wb.create_sheet(name)
+            # 表头必须自己 append：_style_sheet 只画样式，只有带 note 的列
+            # 才顺手补一次表头值（历史行为，见 build_workbook 里也是先 append）
+            ws.append([c.header for c in cols])
+            _style_sheet(ws, cols)
+            _write_note_row(ws, cols)
+        ws = wb[name]
+
+        header = [str(c.value or "").strip() for c in ws[1]]
+        want = [c.header for c in cols]
+        missing = [h for h in want if h not in header]
+        if missing:
+            raise ValueError(
+                f"「{name}」这张表的表头不是标准模板（缺 {'、'.join(missing[:3])}），"
+                f"没法安全写回。请用「普通模式」导出的 Excel 当底稿")
+        index = [header.index(h) for h in want]
+
+        # 数据从第几行开始：模板生成的表第 2 行是「# 填写说明」，
+        # 用户自己整理的表可能第 2 行就是数据。按首列是不是 # 判断，
+        # 一律按 3 删会把第一行业务数据留下来，读回时变成「流程重名」。
+        second = str(ws.cell(row=2, column=1).value or "").strip()
+        first = 3 if second.startswith("#") else 2
+        if ws.max_row >= first:
+            ws.delete_rows(first, ws.max_row - first + 1)
+        for row in data[name]:
+            vals = ["" for _ in header]
+            for i, v in zip(index, row):
+                vals[i] = v
+            ws.append(vals)
 
 
 _KIND_TO_LABEL = {
@@ -252,6 +340,7 @@ def demo_project() -> Project:
         type_id="",
         desc="示例业务对象",
         with_log=True,
+        flow_driven=True,          # 示例演示默认三步流程：开始 → 部门审批 → 通过
     )
     base = [
         ("title", "申请标题", "varchar", 200, None, []),
@@ -309,6 +398,12 @@ def demo_project() -> Project:
         "  },\n"
         "});"
     )
+    # 示例流程：申请人 →（提交）→ 部门审批 →（同意）→ 通过。
+    # 「11_流程流转」故意留空：留空时生成器按节点行序自动串成一条直线，
+    # 用户照这个最小形态改字就能用，不会因为没连线而卡住。
+    # 示例里**故意不写流程**：对象勾了「流程驱动」，生成时会自动补
+    # 开始 → 部门审批 → 通过。这既是推荐用法（流程交给项目经理在系统里改），
+    # 也让人一眼看到「不用填 9_流程 也能出包」。
     return Project(
         bos=[bo], forms=[form], lists=[lst], datasets=[ds],
         form_scripts={form.key: demo_script},

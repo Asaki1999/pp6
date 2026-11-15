@@ -446,7 +446,8 @@ main { max-width: 1360px; margin: 0 auto; padding: 24px 28px 56px; }
 .mod-list { display: flex; flex-direction: column; }
 .mod-row {
   display: grid;
-  grid-template-columns: 22px 26px 1fr auto;
+  /* 去掉序号列后是 3 列：勾选 / 正文 / 操作（操作默认隐藏，hover 才出） */
+  grid-template-columns: 22px minmax(0, 1fr) auto;
   align-items: start;
   gap: 12px;
   padding: 12px 18px;
@@ -1564,7 +1565,7 @@ select.ai-in { cursor: pointer; }
 .rel-type label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 .chip.warn { background: #fff7ed; color: #c2410c; }
 
-/* ---------- 已有包改字段 ---------- */
+/* ---------- 存量包修订 ---------- */
 .patch-wrap { max-width: 1220px; margin: 0 auto; padding: 22px 24px 64px; display: grid; gap: 16px; }
 .patch-body { padding: 16px 18px 18px; display: grid; gap: 14px; }
 .patch-pick {
@@ -1788,3 +1789,690 @@ select.ai-in { cursor: pointer; }
   .ctx-desc { display: none; }
   .stat .n { font-size: 18px; }
 }
+
+/* ============================================================ 流程工作区
+   独立菜单：流程是裸 XML，和 zip 两条路。左列清单 + 右列节点/流转表。
+   布局照 .q-layout 的反向（清单在右，正文在左），与「数据查询」区分开。 */
+/* 单列：.workspace 是 overflow-x:hidden，两列布局一旦被表格的 min-content 顶宽
+   就会被裁掉右半边。流程一般就一两条，改成「上方药丸行 + 下方详情」更稳也更省空间。 */
+.wf-layout { display: flex; flex-direction: column; gap: 16px; max-width: 100%; }
+.wf-main { min-width: 0; }
+.wf-side { min-width: 0; }
+
+.wf-head-card .card-head { align-items: flex-start; }
+/* 两个下载按钮并排：对象包（同步包结构）和流程 XML（裸 XML）是两步不同的导入 */
+.wf-actions { display: flex; gap: 10px; align-items: center; flex-shrink: 0; margin-left: 12px; }
+.wf-actions .btn { white-space: nowrap; }
+
+/* 流程页自己的导入区：虚线框 = 可拖入 */
+.wf-import { border-style: dashed; border-color: var(--border-strong); }
+.wf-import.dz-over { border-color: var(--accent); background: var(--surface-2); }
+.wf-import .card-head { align-items: flex-start; }
+.wf-file {
+  font-size: 12px; color: var(--muted); max-width: 200px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wf-import-stat { padding: 0 18px 14px; font-size: 12.5px; line-height: 1.7; color: var(--muted); }
+.wf-import-stat b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.wf-import-stat.ok { color: var(--text-2); }
+
+/* 一句话生成流程：和普通模式的对话区同一个手感，但只产出流程 */
+.wf-ai-body { padding: 0 18px 16px; }
+.wf-ai-body textarea {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 54px;
+  border: 1px solid var(--border-strong); border-radius: 8px;
+  padding: 9px 11px; font-size: 13px; font-family: inherit; line-height: 1.6;
+  color: var(--text); background: var(--surface);
+}
+.wf-ai-body textarea:focus { outline: none; border-color: var(--accent); }
+.wf-ai-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-top: 8px;
+}
+.wf-ai-foot .sub { flex: 1; min-width: 0; }
+.wf-body { padding: 4px 18px 18px; }
+
+.wf-empty { padding: 34px 18px 40px; text-align: center; }
+.wf-empty-title { font-size: 13.5px; font-weight: 650; color: var(--text-2); }
+.wf-empty-sub { margin-top: 8px; font-size: 12px; color: var(--muted); line-height: 1.7; max-width: 560px; margin-inline: auto; }
+
+.wf-meta { display: flex; flex-wrap: wrap; gap: 8px 22px; padding: 12px 0 4px; }
+.wf-meta-item { font-size: 12px; color: var(--muted); }
+.wf-meta-item span { margin-right: 6px; }
+.wf-meta-item b { color: var(--text); font-weight: 600; }
+
+.wf-tbl-title {
+  margin: 16px 0 8px; font-size: 12.5px; font-weight: 650; color: var(--text-2);
+  display: flex; align-items: baseline; gap: 8px;
+}
+.wf-tbl-title .muted { font-weight: 400; font-size: 11.5px; }
+
+.wf-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.wf-table th {
+  text-align: left; font-weight: 600; color: var(--muted); font-size: 11.5px;
+  padding: 7px 10px; background: var(--surface-2); border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.wf-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.wf-table tbody tr:hover { background: var(--surface-2); }
+.wf-table .mono { font-family: var(--mono); font-size: 11.5px; color: var(--text-2); }
+.wf-arrow { color: var(--faint); text-align: center; width: 18px; }
+
+/* 节点类型标签：与流程设计器里的颜色语义对齐（进行中蓝 / 判断橙 / 通过绿 / 驳回红） */
+.wf-tag {
+  display: inline-block; padding: 1px 7px; border-radius: 999px;
+  font-size: 11px; line-height: 18px; white-space: nowrap;
+  background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border);
+}
+.wf-tag-开始 { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.wf-tag-审批 { background: var(--accent-soft); color: var(--accent-2); border-color: transparent; }
+.wf-tag-判断 { background: #fff4e6; color: #b25b00; border-color: transparent; }
+.wf-tag-通过 { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.wf-tag-驳回 { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+
+.wf-list-card .card-head { padding-bottom: 6px; }
+.wf-list { padding: 10px 14px 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+.wf-list-empty { padding: 18px 10px; text-align: center; font-size: 12px; color: var(--faint); }
+.wf-item {
+  display: block; text-align: left; cursor: pointer;
+  min-width: 190px; max-width: 260px;
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); font: inherit; transition: background .12s, border-color .12s;
+}
+.wf-item:hover { background: var(--surface-2); }
+.wf-item.active { background: var(--accent-soft); border-color: #c7d7fe; }
+.wf-item-name { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.wf-item-sub { margin-top: 3px; font-size: 11.5px; color: var(--muted); }
+.wf-item-meta { margin-top: 4px; font-size: 11px; color: var(--faint); }
+
+@media (max-width: 720px) {
+  .wf-item { min-width: 100%; max-width: none; }
+}
+
+/* 「默认」角标：区分自动兜底的三步流程与用户自己配的流程 */
+.wf-auto {
+  display: inline-block; margin-left: 6px; padding: 0 5px;
+  font-size: 10.5px; line-height: 16px; font-weight: 400;
+  color: var(--warn); background: var(--warn-soft); border-radius: 999px;
+}
+
+/* ============================================================ 侧栏统一为浅色
+   原来深蓝侧栏 + 浅色内容区，两个色系硬拼，边界很重。
+   现在整块用同一套表面变量（surface / border / text），只有品牌方块和
+   激活项保留蓝色——视线从菜单到内容不再跳一次色阶。
+   想退回深色：删掉这一整段即可（上面原规则一行没改）。 */
+.sidebar {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  color: var(--text-2);
+  --nav-text: var(--text-2);
+  --nav-line: var(--border);
+}
+.side-brand { border-bottom: 1px solid var(--border); }
+.side-brand-text strong { color: var(--text); }
+.side-brand-text em { color: var(--accent); }
+.side-brand-text small { color: var(--muted); }
+.side-ver {
+  color: var(--accent-2);
+  border-color: rgba(37, 99, 235, .22);
+  background: var(--accent-soft);
+}
+.side-scroll::-webkit-scrollbar-thumb { background: var(--border-strong); }
+.side-label { color: var(--faint); }
+
+.mode { color: var(--text-2); }
+.mode kbd {
+  color: var(--faint);
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+.mode:hover { background: var(--surface-2); color: var(--text); }
+.mode.active {
+  background: var(--accent-soft);
+  color: var(--accent-2);
+  font-weight: 600;
+  box-shadow: none;
+}
+.mode.active svg { color: var(--accent); opacity: 1; }
+.mode.active kbd {
+  color: var(--accent-2);
+  border-color: rgba(37, 99, 235, .22);
+  background: #fff;
+}
+.mode .ai-dot { background: var(--faint); }
+
+.side-path {
+  border-color: var(--border);
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+.side-path i { color: var(--faint); }
+.side-tip { color: var(--muted); }
+.side-keys > div { color: var(--muted); }
+.side-keys kbd {
+  color: var(--text-2);
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.side-foot {
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.side-env { color: var(--text-2); }
+.side-foot-sub { color: var(--faint); }
+
+/* ============================================================ A 批：降噪
+   目标不是换皮，是让一屏只剩一个视觉重音。
+   ① 顶部去掉面包屑（标题本来就重复了三遍）
+   ② 统计从 7 个等权方块压成一行
+   ③ 提醒从整条黄底降成一行「点 + 文字」
+   ④ 模块行的「导入/导出」收进 hover，主操作只有底部一个填充按钮 */
+.topbar { padding: 0 22px; border-bottom: 1px solid var(--border); }
+.ctx { gap: 0; }
+.ctx-row { gap: 10px; }
+.ctx-title { font-size: 15.5px; letter-spacing: -.015em; }
+.ctx-desc { font-size: 12.5px; }
+
+.stats {
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 0 7px; margin: 0 0 14px;
+  font-size: 12.5px; color: var(--muted);
+}
+.stats .stat-i { display: inline-flex; align-items: baseline; gap: 4px; }
+.stats .stat-i b {
+  font-size: 13px; font-weight: 600; color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.stats .stat-i.empty { color: var(--faint); }
+.stats .sep { color: #cbd3df; }
+
+/* 流程模式的对象不随同步包出包——数字对不上时这一行负责解释 */
+.stats-note {
+  margin: -8px 0 14px;
+  font-size: 12px; line-height: 1.65; color: var(--muted);
+}
+
+/* 注意 .banner.warn / .error / .ok 是双类选择器，单写 .banner 压不住它们的底色 */
+.banner,
+.banner.warn, .banner.error, .banner.ok {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 7px;
+  background: transparent; border: 0; border-radius: 0;
+  padding: 0; margin: 0 0 16px;
+  font-size: 12.5px; color: var(--text-2);
+}
+.banner::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--faint); flex: none; align-self: center;
+}
+.banner.warn::before { background: #f79009; }
+.banner.error::before { background: var(--danger); }
+.banner.ok::before { background: var(--ok); }
+.banner strong { font-weight: 600; color: var(--text); }
+.banner .sub {
+  width: 100%; padding-left: 13px; margin-top: 3px;
+  font-size: 11.5px; color: var(--muted);
+}
+
+.mod-btns { opacity: 0; pointer-events: none; transition: opacity .12s; }
+.mod-row:hover .mod-btns,
+.mod-row:focus-within .mod-btns { opacity: 1; pointer-events: auto; }
+@media (hover: none) { .mod-btns { opacity: 1; pointer-events: auto; } }
+
+/* B 批：步骤条从「三颗大药丸」压成一行微进度；只留当前步有实心点
+   DOM 不动（#steps .step[data-step] 仍由 goStep 控制 active），只换视觉 */
+.steps {
+  gap: 7px; max-width: none; margin: 0 0 14px; padding: 0 22px;
+  font-size: 12px;
+}
+.steps .step {
+  gap: 6px; padding: 0;
+  background: transparent; color: var(--faint);
+  font-size: 12px; border-radius: 0;
+}
+.steps .step b {
+  width: 15px; height: 15px; font-size: 9.5px; font-weight: 600;
+  background: var(--border-strong); color: #fff;
+}
+.steps .step.active {
+  background: transparent; color: var(--text); font-weight: 500;
+  border-color: transparent; box-shadow: none;
+}
+.steps .step.active b { background: var(--accent); }
+.steps .step.done { color: var(--muted); }
+.steps .step.done b { background: #a9c4f5; }
+.steps .step-line { flex: 0 0 16px; height: 1px; background: var(--border); }
+
+/* 流程节点 / 流转：行列表替代宽表格
+   主行放「序号 + 名称 + 类型」，第二行是元信息（标签 + 值），宽度自适应。
+   表格在宽容器里会被 min-content 顶宽，把右上按钮挤出视口——行列表没这个问题。 */
+.wf-rows { margin-top: 2px; }
+.wf-row {
+  display: grid; grid-template-columns: 26px minmax(0, 1fr);
+  gap: 12px; padding: 11px 0;
+  border-top: 1px solid var(--line);
+}
+.wf-row:first-child { border-top: none; }
+.wf-idx {
+  font: 500 11.5px/20px var(--mono); color: var(--faint);
+  text-align: right; font-variant-numeric: tabular-nums;
+}
+.wf-row-body { min-width: 0; }
+.wf-row-name {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 13px; font-weight: 500; color: var(--text); line-height: 20px;
+}
+.wf-row-meta {
+  margin-top: 5px; display: flex; flex-wrap: wrap; gap: 4px 16px;
+  font-size: 11.5px; color: var(--text-2);
+}
+.wf-row-meta span { display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; }
+.wf-row-meta i {
+  font-style: normal; color: var(--faint); font-size: 11px; flex: none;
+}
+.wf-row-meta code {
+  font-family: var(--mono); font-size: 11px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 4px; padding: 0 4px;
+}
+.wf-rows-empty { padding: 14px 0; font-size: 12px; color: var(--faint); }
+.wf-row-name .wf-arrow { font-style: normal; color: var(--faint); margin: 0 6px; }
+
+/* 顶栏标题旁的长描述不会自己缩：.ctx-desc 是 nowrap，flex 下 min-width:auto
+   等于整段文字的宽度，于是顶栏被撑宽，右侧按钮被裁在视口外。
+   流程页的描述最长，所以只有它会露馅。 */
+.ctx, .ctx-row { min-width: 0; }
+.ctx-desc { min-width: 0; flex: 0 1 auto; }
+
+/* 顶栏描述必须有硬上限：nowrap + 长文案会把整条 topbar 撑出视口，
+   右侧按钮被裁掉（流程页那句最长，只有它会露馅）。 */
+.ctx-desc { max-width: 44vw; }
+
+/* 流程页正文再收一道：即使外层容器算宽了，卡片也不会把内容推出屏幕 */
+#mode-workflow .wf-layout { max-width: 900px; margin: 0 auto; }
+
+/* ============================================================ 字段多的时候
+   45 个字段 / 97 个控件是真实场景（项目立项那种），原来的渲染会变成
+   「一屏扫不完、滚起来还丢了表头」。三处一起改：
+   ① 表头吸顶  ② 隔行底色  ③ 滚动区按视口高度给，别死守 460 */
+.tbl-wrap { max-height: min(56vh, 560px); }
+.tbl-wrap thead th {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--surface-2);
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+.tbl-wrap tbody tr:nth-child(even) td { background: #fcfdff; }
+.tbl-wrap tbody tr:hover td { background: var(--surface-2); }
+
+/* 细滚动条：macOS 默认滚动条压在 460px 的盒子里很抢眼 */
+.tbl-wrap::-webkit-scrollbar { width: 10px; height: 10px; }
+.tbl-wrap::-webkit-scrollbar-thumb {
+  background: var(--border-strong); border-radius: 6px;
+  border: 3px solid var(--surface);
+}
+.tbl-wrap::-webkit-scrollbar-track { background: transparent; }
+
+/* 「展开全部 N 个字段」 */
+.tbl-more { padding: 10px 16px 12px; border-top: 1px solid var(--line); }
+
+/* 表单预览：控件多时滚到第十几行会忘了这是哪张表单，标题吸顶 */
+.paper-head {
+  position: sticky; top: 0; z-index: 3;
+  background: var(--surface);
+  padding-top: 2px;
+}
+
+/* ---- 项目对齐（关联项目）：页签面板 + 相似字段确认弹窗 ----
+   全库此前没有任何 modal/overlay 样式（架构 §0.3 F-G），这里自写一套轻量的，
+   不引框架；z-index 80 高于既有的 20/30/50，不与抽屉/toast 抢层。 */
+.pl-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 10px 14px; margin-bottom: 12px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+}
+.pl-toolbar-btns { display: flex; gap: 8px; flex: none; }
+.pl-head {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  padding: 10px 14px; margin-bottom: 10px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+}
+.pl-head-tip { font-size: 12px; }
+.pl-notice {
+  margin-bottom: 10px; padding: 8px 12px; font-size: 13px;
+  background: var(--warn-soft); color: var(--warn);
+  border: 1px solid var(--border); border-radius: 8px;
+}
+.pl-cards { display: flex; flex-direction: column; gap: 10px; }
+.pl-card, .pl-modal-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 14px;
+}
+.pl-card-title {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  margin-bottom: 8px; font-size: 14px;
+}
+.pl-line { font-size: 13px; padding: 2px 0; }
+.pl-line.ok { color: var(--ok, #15803d); }
+.pl-line.bad { color: var(--danger); }
+.pl-arrow { color: var(--muted); flex: none; }
+/* 对齐会丢东西的提示（候选值被替换 / 多选变单选）：必须在确认前就看见，
+   不能只写在 zip 注释里——没人会去读注释 */
+.pl-warn { color: var(--warn); font-size: 12px; display: block; }
+
+/* ---- 差异对照表（pp_project ↔ 你的 Excel）----
+   左列标签固定 90px，两个值列等宽；表头浅灰；只在一侧有的选项值用淡黄/淡蓝
+   标注（「会被替换」比「项目新增」更需要看见）。窄屏整表横向滚动，不挤成一列。 */
+.pl-dtable-wrap {
+  margin-top: 6px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.pl-dtable {
+  width: 100%;
+  min-width: 420px;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  table-layout: fixed;
+}
+.pl-dtable thead th {
+  background: #f3f5f9;          /* 表头浅灰：两个值列要能一眼分清哪列是项目 */
+  color: var(--muted);
+  font-weight: 600;
+  text-align: left;
+}
+.pl-dtable th, .pl-dtable td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  word-break: break-all;
+}
+.pl-dtable tbody tr:last-child th, .pl-dtable tbody tr:last-child td { border-bottom: 0; }
+.pl-dtable th:first-child, .pl-dtable thead th:first-child {
+  width: 90px; font-weight: 500; color: var(--text-2);
+}
+.pl-dtable th:first-child { white-space: nowrap; }
+.pl-dtable tbody th { background: transparent; }
+/* 选项值行：唯一有「只在一侧」概念的差异，所以要能一眼扫出来 */
+.pl-opt.warn td { background: #fffbea; }
+.pl-opt.mine td { background: #fffbea; }
+.pl-opt.add td { background: #f1f7ff; }
+.pl-opt-tag {
+  display: inline-block; margin-left: 6px; padding: 0 5px;
+  font-size: 11px; line-height: 16px; border-radius: 4px;
+  border: 1px solid var(--border); color: var(--muted);
+}
+.pl-opt-tag.warn, .pl-opt-tag.mine { color: var(--warn); border-color: var(--warn); }
+.pl-opt-tag.add { color: var(--accent-2); border-color: var(--accent-2); }
+.pl-none { font-size: 12px; }
+.pl-none.mine { color: var(--warn); }
+.pl-none.project { color: var(--accent-2); }
+
+/* ---- 对象卡片上的「关联项目」开关（解析页） ----
+   以前只能在 Excel 的「1_业务对象」里填这一列，页面上只看到一个 chip，
+   用户根本不知道哪里能改（2026-11-14 用户原话「咋没有选项」）。 */
+.obj-tip {
+  margin: 0 0 10px; padding: 8px 12px; font-size: 12.5px;
+  color: var(--muted); background: var(--surface); line-height: 1.6;
+  border: 1px solid var(--border); border-radius: 8px;
+}
+/* 卡片标题右侧：开关在上、模块在下，纵向排一排，不挤标题那行 */
+.obj-side {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
+  flex: none; white-space: nowrap;
+}
+.pl-switch {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 9px; font-size: 12.5px; cursor: pointer;
+  color: #475467; background: #f6f8fb;
+  border: 1px solid var(--border); border-radius: 999px;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.pl-switch:hover { border-color: var(--accent-2); }
+.pl-switch input[type="checkbox"] {
+  margin: 0; width: 13px; height: 13px; accent-color: var(--accent-2); cursor: pointer;
+}
+.pl-switch:has(input:checked) {
+  color: var(--accent-2); border-color: var(--accent-2); background: #f2f7ff;
+}
+/* 解析途中会把 checkbox 禁掉（结果回来前不接受第二次点击） */
+.pl-switch:has(input:disabled) { opacity: .55; cursor: not-allowed; }
+.pl-switch input:disabled { cursor: not-allowed; }
+
+/* ---- 结果页顶部的「关联项目」入口条 ----
+   开关在「业务对象」页签的卡片右上角，但结果页首屏是「要导出哪些模块」，
+   往下滚三屏才看到卡片（2026-11-14 用户原话「我还是没看到」）。
+   这条横条和 .obj-tip 同族，但加了左侧色条 + 主色边框，是页面上唯一带按钮的提示。 */
+.pl-entry {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin: 0 0 10px; padding: 9px 12px;
+  font-size: 12.5px; line-height: 1.6; color: var(--text);
+  background: var(--accent-soft); border: 1px solid #c7d7fe;
+  border-left: 3px solid var(--accent); border-radius: 8px;
+}
+/* 作者样式里的 display:flex 会盖掉浏览器的 [hidden]，必须显式关掉 */
+.pl-entry[hidden] { display: none; }
+.pl-entry-main {
+  display: flex; align-items: baseline; gap: 8px;
+  flex-wrap: wrap; min-width: 0;
+}
+.pl-entry-main b { flex: none; color: var(--accent-2); font-size: 12.5px; }
+.pl-entry-main .sub { color: var(--text-2); }
+.pl-entry .btn { flex: none; }
+
+/* 从入口条跳过去后把第一个未勾的开关闪一下（1.8s 后由 JS 摘掉 class）。
+   只闪一次：一直闪会让人以为开关坏了。 */
+@keyframes pl-flash {
+  0%   { box-shadow: 0 0 0 0 rgba(37, 99, 235, .55); border-color: var(--accent); }
+  40%  { box-shadow: 0 0 0 5px rgba(37, 99, 235, .22); border-color: var(--accent); }
+  100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0); border-color: var(--border); }
+}
+.pl-flash { animation: pl-flash 1.8s ease-out 1; }
+/* 流程模式概要里的同款开关：flex-wrap 里当一个 pill 用，不占满一行 */
+.wf-meta-pl { vertical-align: middle; }
+
+.pl-mask {
+  position: fixed; inset: 0; z-index: 80;
+  background: rgba(15, 23, 42, .45);
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.pl-modal {
+  /* 差异对照表是两列值 + 一列标签，880px 会让值列空得能跑马；收窄到 760px，
+     窄屏用 94vw 保底。高度压在 74vh，保证 1080p 上底部两个出口按钮一定可见。 */
+  width: min(760px, 94vw); max-height: 74vh;
+  display: flex; flex-direction: column;
+  background: var(--surface); border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, .35);
+  overflow: hidden;
+}
+.pl-mask[hidden] { display: none; }   /* 作者样式里的 display:flex 会盖掉 [hidden]，必须显式关掉 */
+.pl-modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border);
+}
+.pl-modal-head h3 { margin: 0; font-size: 15px; }
+.pl-modal-close {
+  border: 0; background: transparent; font-size: 22px; line-height: 1;
+  cursor: pointer; color: var(--text-muted, #64748b);
+}
+.pl-modal-body { padding: 12px 18px; overflow: auto; }
+.pl-modal-meta { font-size: 12px; margin-bottom: 10px; }
+.pl-modal-card + .pl-modal-card { margin-top: 10px; }
+.pl-modal-foot {
+  display: flex; justify-content: flex-end; gap: 10px;
+  padding: 12px 18px; border-top: 1px solid var(--border);
+  background: var(--surface-2);
+}
+body.pl-modal-open { overflow: hidden; }
+
+.pl-modal-close {
+  border: 0; background: transparent; font-size: 22px; line-height: 1;
+  flex: none; padding: 0 2px; cursor: pointer; color: var(--text-muted, #64748b);
+}
+.pl-modal-close:hover { color: var(--text); }
+
+/* ---- 「相近字段确认」弹窗（2026-11-15 口径）----
+   只有「直接对应」自动覆盖；相近/可能相关/需确认的逐条列出来，默认不勾。
+   宽度放到 800px：每行要塞「你的字段 + 分类 chip + 项目字段 + 依据 + 差异」，
+   760px 会把依据挤到第二行。高度 78vh，body 自己滚（分组多时不至于整页滚）。 */
+.pl-modal-wide {
+  width: min(800px, 96vw);
+  max-height: 78vh;
+}
+.pl-modal-wide .pl-modal-foot { justify-content: space-between; }
+.pl-foot-left, .pl-foot-right { display: flex; align-items: center; gap: 10px; }
+.pl-foot-left .link { font-size: 13px; }
+.pl-rel-summary {
+  margin: 4px 0 12px; padding: 8px 12px;
+  font-size: 13px; background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 8px;
+}
+.pl-rel-summary b { color: var(--text); }
+.pl-rel-group { margin-bottom: 14px; }
+.pl-rel-group-head {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  margin: 0 0 6px; font-size: 13px;
+}
+.pl-rel-group-head .muted { font-size: 12px; }
+/* 一行 = 一个字段的关系：左边是说明，右边是勾选 */
+.pl-rel-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 9px 11px; margin-bottom: 8px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 8px;
+}
+.pl-rel-row.warn { border-left-color: var(--warn); }
+.pl-rel-row.bad { border-left-color: var(--danger); }
+.pl-rel-row.ok { border-left-color: var(--ok, #15803d); }
+.pl-rel-main { flex: 1 1 auto; min-width: 0; }
+.pl-rel-title {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  font-size: 13.5px; margin-bottom: 3px;
+}
+.pl-rel-title b { font-weight: 600; }
+.pl-rel-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 7px; font-size: 11.5px; border-radius: 999px;
+  background: var(--surface-2); color: var(--text-2);
+  border: 1px solid var(--border);
+}
+.pl-rel-chip i { font-style: normal; opacity: .6; }
+.pl-rel-chip.warn { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+.pl-rel-chip.bad { color: var(--danger); border-color: var(--danger); }
+.pl-rel-status { font-size: 11.5px; padding: 1px 6px; border-radius: 999px; }
+.pl-rel-status.ok { color: var(--ok, #15803d); background: rgba(21, 128, 61, .1); }
+.pl-rel-status.warn { color: var(--warn); background: var(--warn-soft); }
+.pl-rel-status.bad { color: var(--danger); background: rgba(185, 28, 28, .08); }
+.pl-rel-status.muted { color: var(--muted); background: var(--surface-2); }
+.pl-rel-basis { font-size: 12px; color: var(--text-2); }
+.pl-rel-diff {
+  margin-top: 3px; font-size: 12px; color: var(--text-2);
+  word-break: break-all;
+}
+.pl-rel-note { margin-top: 3px; font-size: 12px; color: var(--warn); }
+.pl-rel-act { flex: none; padding-top: 2px; }
+.pl-rel-pick {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12.5px; cursor: pointer; white-space: nowrap;
+  user-select: none;
+}
+.pl-rel-locked { font-size: 12.5px; white-space: nowrap; }
+.pl-rel-cand { margin-top: 6px; font-size: 12px; display: flex;
+  align-items: center; flex-wrap: wrap; gap: 8px; }
+.pl-rel-cand select {
+  font-size: 12px; padding: 2px 6px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+}
+/* 页签里的关系表：字段 / 状态 / 项目字段 / 依据 / 处理 */
+.pl-obj { margin-bottom: 12px; }
+.pl-obj-head {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  margin-bottom: 6px; font-size: 13.5px;
+}
+.pl-rel-table {
+  width: 100%; border-collapse: collapse; font-size: 12.5px;
+  table-layout: auto;
+}
+.pl-rel-table thead th {
+  background: #f3f5f9; color: var(--muted); font-weight: 600;
+  text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border);
+}
+.pl-rel-table td {
+  padding: 6px 10px; border-bottom: 1px solid var(--border);
+  vertical-align: top; word-break: break-all;
+}
+/* 第一列（字段名 + 编码）不能被「依据」挤成一堆断词 */
+.pl-rel-table th:nth-child(1), .pl-rel-table td:nth-child(1) { min-width: 150px; }
+.pl-rel-table th:nth-child(2), .pl-rel-table td:nth-child(2) { min-width: 96px; }
+.pl-rel-table tbody tr:last-child td { border-bottom: 0; }
+.pl-rel-table tr.warn td { background: #fffdf5; }
+
+/* ---- 无关字段清单（默认收起，能展开看到每一个字段名）----
+   用户问的是「哪些字段和项目无关」，只给一个数字等于没回答；
+   但 51 个字段的对象全展开又会把「待确认」埋掉，所以默认收起、标题里带数量。 */
+.pl-rel-unrelated {
+  margin: 8px 0 4px; padding: 6px 10px;
+  font-size: 12.5px; color: var(--text-2);
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.pl-rel-unrelated > summary {
+  cursor: pointer; color: var(--text-2); font-weight: 500;
+  list-style: none;
+}
+.pl-rel-unrelated > summary::-webkit-details-marker { display: none; }
+.pl-rel-unrelated > summary::before {
+  content: "▸"; display: inline-block; width: 12px; color: var(--muted);
+}
+.pl-rel-unrelated[open] > summary::before { content: "▾"; }
+.pl-rel-unrelated > summary:hover { color: var(--text); }
+.pl-rel-unrelated-list {
+  margin-top: 6px; padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.pl-rel-name {
+  padding: 1px 8px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border);
+  font-size: 12px; color: var(--text-2);
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.pl-rel-name code {
+  font-size: 11px; color: var(--muted);
+  background: transparent; padding: 0;
+}
+
+/* ---- 第 1 步：业务对象关联项目（常驻在上传卡片上方的三档控件）----
+   以前这一层是导入后弹出的整屏弹窗：传完 Excel、解析一次，再问勾哪些对象，
+   点「开始分析」又解析一次——顺序反了。现在导入前就定好，导入完直接看结果。
+   紧凑一条：标题 + 三个单选 + 一句说明，不抢上传入口的注意力。 */
+.pl-pre {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px;
+  margin: 0 0 10px; padding: 9px 14px;
+  font-size: 13px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.pl-pre > b { font-size: 13px; font-weight: 600; }
+.pl-pre label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.pl-pre input[type="radio"] { margin: 0; accent-color: var(--accent-2); cursor: pointer; }
+/* 说明文字靠右，窄屏时自动折到下一行 */
+.pl-pre .sub { margin-left: auto; font-size: 12px; color: var(--muted); }
+
+/* ---- 第 3 步标注：结果页顶上的一句话，和 .pl-entry 同族但更轻（没有按钮） ---- */
+.pl-step3 {
+  margin: 0 0 10px; padding: 8px 12px;
+  font-size: 12.5px; line-height: 1.6; color: var(--muted);
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 8px;
+}
+/* 相似字段弹窗标题下的步骤小字 */
+.pl-step2 { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+/* 存量包：对象卡片里的「关联项目」勾选行 */
+.patch-obj-link {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin: 4px 0 6px; font-size: 12px; color: var(--text-2);
+}
+.patch-obj-link .muted { font-size: 11px; }

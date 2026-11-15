@@ -1454,3 +1454,23 @@ def _():
     # 真正的否定说法不能被这条修复连坐
     sql2, _note = local.build(_pack(), "名称不能包含测试")
     assert "NOT LIKE '%测试%'" in sql2, sql2
+
+
+@case("NLQ98", "nlq", "SHOW / DESC / EXPLAIN 是只读的，不该被误杀", "P1",
+      ["探索真实库靠这三条", "EXPLAIN DELETE 仍然拦住"])
+def _():
+    """只读闸放开元数据命令，但不给写语句留后门。
+
+    背景：对着 8112 这类真实库只能看不能改，探索靠的就是 SHOW TABLES / DESC / EXPLAIN。
+    早先 `is_read_only` 只认 Select/Union/Subquery，把这三条也判死了，
+    逼得人绕开闸门直接执行——那才是真危险。
+    """
+    for sql in ("SHOW TABLES", "SHOW COLUMNS FROM pp_project", "DESC pp_project",
+                "DESCRIBE pp_project", "EXPLAIN SELECT * FROM pp_project"):
+        assert guard.is_read_only(sql), f"只读命令被误杀：{sql}"
+
+    # 放开的只是「语句类型」，语句内部照样查：EXPLAIN 一条 DELETE 仍然要拒
+    for sql in ("EXPLAIN DELETE FROM pp_project",
+                "EXPLAIN UPDATE pp_project SET name_='x'",
+                "EXPLAIN DROP TABLE pp_project"):
+        assert not guard.is_read_only(sql), f"写语句藏在 EXPLAIN 里漏过了：{sql}"

@@ -309,3 +309,100 @@ def _():
     })
     assert status == 400, status
     assert "无效" in json.loads(body)["error"] or "过期" in json.loads(body)["error"]
+
+
+@case("WEB22", "webui", "解析接口带回流程预览数据", "P1",
+      ["/api/parse", "workflows[]", "节点/流转形状"])
+def _():
+    """左侧「流程」工作区靠这份数据渲染，字段名与 Workflow/WfNode 对应。
+
+    这里刻意断言**形状**而不只是「有 workflows 这个键」：前端按
+    node.kind / node.state / edge.condition 直接展示，少一个就是空白单元格。
+    """
+    wf_xlsx = xlsx({
+        S.S_BO: [{"对象名称": "合同", "对象编码": "contract",
+                  "物理表名": "pp_contract", "流程驱动": "是"}],
+        S.S_FIELD: [field("contract", "名称", "字符串")],
+        S.S_WF: [{"流程名称": "合同审批", "对象编码": "contract"}],
+        S.S_WF_NODE: [
+            {"流程名称": "合同审批", "节点序号": 1, "节点名称": "申请人", "节点类型": "开始"},
+            {"流程名称": "合同审批", "节点序号": 2, "节点名称": "部门审批", "节点类型": "审批",
+             "处理人": "部门负责人", "处理人ID": "1567950168366514176"},
+            {"流程名称": "合同审批", "节点序号": 3, "节点名称": "通过", "节点类型": "通过"},
+        ],
+    })
+    status, _, body = req("/api/parse", wf_xlsx,
+                          {"Content-Type": "application/octet-stream"})
+    assert status == 200, body[:300]
+    data = json.loads(body)
+    wfs = data.get("workflows")
+    assert isinstance(wfs, list) and len(wfs) == 1, wfs
+
+    wf = wfs[0]
+    assert wf["name"] == "合同审批", wf
+    assert wf["boCode"] == "contract" and wf["boName"] == "合同", wf
+    assert wf["nodeCount"] == 3, wf
+    # 11_流程流转 没填 → 生成器会自动串直线，预览必须显示「将要生成」的 2 条，
+    # 而不是表里的 0 行（否则用户会以为流程断了）
+    assert wf["edgeCount"] == 2, wf["edges"]
+    assert wf["edges"][0]["src"] == "申请人" and wf["edges"][0]["name"] == "提交", wf["edges"]
+    assert wf["edges"][1]["dst"] == "通过" and wf["edges"][1]["name"] == "同意", wf["edges"]
+
+    n0, n1, n2 = wf["nodes"]
+    assert (n0["kind"], n0["state"]) == ("开始", "待发起"), n0
+    assert n1["handler"] == "部门负责人" and n1["days"] == 2, n1
+    assert (n2["kind"], n2["state"]) == ("通过", "已完成"), n2
+    # 判断节点/终态节点没有办理时限，前端显示「—」靠 null 区分（不是 0）
+    assert n0["days"] is None and n2["days"] is None, (n0, n2)
+
+
+@case("WEB23", "webui", "没有流程时 workflows 是空数组而不是缺字段", "P2",
+      ["前端按数组渲染", "不会 TypeError"])
+def _():
+    status, _, body = req("/api/parse", package(),
+                          {"Content-Type": "application/octet-stream"})
+    assert status == 200
+    data = json.loads(body)
+    assert data.get("workflows") == [], data.get("workflows")
+
+
+@case("WEB24", "webui", "解析接口带回 projectAlign，且预览里的字段编码已是对齐后的（预览=产物）",
+      "P0", ["前端零业务规则", "linked/summary/items 三键齐全", "预览即产物"])
+def _():
+    linked = xlsx({
+        S.S_BO: [{"对象名称": "合同", "对象编码": "contract", "物理表名": "pp_contract",
+                  "对象类型": "object", "记录变更日志": "是", "流程驱动": "否",
+                  "关联项目": "是"}],
+        S.S_FIELD: [field("contract", "项目编号", "字符串"),
+                    field("contract", "项目状态", "对象",
+                          **{"关联对象/字典": "project_state"})],
+    })
+    status, _, body = req("/api/parse", linked,
+                          {"Content-Type": "application/octet-stream"})
+    assert status == 200, body[:300]
+    data = json.loads(body)
+    vm = data["projectAlign"]
+    for key in ("status", "snapshotSource", "snapshotSourceLabel", "warnings",
+                "summary", "items"):
+        assert key in vm, key
+    item = vm["items"][0]
+    assert item["linked"] is True
+    assert item["linkField"]["action"] in ("add", "reuse"), item["linkField"]
+    assert "exact" in item and "similar" in item and "conflicts" in item
+    # 页签说的是「会变成 stateId」，对象卡片里就必须已经是 stateId——
+    # 否则用户看到两套编码，而只有出包那份是真的（预览≠产物）
+    codes = {f["code"] for f in data["objects"][0]["fields"]}
+    assert "stateId" in codes, codes
+    assert "code" in codes, codes
+    # 链接字段在预览里也要在（出包时 builder 不会再补第二次）
+    assert "projectId" in codes, codes
+
+
+@case("WEB25", "webui", "X-Project-Link 不是合法 JSON → 400，且不产出半份包", "P1",
+      ["错误可读", "不静默忽略"])
+def _():
+    status, _, body = req("/api/build", package(),
+                          {"X-Project-Link": "{not json"})
+    assert status == 400, status
+    text = body.decode("utf-8", "replace")
+    assert "X-Project-Link" in text and "JSON" in text, text

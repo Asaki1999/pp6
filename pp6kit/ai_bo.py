@@ -105,8 +105,11 @@ JSON 结构：
    例：品种类别/品种分类、战略类别/项目注册类别、省市/区县。
    只在确实是父子取值关系时加；两个互不相干的下拉不要加，并列的也不要互相指。
    父字段可以是「选项」也可以是「关联对象」。加了之后，表单控件会自动继承，不用重复说明。
-   ⚠️ 这条只声明「听谁的」，具体每个父值下有哪些子项由系统侧维护，
-   所以 candidates 仍然要把子字段所有候选值列全。
+   **子字段的候选值按分组写**：一条 value = 「父值：子1、子2」，
+   例 `"values": ["中药：OTC、RX、双跨、其他", "化药：OTC、RX、双跨、其他", "大健康：大健康"]`。
+   这样出包时每个子项会带上自己属于哪些父值的级联值（dependValues），
+   导入后选「中药」子级就只剩 OTC/RX/双跨/其他。**不要把分组拍平**——
+   拍平后级联声明还在，但过滤不出任何东西。
 """
 
 
@@ -170,6 +173,7 @@ def _repair_truncated(text: str) -> dict | None:
     两种输出结构都要认：
         业务对象   {"code":..., "fields":[{...}]}
         表单布局   {"groups":[{"title":..., "fields":[...]}]}   ← ai_form
+        流程定义   {"workflows":[{"nodes":[...], "edges":[...]}]} ← ai_wf
     以前只判 "fields"，表单被截断后永远修不回来，
     表现就是「表单设计没成功（Unterminated string）」，白多跑一次 AI。
     """
@@ -189,20 +193,33 @@ def _repair_truncated(text: str) -> dict | None:
             got = json.loads(candidate)
         except json.JSONDecodeError:
             continue
-        if isinstance(got, dict) and (got.get("fields") or got.get("groups")):
+        if isinstance(got, dict) and (got.get("fields") or got.get("groups")
+                                      or got.get("workflows")):
             return got
     return None
 
 
-def _norm_code(raw: str, fallback: str = "biz", name: str = "") -> str:
+def _norm_code(raw: str, fallback: str = "biz", name: str = "",
+               prefer_explicit: bool = False) -> str:
     """对象编码：中文名 → 英文小写下划线，对齐系统真实对象（project_create）。
 
     AI 有时会把整个标题当名字（「项目立项信息表单」→ liuxianglingshixinxibiaodan），
-    所以只要给了 name，就一律以 name 为准重新生成，不采信 raw。
+    所以**首次生成**时只要给了 name，就一律以 name 为准重新生成，不采信 raw。
     用 object_code 而不是拼音：对象编码会派生物理表名 pp_<code>，
     拼音出来的 pp_xiang_mu 在线上一个都找不到。
+
+    prefer_explicit=True（微调场景）时反过来：raw 只要语法合法就照用。
+    原因（2026-11-12 用户反馈「让 AI 改编码，每次都说改好了但页面还是旧编码」）：
+    微调时模型会返回 {"code": "想改成的编码", "name": "对象名"}，而 name 非空时
+    上面的规则会把 code 重新按 name 推一遍——用户改成什么都会被悄悄改回旧值，
+    模型却回答「改好了」。同一个字段编码（_norm_field_code）早就采纳显式值，
+    对象编码没道理例外。
     """
     from . import naming
+    if prefer_explicit:
+        s = _clean_code(raw)
+        if s:
+            return s
     label = (name or "").strip()
     if label:
         # 「XX表单」「XX表」这类尾巴对编码没意义
@@ -210,10 +227,33 @@ def _norm_code(raw: str, fallback: str = "biz", name: str = "") -> str:
         base = naming.object_code(clean)
         if base:
             return base
-    s = re.sub(r"[^A-Za-z0-9_]", "_", (raw or "").strip())
+    return _clean_code(raw) or fallback
+
+
+_OBJECT_CODE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _clean_code(raw: str) -> str:
+    """把 raw 规整成合法对象编码；不像人写的英文编码就返回空。"""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    # 驼峰写法先转下划线（ContractV2 → contract_v2），否则只能整串小写成 contractv2
+    if "_" not in s and any(c.isupper() for c in s):
+        from .model import camel_to_snake
+        s = camel_to_snake(s)
+    s = re.sub(r"[^A-Za-z0-9_]", "_", s)
     s = re.sub(r"_+", "_", s).strip("_").lower()
-    if not s or not s[0].isalpha():
-        s = fallback + "_" + s if s else fallback
+    if not s or not s[0].isalpha() or not _OBJECT_CODE_RE.match(s):
+        return ""
+    # 拼音长串：一长串下落字母、中间没有下划线（liuxianglingshixinxibiaodan）。
+    # 真实对象编码几乎都带下划线（project_create / contract / eq_ledger），
+    # 而 AI 把整段中文标题当名字时产出的就是这种串——判为不合规，交给 name 推导。
+    if "_" not in s and len(s) > 18:
+        return ""
+    # 超长的（带下划线也算）同样不可信：物理表名会跟着变长
+    if len(s) > 40:
+        return ""
     return s
 
 
@@ -299,20 +339,25 @@ def _as_pool(known) -> list[dict]:
 
 
 def build_bo(spec: dict, known_objects: list | None = None,
-             strict_objects: bool = False) -> tuple[Bo, list[str]]:
+             strict_objects: bool = False,
+             prefer_code: bool = False) -> tuple[Bo, list[str]]:
     """把 AI 给的 JSON 规整成 Bo。返回 (对象, 提示)。
 
     strict_objects=True（读非标准 Excel 时用）：object 字段的关联编码不在对象库里，
     不再"留着让人手工选"，而是**退回 dic（选项）**——
     依据是用户两次纠正：文档给的是一串固定取值、库里没有对应对象时，
     它就是个选项字段。留成 object 导入后是空下拉，比降级成文本更糟。
+
+    prefer_code=True（微调/显式改编码时用）：spec 里的 code 只要是合法英文编码就照用，
+    不再按 name 重新推导。见 _norm_code 的说明。
     """
     notices: list[str] = []
     pool = _as_pool(known_objects) or objects.catalog()
     known = {it["code"] for it in pool}
 
     name = (spec.get("name") or "").strip()
-    code = _norm_code(spec.get("code") or name, name=name)
+    code = _norm_code(spec.get("code") or name, name=name,
+                      prefer_explicit=prefer_code)
     name = name or code
     # 表名按手册规范取 PP_ + 编码。这里就补上，别等到 build 才发现为空——
     # 中间任何一步（预览/下载 Excel/直接出包）都要用到它。
@@ -340,11 +385,17 @@ def build_bo(spec: dict, known_objects: list | None = None,
             continue                      # 系统字段自动补，别重复
 
         object_type = (raw.get("objectType") or "").strip()
-        if ftype == "dic" and not object_type:
+        if ftype == "dic":
             # 选项字段不要求模型给字典 key——按字段编码自动生成即可
             # （和模板说明一致：类型=选项 时「关联对象/字典」可留空）。
             # 早先这里跟 object 一起降级成文本，导致「状态」这种明显的枚举列被丢掉。
-            object_type = fcode
+            #
+            # ⚠ 这里必须是**完整字典 key**（对象编码_字段编码），不能只放字段编码：
+            # object_type 会被 to_dict 带到预览、再被导出当 valueSource 用。
+            # 2026-11-12 用户截图：放裸字段编码导致整包 dic 控件的取值来源全错
+            # （报「引用的字典在对象里不存在」，正确 key 应为 project_apply_applyUnit）。
+            # dict_key() == bo_code + "_" + code，与 _dict_blocks 生成字典用同一规则。
+            object_type = f"{code}_{fcode}"
         elif ftype == "object":
             if not object_type:
                 # 关联对象没说指向谁，这个下拉没意义，降级成文本
@@ -379,6 +430,12 @@ def build_bo(spec: dict, known_objects: list | None = None,
         if not isinstance(length, int) or length <= 0:
             length = _DEFAULT_LEN.get(ftype)
 
+        # 选项值：AI 从需求文本里抽候选值时，分组写法会原样带过来
+        # （「中药：OTC、RX、双跨、其他」一行一条），必须同时保留扁平列表和分组映射，
+        # 否则出包只能出成 6 个不相关联的候选值，级联永远不会过滤
+        # （2026-11-12 用户实测：导入后品种分类随品种类别不联动）。
+        _flat, _groups = _clean_values(raw.get("values"))
+
         bo.fields.append(BoField(
             bo_code=code,
             code=fcode,
@@ -387,7 +444,8 @@ def build_bo(spec: dict, known_objects: list | None = None,
             length=length,
             object_type=object_type,
             readonly=bool(raw.get("readonly")),
-            choices=_clean_values(raw.get("values")),
+            choices=_flat,
+            choice_groups=_groups,
             # 级联：AI 想表达「这个下拉只列父字段选过之后剩下的项」就填父字段编码
             cascade_parent=str(raw.get("cascadeParent") or "").strip(),
             sn=len(bo.fields) + 1,
@@ -395,23 +453,66 @@ def build_bo(spec: dict, known_objects: list | None = None,
 
     if not bo.fields:
         notices.append("这个对象一个字段都没生成出来，请把需求描述得更具体一点")
+
+    # 级联父级归一：模型给的 cascadeParent 可能是中文字段名（「品种类别」）
+    # 或自造编码（varietyCategory），只要能在本对象里按**字段名**对上就修正。
+    # 对不上也留原值——validate 会拦「父级不在本表单」，但这里先给条 notice。
+    codes = {f.code for f in bo.fields}
+    by_name = {f.name: f.code for f in bo.fields}
+    for f in bo.fields:
+        p = (f.cascade_parent or "").strip()
+        if not p or p in codes:
+            continue
+        hit = by_name.get(p)
+        if hit:
+            f.cascade_parent = hit
+            notices.append(f"字段「{f.name}」的级联父级「{p}」按字段名对到 {hit}")
+        else:
+            notices.append(
+                f"⚠ 字段「{f.name}」的级联父级「{p}」在本对象里不存在"
+                f"（既不是字段编码也不是字段名），请预览里改成正确编码")
     return bo, notices
 
 
-def _clean_values(raw) -> list[str]:
-    """AI 给的候选值 → 干净的选项列表（选项字段才用得上）。
+def _clean_values(raw) -> tuple[list[str], dict[str, list[str]]]:
+    """AI 给的候选值 → (扁平列表, 分组映射)。
+
+    扁平列表是所有候选值（供 choices 用）；分组映射只在条目里出现
+    「父：子1、子2」时才非空，给 choice_groups 用。
 
     放在 build_bo 里统一收口：以前只有走「读 Excel」那条路才 _attach_values，
     「一句话生成」和直接调 build_bo 的场景候选值会被丢掉。
+    分组解析与 reader._parse_choice_groups 同一套规则（用户 2026-11-12 的
+    「品种分类随品种类别联动」就是靠它保住分组）。
     """
     if not isinstance(raw, list):
-        return []
+        return [], {}
     out: list[str] = []
+    groups: dict[str, list[str]] = {}
+
+    def _add(x: str) -> None:
+        x = x.strip()[:40]
+        if x and x not in out:
+            out.append(x)
+
     for v in raw:
-        s = str(v).strip()[:40]
-        if s and s not in out:
-            out.append(s)
-    return out[:30] if len(out) >= 2 else []
+        s = str(v).strip()
+        if not s:
+            continue
+        m = re.match(r"^([^：:>＞]{1,20})[：:>＞](.+)$", s)
+        if m:
+            parent, kids = m.group(1).strip(), m.group(2)
+            _add(parent)
+            bucket = groups.setdefault(parent, [])
+            for k in re.split(r"[,，;；|、/]+", kids):
+                k = k.strip()[:40]
+                if k:
+                    _add(k)
+                    if k not in bucket:
+                        bucket.append(k)
+            continue
+        _add(s)
+    return (out[:30] if len(out) >= 2 else []), groups
 
 
 def generate(description: str, cfg: dict, known_objects: list | None = None,
@@ -432,10 +533,14 @@ def generate(description: str, cfg: dict, known_objects: list | None = None,
         extra = "\n\n" + block
 
     t0 = time.time()
+    # 一句话生成也可能要 30+ 字段，3000 会截断成半个 JSON（同 ai_sheet/ai_refine
+    # 的教训）。按描述长度估预算：中文描述里字段数大约是顿号/分句数的量级，
+    # 每 8 个字 ≈ 一个字段 × 240 token，再带 2000 推理余量。
+    _budget = max(8000, min(32000, 4000 + len(description) // 8 * 240))
     text, used = llm.chat_any(_fast_cfg(cfg), [
         {"role": "system", "content": SYSTEM + extra},
         {"role": "user", "content": description.strip()},
-    ], timeout=timeout, max_tokens=3000)
+    ], timeout=timeout, max_tokens=_budget)
 
     try:
         spec = _extract_json(text)
@@ -450,6 +555,95 @@ def generate(description: str, cfg: dict, known_objects: list | None = None,
         "model": used.get("model", ""),
         "seconds": round(time.time() - t0, 2),
     }
+
+
+def fix_cascade_groups(bo: Bo, cfg: dict, timeout: int = 60) -> list[str]:
+    """级联子字段的候选值被模型拍平（没有分组）时，单独问一次模型要归属。
+
+    为什么需要这一步（2026-11-12 尹姣定表实测）：提示词要求「候选值按分组写」，
+    但模型仍可能输出 ["中药","OTC","RX",...] 的拍平数组——分组一丢，
+    出包就写不出 dependValues，导入后级联不联动。与其再赌一次完整重生成，
+    不如就着已有候选值单独要一份映射，输入小、输出小、基本不会截断。
+
+    只处理「有 cascadeParent、有父子双方候选值、但没有 choice_groups」的字段；
+    输出的 groups 会过滤到父子候选值的交集上，防止模型编造。
+    """
+    notices: list[str] = []
+    for f in bo.fields:
+        if f.type_new != "dic" or not f.cascade_parent or f.choice_groups:
+            continue
+        if not f.choices:
+            continue
+        parent = bo.field_by_code(f.cascade_parent)
+        if parent is None or not parent.choices:
+            continue
+
+        prompt = (
+            "下面是同一表单里两个下拉字段的候选值。\n"
+            f"父字段《{parent.name}》：{'、'.join(parent.choices)}\n"
+            f"子字段《{f.name}》：{'、'.join(f.choices)}\n\n"
+            "业务规则：选中父字段的某个值后，子字段只显示属于该父值的候选值；"
+            "一个子值可以同时属于多个父值。子值里如果混进了与父值同名的项"
+            "（常见于把父值也当成子值列了一遍），忽略它，不要输出。\n"
+            '请只输出 JSON：{"groups": {"父值原文": ["子值1", "子2"]}}，'
+            "键必须是父字段候选值的原文，值必须是子字段候选值的原文，不要编造。"
+        )
+        try:
+            text = ""
+            spec = {}
+            # deepseek-flash 是推理模型：实测一次调用 reasoning_tokens 就烧了
+            # 1853，max_tokens 给小了 content 直接是空串（2026-11-12 实测三次
+            # 两空一成）。预算 4000 + 失败重试，双保险。
+            for attempt in range(3):
+                text, _ = llm.chat_any(_fast_cfg(cfg), [
+                    {"role": "system", "content": "你是配置助手，只输出 JSON，不要解释。"},
+                    {"role": "user", "content": prompt},
+                ], timeout=timeout, max_tokens=4000)
+                if not (text or "").strip():
+                    continue
+                try:
+                    spec = _extract_json(text)
+                    break
+                except json.JSONDecodeError:
+                    continue
+            raw_groups = (spec or {}).get("groups") or {}
+            valid_parents = set(parent.choices)
+            valid_children = set(f.choices)
+            clean: dict[str, list[str]] = {}
+            for p, kids in raw_groups.items():
+                p = str(p).strip()
+                # 键必须是父字段的候选值。注意**不能**额外要求「p 不在子候选值里」：
+                # 拍平场景下子字段 choices 混着父值，这个条件会把所有合法组键
+                # 全部误杀（2026-11-12 实测：修复一直空转就是因为这个）。
+                if p not in valid_parents:
+                    continue
+                ks: list[str] = []
+                for k in kids or []:
+                    k = str(k).strip()
+                    if k in valid_children and k not in ks:
+                        ks.append(k)
+                if ks:
+                    clean[p] = ks
+            if clean:
+                f.choice_groups = clean
+                covered = {k for ks in clean.values() for k in ks}
+                orphan = [c for c in f.choices
+                          if c not in covered and c not in valid_parents]
+                msg = (f"字段「{f.name}」的级联分组已按候选值补齐"
+                       f"（{len(clean)} 组，覆盖 {len(covered)} 个子项）")
+                if orphan:
+                    msg += f"；这些子项没归属，导入后任何父值下都不显示：{'、'.join(orphan)}"
+                notices.append(msg)
+            else:
+                notices.append(
+                    f"⚠ 字段「{f.name}」的级联分组没问到（模型没有返回可用的归属关系），"
+                    f"候选值按平铺生成，导入后父级选完子级仍会全量显示；"
+                    f"可在预览里把候选值改成「父值：子1、子2」的分组写法后重试")
+        except Exception:
+            notices.append(
+                f"⚠ 字段「{f.name}」的级联分组补齐失败，候选值按平铺生成，"
+                f"导入后级联不会过滤；可在预览里手动改成「父值：子1、子2」分组写法")
+    return notices
 
 
 def type_choices() -> list[dict]:
@@ -487,6 +681,9 @@ def to_dict(bo: Bo) -> dict:
                 "isMultiple": bool(truthy((f.options or {}).get("isMultiple"))),
                 # 级联父字段：不给出去，预览改一版就丢了
                 "cascadeParent": f.cascade_parent or "",
+                # 级联分组（父值→子值）：预览往返 / 再改一版同样不能丢，
+                # 丢了出包就写不出 dependValues（2026-11-12 品种分类实测）
+                "choiceGroups": dict(f.choice_groups or {}),
             }
             for f in bo.fields
         ],

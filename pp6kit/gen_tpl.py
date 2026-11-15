@@ -68,7 +68,8 @@ def _patch_buttons(raw: str, bo: Bo, form_key: str) -> str:
     return json_attr(data)
 
 
-def render_list(listdef: ListDef, bo: Bo, form_key: str, snip: dict, tenant: str = "-999") -> tuple[str, list[str]]:
+def render_list(listdef: ListDef, bo: Bo, form_key: str, snip: dict, tenant: str = "-999",
+                detail_form_key: str = "") -> tuple[str, list[str]]:
     notices: list[str] = []
     # 库里有同 key 的列表模板 → 沿用原 id（导入按更新处理）
     tpl_id = listdef.exist_key or new_id()
@@ -177,6 +178,49 @@ def render_list(listdef: ListDef, bo: Bo, form_key: str, snip: dict, tenant: str
                         f"列表 {listdef.key}: 只有一个日期字段，甘特图开始/结束用了同一列，"
                         f"建议再加一个截止日期字段")
             tpl_attrs["attrs"] = json_attr(a)
+            # 级联详情：给选中字段的列注入 cascade_configuration，
+            # 点击该列 → 全屏打开详情表单（主键 bo 传过去）。
+            # 格式照用户给的会议列表导出包逐键核对（config-sync-20261113002727）：
+            # displayColumns[].cascade_configuration = {type:form, openType:fullscreen,
+            #   formKey:详情表单, dataType:edit, boKey:id, pkValueType:bo, zoom:true,
+            #   casadeFields:[{key:id, value:列name_, valueType:bo}], ...}
+            if detail_form_key and listdef.detail_field:
+                # 列的 name 是物理列名；detail_field 是字段编码，要换算
+                f = bo.field_by_code(listdef.detail_field)
+                if f is None:
+                    notices.append(
+                        f"列表 {listdef.key}: 级联详情字段 {listdef.detail_field} 不存在，已忽略")
+                else:
+                    col_name = f.resolved_field_name()
+                    hit = next((c for c in columns if c.get("name") == col_name), None)
+                    if hit is None:
+                        notices.append(
+                            f"列表 {listdef.key}: 字段 {listdef.detail_field} 不在显示列里，"
+                            f"级联详情未生效（把它加进「显示字段」即可）")
+                    else:
+                        hit["cascade_configuration"] = {
+                            "type": "form",
+                            "openType": "fullscreen",
+                            "formKey": detail_form_key,
+                            "dataType": "edit",
+                            "boKey": "id",
+                            "pkValueType": "bo",
+                            "zoom": True,
+                            "close": "topRight",
+                            "bind_template_key": None,
+                            "templateId": None,
+                            "url": None,
+                            "bind_bpmn_key": None,
+                            "bpmnType": None,
+                            "bpmnValue": None,
+                            "required": False,
+                            "params": [],
+                            "casadeFields": [
+                                {"key": "id", "value": col_name, "valueType": "bo"}
+                            ],
+                        }
+                        notices.append(
+                            f"列表 {listdef.key}: 点击「{f.name}」列将打开详情表单 {detail_form_key}")
             tpl_attrs["displayColumns"] = json_attr(columns)
             if "functionButtons" in tpl_attrs:
                 tpl_attrs["functionButtons"] = _patch_buttons(tpl_attrs["functionButtons"], bo, toolbar_form_key)
