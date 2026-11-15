@@ -75,11 +75,14 @@ def _():
     assert names == ["bo/001-contract.xml"], names
 
 
-@case("BLD06", "builder", "只选表单时不带业务对象", "P0", ["codes=form"])
+@case("BLD06", "builder", "只选表单时不带业务对象，但新建+详情两张都要出", "P0",
+      ["codes=form", "单新建表单的包自动补详情表单"])
 def _():
     body, _ = build(one_form_package(), codes=["form"])
     names = list(unzip(body))
-    assert len(names) == 1 and names[0].startswith("form/"), names
+    assert all(n.startswith("form/") for n in names), names
+    assert any("create" in n for n in names), names
+    assert any("details" in n for n in names), names
 
 
 @case("BLD07", "builder", "列表进 data_template 目录", "P0",

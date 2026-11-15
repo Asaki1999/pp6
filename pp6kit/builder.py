@@ -830,23 +830,19 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
     for form in project.forms:
         form_of_bo.setdefault(form.bo_code, form.key)
 
-    # ---- 详情表单：列表开了「级联详情字段」的对象，自动补一个
-    # 「所有字段只读」的详情表单，供列表点列打开（用户 2026-11-13 需求）。
-    # 参照会议列表导出包的命名习惯（meeting_details）取 {对象编码}_details；
-    # 项目里已有同 key 或同 kind 的详情表单就不重复生成。
-    # 注意只在「用户开启详情联动」时生成——无条件补会让「标准全套」
-    # 这种本来就有详情表单的项目多出一张（回归 FRM13/BLD06/BLD09 踩过）。
+    # ---- 详情表单：每个有表单的对象都补一张「所有字段只读」的详情表单。
+    # 用户 2026-11-15 明确要求：普通模式 / 流程模式都生成「新建 + 详情」，
+    # 不同场景用不同表单。之前只在列表开了「级联详情字段」时补，AI 生成的对象
+    # 只有新建表单，详情场景没表单可用。
+    # 已有详情表单（标准全套展开的、或用户手填的）不重复生成。
     detail_of_bo: dict[str, str] = {}
     for f in project.forms:
         if f.kind == FORM_DETAIL:
             detail_of_bo.setdefault(f.bo_code, f.key)
-    for lst in project.lists:
-        if not lst.detail_field:
+    for bo in project.bos:
+        if bo.code in detail_of_bo:
             continue
-        if lst.bo_code in detail_of_bo:
-            continue
-        bo = project.bo(lst.bo_code)
-        if bo is None:
+        if not any(f.bo_code == bo.code for f in project.forms):
             continue
         dkey = f"{bo.code}_details"
         if any(x.key == dkey for x in project.forms):
@@ -866,7 +862,7 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
                 form_key=dkey,
                 name=x.code,
                 label=x.name,
-                field_type="text",
+                field_type=blueprint.control_for(x),
                 # 同一处真相：dic 的取值来源要分全局/自定义两支
                 value_source=x.value_source(),
                 placeholder="",

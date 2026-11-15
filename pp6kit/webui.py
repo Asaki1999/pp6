@@ -1170,6 +1170,9 @@ def ai_generate_bo(payload: dict) -> dict:
             notices.append(f"表单设计没成功（{str(exc)[:60]}），已用默认布局代替")
             steps.append({"step": "表单", "error": str(exc)[:120]})
 
+    if want_form:
+        notices.append("出包时会自动补一张只读详情表单：新建走新建表单，查看/流程走详情表单")
+
     list_payload = None
     if want_list:
         try:

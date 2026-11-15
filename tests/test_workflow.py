@@ -1049,3 +1049,6 @@ def _():
     assert 'mode="workflow"' in bo_xml, bo_xml[:500]
     assert "processState" in bo_xml, bo_xml[:500]
     assert all(not n.startswith("workflow/") for n in names), names
+    forms = [n for n in names if n.startswith("form/")]
+    assert any("create" in n for n in forms), names
+    assert any("details" in n for n in forms), names
