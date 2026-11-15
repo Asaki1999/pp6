@@ -314,6 +314,18 @@ function plPreDecisions(objects) {
   return Object.keys(map).length ? map : null;
 }
 
+/* AI 预览的「下一步」按钮：只有选了关联项目才需要核对字段；
+   不关联时就是生成预览，别让用户以为还要做项目字段确认。 */
+function syncAiNextLabel() {
+  const btn = $("#btnToPack");
+  if (!btn) return;
+  const check = state.plPre === "on";
+  btn.textContent = check ? "下一步：核对字段 →" : "下一步：生成预览 →";
+  btn.title = check
+    ? "先核对项目字段；确认后才下载导入包"
+    : "生成预览后，在结果页下载导入包";
+}
+
 /* 两个菜单的两档单选同步：普通模式 / 流程模式共享同一档（state.plPre），
  * 存量包修订是独立的三档（state.plPrePatch）。 */
 function syncPlPreInputs() {
@@ -342,10 +354,12 @@ function bindPlPre() {
         else state.plPre = value;
         savePref(g.key, value);
         syncPlPreInputs();
+        syncAiNextLabel();
       };
     });
   });
   syncPlPreInputs();
+  syncAiNextLabel();
 }
 
 /* ------------------------------------------------ 渲染 */
@@ -1788,7 +1802,9 @@ function bindAiSheetPick(d) {
 async function applyAiBo(d, { thenBuild = false } = {}) {
   const btns = ["#aiApply", "#btnExportXlsx2", "#btnToPack"]
     .map((sel) => $(sel)).filter(Boolean);
-  const label0 = thenBuild ? "正在核对字段…" : "生成 Excel…";
+  const label0 = thenBuild
+    ? (state.plPre === "on" ? "正在核对字段…" : "正在生成预览…")
+    : "生成 Excel…";
   btns.forEach((b) => { b.disabled = true; });
   if (thenBuild) $("#btnToPack").textContent = label0;
   try {
@@ -1810,8 +1826,7 @@ async function applyAiBo(d, { thenBuild = false } = {}) {
     btns.forEach((b) => { b.disabled = false; });
     const apply = $("#aiApply");
     if (apply) apply.textContent = "套用并下载 Excel";
-    const toPack = $("#btnToPack");
-    if (toPack) toPack.textContent = "下一步：核对字段 →";
+    syncAiNextLabel();
   }
 }
 
@@ -1961,6 +1976,7 @@ async function sendAiChat(text, { fresh = false } = {}) {
     box.classList.remove("is-error");
     box.innerHTML = renderAiBo(d);
     renderAiActions(d);
+    syncAiNextLabel();
     pending.remove();
     const nf = (d.bo && d.bo.fields ? d.bo.fields.length : 0);
     aiChatAppend("bot", first

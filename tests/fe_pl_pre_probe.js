@@ -303,7 +303,10 @@ function staticChecks() {
     patchOffLabel: /name="plPrePatch" value="off">\s*不关联<\/label>/.test(html),
     noAllPrefix: !/> 全部[^<]*<\/label>/.test(html),
     // AI 预览的按钮只做核对，不生成 zip；生成包在结果页，且在核验窗口之后
-    btnToPackLabel: /id="btnToPack"[^>]*>下一步：核对字段/.test(html),
+    // 默认（不关联）是「生成预览」，选关联项目才切到「核对字段」
+    btnPreviewLabel: /id="btnToPack"[^>]*>下一步：生成预览/.test(html),
+    btnCheckDynamic: /state\.plPre === "on"/.test(src)
+      && /"下一步：核对字段/.test(src) && /"下一步：生成预览/.test(src),
     btnToPackNoGenerate: !/下一步：生成导入包/.test(html),
     btnPackLabel: /id="btnPack"[^>]*>下载导入包 zip/.test(html),
     hasWorkflowBar: /id="plPreWorkflowBar"/.test(html),

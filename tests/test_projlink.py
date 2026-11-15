@@ -2427,8 +2427,10 @@ def _():
         "存量包页的选项没有和普通/流程统一成「不关联」"
     assert got["0_static"]["noAllPrefix"] is True, \
         "选项标签又加了「全部」：控件本身就是对整份 Excel 的批量设置，不需要重复"
-    assert got["0_static"]["btnToPackLabel"] is True, \
-        "AI 预览的按钮还叫「生成导入包」：它只做核对，用户会以为点了才开始核验"
+    assert got["0_static"]["btnPreviewLabel"] is True, \
+        "AI 预览默认（不关联）不是「生成预览」：用户会以为没关联还要核对字段"
+    assert got["0_static"]["btnCheckDynamic"] is True, \
+        "按钮没有按 state.plPre 在「生成预览 / 核对字段」之间切换"
     assert got["0_static"]["btnToPackNoGenerate"] is True, \
         "AI 预览仍出现「下一步：生成导入包」"
     assert got["0_static"]["btnPackLabel"] is True, \
