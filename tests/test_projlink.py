@@ -2415,6 +2415,10 @@ def _():
     got = _json.loads(lines[-1])
     assert got["0_static"]["importBarOnTop"] is True, \
         "普通模式的「关联项目」选项不在 AI 卡上方：会被长卡片挤到折叠线下，用户看不见"
+    assert got["0_static"]["entryChoice"] is True, \
+        "首屏没有先选 AI / Excel 的入口"
+    assert got["0_static"]["entryProgressive"] is True, \
+        "AI/Excel 面板没有默认收起、选了才展开"
     # 普通/存量两页的选项栏；流程模式复用普通页，不再单独一套
     assert got["0_static"]["twoBars"] is True, "普通/存量页没有同款选项栏"
     assert got["0_static"]["barsAtTop"] is True, \

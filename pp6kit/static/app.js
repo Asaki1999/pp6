@@ -87,6 +87,7 @@ function savePref(key, value) {
 const state = {
   file: null, data: null, formIndex: 0, desktop: false,
   flowMode: false,             // 流程模式 = 普通模式同一套 UI，导出时附带固定三步 XML
+  entryMode: "",               // 第 1 步先选入口："ai" / "excel"；空=还在选择页
   picked: new Set(), imported: new Set(), aiData: null, aiFile: null,
 
   // ↓ P0-1 / P0-4 / P0-5：第 7 tab 两态 + 反解 / 出包状态机
@@ -291,6 +292,7 @@ async function handleFile(file, { fromAi = false, quiet = false } = {}) {
 }
 
 async function loadDemo() {
+  state.entryMode = "excel";
   try {
     const res = await fetch("/api/template");
     const blob = await res.blob();
@@ -1877,6 +1879,20 @@ async function applyAiBo(d, { thenBuild = false, workflow = false } = {}) {
   }
 }
 
+/* 第 1 步入口选择：先选 AI / Excel，再展开对应面板，避免首屏一次铺满 */
+function renderEntry() {
+  const choice = $("#entryChoice");
+  const panels = $("#entryPanels");
+  const ai = $("#entryAi");
+  const excel = $("#entryExcel");
+  if (!choice || !panels) return;
+  const mode = state.entryMode;
+  choice.hidden = !!mode;
+  panels.hidden = !mode;
+  if (ai) ai.hidden = mode !== "ai";
+  if (excel) excel.hidden = mode !== "excel";
+}
+
 /* 步骤切换：1 输入 / 2 预览 / 3 出包 */
 function goStep(n, { scroll = true } = {}) {
   const steps = { 1: "#stepInput", 2: "#stepPreview", 3: "#result" };
@@ -1884,6 +1900,7 @@ function goStep(n, { scroll = true } = {}) {
     const el = $(sel);
     if (el) el.hidden = Number(k) !== n;
   });
+  if (n === 1) renderEntry();
   $$("#steps .step").forEach((el) => {
     const cur = Number(el.dataset.step);
     el.classList.toggle("active", cur === n);
@@ -2553,6 +2570,21 @@ function bind() {
     $("#fileInput").click();
   };
 
+  // ---- 第 1 步：先选入口，再展开对应面板
+  $$("#entryChoice [data-entry]").forEach((b) => {
+    b.onclick = () => {
+      state.entryMode = b.dataset.entry;
+      renderEntry();
+      const focus = state.entryMode === "ai" ? $("#aiChatText1") : $("#fileInput");
+      if (focus && focus.focus) focus.focus();
+    };
+  });
+  const entryBack = $("#entryBack");
+  if (entryBack) entryBack.onclick = () => {
+    state.entryMode = "";
+    renderEntry();
+  };
+
   // ---- 第 1 步：一个输入口（描述 + 拖文件都行）
   const dz = $("#dzInline");
   $("#btnPickSheet").onclick = async () => {
@@ -2737,3 +2769,4 @@ function bind() {
 
   detectDesktop();
   bind();
+  renderEntry();

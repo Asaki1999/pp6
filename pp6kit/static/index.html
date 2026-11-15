@@ -192,7 +192,7 @@
 <main id="mode-import">
   <!-- 步骤条：只有三步，任何时候都能看到自己在哪 -->
   <nav class="steps" id="steps">
-    <div class="step active" data-step="1"><b>1</b><span>描述或上传</span></div>
+    <div class="step active" data-step="1"><b>1</b><span>选择入口</span></div>
     <div class="step-line"></div>
     <div class="step" data-step="2"><b>2</b><span>预览并修改</span></div>
     <div class="step-line"></div>
@@ -210,6 +210,23 @@
     <!-- P0-4 反解摘要卡片：必须留在 #stepInput 内，inspectZip() 的 finally 会 goStep(1) -->
     <div id="pp6zipInspectCard" hidden></div>
 
+    <!-- 第 1 步先选入口：不要一进来把 AI / 上传 / 关联项目全铺开 -->
+    <div class="entry-choice" id="entryChoice">
+      <button class="entry-card" data-entry="ai">
+        <span class="entry-badge">AI</span>
+        <strong>用一句话生成</strong>
+        <span class="sub">描述要建什么，AI 出对象、字段、表单和列表</span>
+      </button>
+      <button class="entry-card" data-entry="excel">
+        <span class="entry-badge">Excel</span>
+        <strong>我有 Excel</strong>
+        <span class="sub">上传自己整理的表，AI 识别字段；标准模板也能直接解析</span>
+      </button>
+    </div>
+
+    <div id="entryPanels" hidden>
+      <button class="link entry-back" id="entryBack">← 换一种方式</button>
+
     <!-- 第 1 步：对象级选择放在**导入前**，不再导入后弹窗问一遍。
          两档共享一份状态（普通 / 流程两个菜单同一档），存 localStorage。
          放在 AI 卡**上方**：这是导入/生成前就要定的开关，不能藏在长卡片下面。 -->
@@ -220,6 +237,7 @@
       <span class="sub">导入前先选：关联=这份 Excel 里每个对象都关联项目；不关联=一个都不关联。导入后不再弹选择框。</span>
     </div>
 
+    <div id="entryAi" hidden>
     <section class="ai-box ai-chat-launch" id="aiChatLaunch">
       <div class="ai-chat-head">
         <h3>告诉我要建什么，或者直接说哪里要改</h3>
@@ -260,7 +278,9 @@
         <input type="file" id="aiSheetInput" accept=".xlsx,.xlsm,.pdf,.docx" hidden>
       </div>
     </section>
+    </div><!-- /entryAi -->
 
+    <div id="entryExcel" hidden>
     <section class="ai-box ai-box-lite">
       <div class="ai-head">
         <div>
@@ -277,6 +297,8 @@
         <button class="link" id="btnDemo">载入示例看效果</button>
       </div>
     </section>
+    </div><!-- /entryExcel -->
+    </div><!-- /entryPanels -->
   </section>
 
   <!-- ========== 第 2 步：预览（AI 结果） ========== -->

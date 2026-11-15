@@ -315,6 +315,12 @@ function staticChecks() {
 
   out["0_static"] = {
     hasImportBar: /id="plPreImportBar"/.test(html),
+    // 首屏先选入口：AI / Excel 面板默认隐藏，选了才展开
+    entryChoice: /id="entryChoice"/.test(html)
+      && /data-entry="ai"/.test(html) && /data-entry="excel"/.test(html),
+    entryProgressive: /id="entryPanels"[^>]*hidden/.test(html)
+      && /id="entryAi"[^>]*hidden/.test(html) && /id="entryExcel"[^>]*hidden/.test(html)
+      && /renderEntry/.test(src) && /entryMode/.test(src),
     importBarOnTop: /id="plPreImportBar"/.test(html)
       && html.indexOf('id="plPreImportBar"') < html.indexOf('id="aiChatLaunch"'),
     // 普通/存量两页的选项栏；流程模式复用普通页，不再单独一套

@@ -461,6 +461,7 @@ def _():
     p = _Ids()
     p.feed((Path(__file__).resolve().parents[1] / "pp6kit" / "static" / "index.html")
            .read_text(encoding="utf-8"))
-    for wanted in ("flowModeBar", "btnFlowXml", "btnPack", "aiResult", "result"):
+    for wanted in ("flowModeBar", "btnFlowXml", "btnPack", "aiResult", "result",
+                   "entryChoice", "entryPanels", "entryAi", "entryExcel"):
         assert wanted in p.ids, f"#{wanted} 不是真实 DOM 元素（可能在注释里）"
     assert not any("btnFlowXml" in c for c in p.comments), "流程 XML 按钮还在注释里"
