@@ -75,8 +75,12 @@ def main(argv: list[str]) -> int:
     host = os.environ.get("PP6_DB_HOST", "127.0.0.1")
     port = int(os.environ.get("PP6_DB_PORT", "3306"))
     user = os.environ.get("PP6_DB_USER", "root")
-    password = os.environ.get("PP6_DB_PASS", "123456")
+    password = os.environ.get("PP6_DB_PASS", "")
     database = os.environ.get("PP6_DB_NAME", "powerproject6")
+    if not password:
+        # 口令只从环境变量读：不要把任何数据库口令写进仓库（包括默认值）。
+        print("缺少 PP6_DB_PASS：请先 export PP6_DB_PASS=...，口令不要写进代码/文档")
+        return 2
 
     only = ""
     if "--only" in argv:
