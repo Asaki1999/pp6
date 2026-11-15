@@ -642,10 +642,10 @@
     <section class="card wf-import" id="wfImport">
       <div class="card-head">
         <div>
-          <h3>导入 Excel</h3>
+          <h3>导入 Excel，AI 识别字段</h3>
           <div class="sub">
-            同一份填写表：把 <b>「流程驱动=是」的对象</b>连同它的表单/列表打成对象包；
-            固定流程是 开始 → 审核 → 通过，不生成流程图 / 流程 XML。普通对象走左侧「普通模式」。
+            不要求标准模板：选一份你自己整理的表，AI 读表头识别业务对象和字段，
+            再按固定 开始 → 审核 → 通过 出流程对象包。不用先填「流程驱动」，也不生成流程图 / 流程 XML。
           </div>
         </div>
         <div class="wf-actions">
@@ -654,31 +654,11 @@
           <input type="file" id="wfFileInput" accept=".xlsx,.xlsm" hidden>
         </div>
       </div>
-      <div class="wf-import-stat" id="wfImportStat">还没有导入：点右上「选择 Excel」，或把 .xlsx 直接拖到这里</div>
+      <div class="wf-import-stat" id="wfImportStat">还没有导入：点右上「选择 Excel」，AI 会分析表头并识别字段</div>
     </section>
 
-    <!-- 和普通模式同一套 AI：描述要建什么，AI 出对象/表单/列表；
+    <!-- 导入的 Excel 不要求是标准模板：交给 AI 读表头，识别业务对象和字段；
          流程仍然固定 开始→审核→通过，不生成流程图/XML。 -->
-    <section class="card wf-ai" id="wfAi">
-      <div class="card-head">
-        <div>
-          <h3>用一句话生成流程对象</h3>
-          <div class="sub">
-            和普通模式的 AI 同一套：描述要建什么，AI 出对象 / 字段 / 表单 / 列表；
-            流程固定 开始 → 审核 → 通过，生成后直接出流程对象包。
-          </div>
-        </div>
-      </div>
-      <div class="wf-ai-body">
-        <textarea id="wfAiText" rows="2"
-          placeholder="例：合同台账，记录合同名称、合同金额、签约日期、经办人、所属部门"></textarea>
-        <div class="wf-ai-foot">
-          <span class="sub" id="wfAiHint">生成后直接出流程对象包；要逐字段改，先用普通模式预览</span>
-          <button class="btn primary" id="wfAiSend">AI 生成</button>
-        </div>
-      </div>
-    </section>
-
     <section class="wf-main">
       <div class="card wf-head-card">
         <div class="card-head">

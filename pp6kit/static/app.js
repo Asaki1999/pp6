@@ -2790,7 +2790,7 @@ function bindWfImport() {
   input.onchange = (e) => {
     const f = e.target.files && e.target.files[0];
     e.target.value = "";                 // 同一个文件再选一次也要触发 change
-    if (f) handleFile(f, { quiet: true });
+    if (f) wfAnalyzeSheet(f);
   };
   if (!box) return;
   box.ondragover = (e) => { e.preventDefault(); box.classList.add("dz-over"); };
@@ -2799,36 +2799,38 @@ function bindWfImport() {
     e.preventDefault();
     box.classList.remove("dz-over");
     const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f) handleFile(f, { quiet: true });
+    if (f) wfAnalyzeSheet(f);
   };
 }
 
-/* 流程页的 AI：和普通模式共用 /api/ai/bo，不另开流程模型。
-   生成后走 applyAiBo 的 quiet 分支，解析完直接刷新流程对象包，不跳普通模式。 */
-async function wfAiGenerate() {
-  const box = $("#wfAiText");
-  const text = (box && box.value || "").trim();
-  if (!text) {
-    toast("先说清楚要建什么，例如：合同台账，记录合同名称、金额、签约日期");
-    if (box) box.focus();
-    return;
-  }
-  const btn = $("#wfAiSend");
+/* 流程页导入 Excel：不要求标准模板，先让 AI 读表头识别业务对象和字段，
+   再走 applyAiBo 生成标准 Excel → 解析 → 流程对象包。不是聊天框。 */
+async function wfAnalyzeSheet(file) {
+  const btn = $("#btnWfPick");
+  const stat = $("#wfImportStat");
   const label = btn ? btn.textContent : "";
   if (btn) { btn.disabled = true; btn.textContent = "AI 分析中…"; }
+  if (stat) {
+    stat.className = "wf-import-stat";
+    stat.textContent = `正在让 AI 读「${file.name}」的表头并识别字段…`;
+  }
   try {
-    const d = await apiPost("/api/ai/bo", { description: text, known: [] });
+    const res = await fetch("/api/ai/sheet?hint=" +
+      encodeURIComponent("按表头识别业务对象和字段"), {
+      method: "POST",
+      body: await file.arrayBuffer(),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok || d.ok === false) throw new Error(d.error || `分析失败 ${res.status}`);
     state.aiData = d;
     const ok = await applyAiBo(d, { thenBuild: true, workflow: true });
-    if (ok) {
-      const nf = (d.bo && d.bo.fields ? d.bo.fields.length : 0);
-      toast(`AI 已生成：${d.bo.name}（${nf} 个字段），可以导出流程对象包`, 8000);
-      if (box) box.value = "";
-    }
+    if (!ok) throw new Error("生成流程对象包失败");
+    const nf = (d.bo && d.bo.fields ? d.bo.fields.length : 0);
+    toast(`AI 已识别：${d.bo.name}（${nf} 个字段），可以导出流程对象包`, 8000);
   } catch (err) {
-    toast("AI 生成失败：" + (err && err.message ? err.message : err), 8000);
+    toast("AI 分析 Excel 失败：" + (err && err.message ? err.message : err), 9000);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = label || "AI 生成"; }
+    if (btn) { btn.disabled = false; btn.textContent = label || "选择 Excel"; }
   }
 }
 
@@ -2847,8 +2849,4 @@ window.Workflow = {
 };
 
 $("#btnWfObjects") && ($("#btnWfObjects").onclick = () => downloadWorkflowObjects($("#btnWfObjects")));
-$("#wfAiSend") && ($("#wfAiSend").onclick = wfAiGenerate);
-$("#wfAiText") && ($("#wfAiText").onkeydown = (e) => {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); wfAiGenerate(); }
-});
 bindWfImport();
