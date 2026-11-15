@@ -1830,7 +1830,7 @@ function bindAiSheetPick(d) {
 
 /* 把 AI 生成的对象写进一份完整模板 Excel，交给用户继续填表单/列表。
    thenBuild=true 时不下载，而是直接把这份 Excel 交给第 3 步出包。 */
-async function applyAiBo(d, { thenBuild = false } = {}) {
+async function applyAiBo(d, { thenBuild = false, workflow = false } = {}) {
   const btns = ["#aiApply", "#btnExportXlsx2", "#btnToPack"]
     .map((sel) => $(sel)).filter(Boolean);
   const label0 = thenBuild
@@ -1847,12 +1847,16 @@ async function applyAiBo(d, { thenBuild = false } = {}) {
     if (thenBuild) {
       // 用这份 Excel 走原有的解析 → 出包链路（预览里的改动才不会丢）
       const file = new File([blob], name, { type: blob.type });
-      await handleFile(file, { fromAi: true });
+      // 流程页的 AI 生成走 quiet：不要跳回普通模式第 3 步/抢滚动，
+      // 解析完由 renderAll() 刷新流程页的计数与对象包按钮。
+      await handleFile(file, workflow ? { quiet: true } : { fromAi: true });
     } else if (await saveBlob(blob, name)) {
       toast(`已导出 ${name}，线下改完拖回第 1 步即可继续`, 7000);
     }
+    return true;
   } catch (err) {
     toast("生成失败：" + err.message, 6000);
+    return false;
   } finally {
     btns.forEach((b) => { b.disabled = false; });
     const apply = $("#aiApply");
@@ -2799,6 +2803,35 @@ function bindWfImport() {
   };
 }
 
+/* 流程页的 AI：和普通模式共用 /api/ai/bo，不另开流程模型。
+   生成后走 applyAiBo 的 quiet 分支，解析完直接刷新流程对象包，不跳普通模式。 */
+async function wfAiGenerate() {
+  const box = $("#wfAiText");
+  const text = (box && box.value || "").trim();
+  if (!text) {
+    toast("先说清楚要建什么，例如：合同台账，记录合同名称、金额、签约日期");
+    if (box) box.focus();
+    return;
+  }
+  const btn = $("#wfAiSend");
+  const label = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "AI 分析中…"; }
+  try {
+    const d = await apiPost("/api/ai/bo", { description: text, known: [] });
+    state.aiData = d;
+    const ok = await applyAiBo(d, { thenBuild: true, workflow: true });
+    if (ok) {
+      const nf = (d.bo && d.bo.fields ? d.bo.fields.length : 0);
+      toast(`AI 已生成：${d.bo.name}（${nf} 个字段），可以导出流程对象包`, 8000);
+      if (box) box.value = "";
+    }
+  } catch (err) {
+    toast("AI 生成失败：" + (err && err.message ? err.message : err), 8000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label || "AI 生成"; }
+  }
+}
+
 const WfView = {
   render() {
     renderWfImport();
@@ -2814,4 +2847,8 @@ window.Workflow = {
 };
 
 $("#btnWfObjects") && ($("#btnWfObjects").onclick = () => downloadWorkflowObjects($("#btnWfObjects")));
+$("#wfAiSend") && ($("#wfAiSend").onclick = wfAiGenerate);
+$("#wfAiText") && ($("#wfAiText").onkeydown = (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); wfAiGenerate(); }
+});
 bindWfImport();

@@ -342,7 +342,9 @@ function staticChecks() {
     // 流程模式：固定 开始→审核→通过；不再有流程图设计器 / AI 生成 / XML 下载
     wfFixedFlow: /id="wfFixedFlow"/.test(html)
       && />开始<\/span>/.test(html) && />审核<\/span>/.test(html) && />通过<\/span>/.test(html),
-    wfNoFlowDesigner: !/id="wfAi"|id="wfList"|id="wfBody"|id="btnWfDownload"/.test(html),
+    wfNoFlowDesigner: !/id="wfList"|id="wfBody"|id="btnWfDownload"/.test(html),
+    wfAiInput: /id="wfAi"/.test(html) && /id="wfAiSend"/.test(html)
+      && /\/api\/ai\/bo/.test(src),
     wfNoFlowApi: !/\/api\/workflow|\/api\/ai\/workflow/.test(src),
     wfObjectPackage: /id="btnWfObjects"/.test(html),
     // 没有「流程驱动=是」时按全部对象走固定三步；不再让用户回 Excel 改标志

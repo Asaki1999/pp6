@@ -2448,6 +2448,8 @@ def _():
         "前端还在请求已下线的 /api/workflow 或 /api/ai/workflow"
     assert got["0_static"]["wfObjectPackage"] is True, \
         "流程对象包入口没保留"
+    assert got["0_static"]["wfAiInput"] is True, \
+        "流程页没有接普通模式的 AI 生成"
     assert got["0_static"]["wfAllFallback"] is True, \
         "没勾流程驱动时没有回退到全部对象 / 没带 X-Workflow-All"
     assert got["0_static"]["wfNoFlowFlagBlame"] is True, \
