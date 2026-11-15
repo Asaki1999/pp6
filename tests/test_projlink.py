@@ -2439,6 +2439,17 @@ def _():
         "AI 文件入口的 accept 里没有 .pdf/.docx"
     assert got["0_static"]["aiDocEntry"] is True, \
         "前端没有接 /api/extract 或桌面 pick_source"
+    # 返回按钮位置统一：第 2/3 步都在页头 .file-row，底部操作条不再有返回
+    assert got["0_static"]["backButtonsTop"] is True, \
+        "第 2 步或第 3 步的返回按钮不在页头 .file-row 里（一上一下，用户来回找）"
+    assert got["0_static"]["backBeforeAiResult"] is True, \
+        "第 2 步的返回按钮跑到 AI 结果区下面去了，应该在页头"
+    assert got["0_static"]["backLabelUnified"] is True, \
+        "两个返回按钮的文案没统一成「← 返回上一步」"
+    assert got["0_static"]["noOldBackLabel"] is True, \
+        "旧文案「← 回去接着说」还在"
+    assert got["0_static"]["stepFootKeepsTwo"] is True, \
+        "第 2 步底部操作条丢了「导出 Excel 线下改」或「下一步：生成预览」"
     d = got["5b_defer"]
     assert d["deferred"] is True, d
     assert d["shown"] is True, d

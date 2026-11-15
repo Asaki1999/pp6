@@ -275,6 +275,17 @@
 
   <!-- ========== 第 2 步：预览（AI 结果） ========== -->
   <section id="stepPreview" hidden>
+    <!-- 返回入口统一放在页头（与第 3 步 #result 的 .file-row 同款）：
+         第 2 步的返回原来在底部操作条、第 3 步在顶部，同一件事一上一下，
+         用户来回找（文案也统一成「← 返回上一步」）。 -->
+    <div class="file-row" id="previewFileRow">
+      <div class="file-name">
+        <span class="dot"></span>
+        <strong>AI 预览</strong>
+        <span class="muted">确认字段后继续</span>
+      </div>
+      <button class="link" id="btnBackInput">← 返回上一步</button>
+    </div>
     <div class="ai-result" id="aiResult"></div>
     <div class="panel" id="aiRelPanel" hidden>
       <div class="rel-toolbar"><span class="sub">识别到的新对象与已有对象的关联，勾选「建立」后才会生成父子/平行关系</span></div>
@@ -299,7 +310,6 @@
     </section>
 
     <div class="step-foot">
-      <button class="btn ghost" id="btnBackInput">← 回去接着说</button>
       <div class="ai-btns">
         <button class="btn ghost" id="btnExportXlsx2">导出 Excel 线下改</button>
         <button class="btn primary" id="btnToPack"

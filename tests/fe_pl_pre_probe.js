@@ -287,6 +287,32 @@ function linkedOf(decoded) {
 /* ---------------- ① 静态：初始页两档控件在，第三档和旧弹窗都不在 ---------------- */
 function staticChecks() {
   const css = fs.existsSync(CSS_FILE) ? fs.readFileSync(CSS_FILE, "utf8") : "";
+
+  /* ---- 返回按钮位置：两个步骤的返回入口必须都在**页头**的 .file-row 里 ----
+   * 第 2 步原来把「← 回去接着说」放在底部 .step-foot，第 3 步的「← 返回上一步」
+   * 在页面顶部 .file-row —— 同一件事一上一下，用户来回找（用户原话
+   * 「一会在上面 一会在下面」）。这里按 DOM 位置断言，不看文案猜。
+   *   insideFileRow：该 id 往前最近的 .file-row 开标签到它之间没有第二个
+   *                  .file-row（否则是别的行里的按钮），且距离够近（<600 字符），
+   *                  排掉「其实掉到下面操作条里、只是往前还能找到上面那行」。
+   *   insideStepFoot：第 2 步底部操作条那一段（.step-foot → 该 section 的 </section>）。
+   */
+  const footStart = html.indexOf('class="step-foot"');
+  const footBlock = footStart < 0 ? ""
+    : html.slice(footStart, html.indexOf("</section>", footStart));
+  const insideStepFoot = (id) => footBlock.indexOf(`id="${id}"`) >= 0;
+  const insideFileRow = (id) => {
+    const at = html.indexOf(`id="${id}"`);
+    if (at < 0) return false;
+    const start = html.lastIndexOf('<div class="file-row"', at);
+    if (start < 0) return false;
+    // between 从这行的开标签起算，所以要跳过第 0 位那个自身
+    const between = html.slice(start, at);
+    return between.indexOf('<div class="file-row"', 1) < 0 && between.length < 600;
+  };
+  const backAt = html.indexOf('id="btnBackInput"');
+  const aiResultAt = html.indexOf('id="aiResult"');
+
   out["0_static"] = {
     hasImportBar: /id="plPreImportBar"/.test(html),
     importBarOnTop: /id="plPreImportBar"/.test(html)
@@ -341,6 +367,17 @@ function staticChecks() {
     reimportResetsInput: /fileInput"\)\.onchange[\s\S]{0,300}e\.target\.value = ""/.test(src),
     backResetsAndReopens: /function backToInput\(\)[\s\S]{0,700}plModalShown = false/.test(src),
     hasBackEdit: /id="plBackEdit"/.test(html) && /plBackEdit/.test(src),
+    // 两个步骤的返回按钮都在页头 .file-row 里（与第 3 步同款），底部不再有返回按钮
+    backButtonsTop: insideFileRow("btnBackInput") && insideFileRow("btnReset")
+      && !insideStepFoot("btnBackInput"),
+    // 第 2 步的返回按钮在 AI 结果区**之前**（页头），不是压在结果下面
+    backBeforeAiResult: backAt >= 0 && aiResultAt >= 0 && backAt < aiResultAt,
+    // 文案统一成「← 返回上一步」，旧文案「← 回去接着说」整块不留
+    backLabelUnified: /id="btnBackInput"[^>]*>\s*← 返回上一步</.test(html)
+      && /id="btnReset"[^>]*>\s*← 返回上一步</.test(html),
+    noOldBackLabel: !/回去接着说/.test(html),
+    // 底部操作条只剩「导出 Excel 线下改」「下一步：生成预览 →」
+    stepFootKeepsTwo: insideStepFoot("btnExportXlsx2") && insideStepFoot("btnToPack"),
   };
 }
 

@@ -359,3 +359,51 @@ def _():
     assert "create_project_create" not in bo.options["tree"]
     assert proj.workflows[0].nodes[0].form_key == new_key
     assert bo.exist_id == "" and f.exist_key == "" and lst.exist_key == ""
+
+
+@case("BLD21", "builder", "列表的「新建」按钮默认不绑权限项", "P0",
+      ["permission_key 留空（否则导入后系统里凭空多一个权限项）",
+       "cascade_configuration.formKey 仍指向新表单",
+       "permission_object_type 仍是对象编码"])
+def _():
+    import json
+
+    from pp6kit import gen_tpl, model as M
+
+    bo = M.Bo(code="project_test_1115", name="项目测试 1115",
+              tbl_name="pp_project_test_1115")
+    form_key = "create_project_test_1115"
+    # 骨架里「新建」按钮的样子：custom + 绑了一个权限项 + 级联打开某个表单。
+    # 两个都写死成旧模板的值，模拟「照抄样例」的场景。
+    raw = json.dumps({
+        "function_buttons": [
+            {"button_type": "export", "label": "导出", "code": "export",
+             "permission_object_type": "old_obj", "permission_key": "old_export"},
+        ],
+        "toolbar_buttons": [
+            {"button_type": "custom", "label": "新建项目", "code": "custom",
+             "permission_object_type": "old_obj", "permission_key": "project_create",
+             "enabledCascade": True,
+             "cascade_configuration": {"type": "form", "formKey": "create_project",
+                                       "boKey": ""}},
+            {"button_type": "batchModify", "label": "批量编辑", "code": "batchModify"},
+        ],
+    }, ensure_ascii=False)
+
+    out = json.loads(gen_tpl._patch_buttons(raw, bo, form_key))
+
+    create_btn = out["toolbar_buttons"][0]
+    assert create_btn["permission_key"] == "", \
+        "「新建」按钮还绑着权限项：导入后系统里会凭空多出一个权限项"
+    assert create_btn["permission_object_type"] == bo.code, \
+        "按钮挂哪个对象被改坏了（与权限项是两件事，必须继续写对象编码）"
+    cfg = create_btn["cascade_configuration"]
+    assert cfg["formKey"] == form_key, "「新建」按钮打开的表单没跟着换成新 key"
+    assert cfg["boKey"] == "id", "级联打开表单的 boKey 不再固定为 id"
+
+    # 系统内置按钮（非 custom）不该被塞权限项，也不该被清成空串
+    assert "permission_key" not in out["toolbar_buttons"][1]
+    # 功能按钮：同样只写归属、不带权限项（原有行为不能回退）
+    fn_btn = out["function_buttons"][0]
+    assert fn_btn["permission_object_type"] == bo.code
+    assert "permission_key" not in fn_btn, "功能按钮又被塞回了 permission_key"

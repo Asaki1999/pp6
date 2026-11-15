@@ -1355,6 +1355,11 @@ select.ai-in { cursor: pointer; }
   box-shadow: 0 2px 10px rgba(15, 23, 42, .04);
 }
 
+/* 底部操作条里只剩两个按钮（返回入口已经统一到页头 .file-row）：
+   space-between 在只有一个子元素时会把按钮顶到左边，这里明确靠右。
+   子选择器限定在 .step-foot 内，不影响别处的 .ai-btns。 */
+.step-foot > .ai-btns { margin-left: auto; }
+
 /* 出包时的下载条 */
 .pack-bar {
   display: flex;

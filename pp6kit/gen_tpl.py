@@ -61,7 +61,12 @@ def _patch_buttons(raw: str, bo: Bo, form_key: str) -> str:
             cfg["boKey"] = "id"
         btn["permission_object_type"] = bo.code
         if btn.get("button_type") == "custom":
-            btn["permission_key"] = form_key
+            # 「新建」等自定义按钮默认**不绑权限项**（2026-11 反馈：新导入的列表
+            # 一打开就多出一个权限项，用户得手动去删）。权限项留空后系统按
+            # 「无权限控制」处理——按钮照样能点，只是不进权限树。
+            # permission_object_type 仍写对象编码，那是按钮挂在哪个对象上的归属，
+            # 与权限项不是一回事。要精确绑定时由用户在系统里自己选。
+            btn["permission_key"] = ""
     for btn in data.get("function_buttons", []) or []:
         btn["permission_object_type"] = bo.code
         btn.pop("permission_key", None)
