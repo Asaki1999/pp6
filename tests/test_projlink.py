@@ -2415,16 +2415,16 @@ def _():
     got = _json.loads(lines[-1])
     assert got["0_static"]["importBarOnTop"] is True, \
         "普通模式的「关联项目」选项不在 AI 卡上方：会被长卡片挤到折叠线下，用户看不见"
-    # 三个页面（普通 / 流程 / 存量包）的选项栏必须同一套位置、标题、选项文案
-    assert got["0_static"]["threeBars"] is True, "三个页面没有同款选项栏"
+    # 普通/存量两页的选项栏；流程模式复用普通页，不再单独一套
+    assert got["0_static"]["twoBars"] is True, "普通/存量页没有同款选项栏"
     assert got["0_static"]["barsAtTop"] is True, \
-        "有页面的选项栏不在导入卡片上方（普通/流程/存量包要一致）"
-    assert got["0_static"]["sameTitle"] is True, "三个页面的标题不一致"
-    assert got["0_static"]["sameHint"] is True, "三个页面的说明文案不一致"
+        "有页面的选项栏不在导入卡片上方"
+    assert got["0_static"]["sameTitle"] is True, "两个页面的标题不一致"
+    assert got["0_static"]["sameHint"] is True, "两个页面的说明文案不一致"
     assert got["0_static"]["patchAllLabel"] is True, \
-        "存量包页的选项没有和普通/流程统一成「关联」"
+        "存量包页的选项没有和普通统一成「关联」"
     assert got["0_static"]["patchOffLabel"] is True, \
-        "存量包页的选项没有和普通/流程统一成「不关联」"
+        "存量包页的选项没有和普通统一成「不关联」"
     assert got["0_static"]["noAllPrefix"] is True, \
         "选项标签又加了「全部」：控件本身就是对整份 Excel 的批量设置，不需要重复"
     assert got["0_static"]["btnPreviewLabel"] is True, \
@@ -2439,27 +2439,19 @@ def _():
         "AI 文件入口的 accept 里没有 .pdf/.docx"
     assert got["0_static"]["aiDocEntry"] is True, \
         "前端没有接 /api/extract 或桌面 pick_source"
-    # 流程模式固定三步：没有流程图设计器 / AI 生成 / XML 下载
-    assert got["0_static"]["wfFixedFlow"] is True, \
-        "流程模式没有固定的 开始→审核→通过"
-    assert got["0_static"]["wfNoFlowDesigner"] is True, \
-        "流程图/节点编辑/AI 生成/XML 下载的入口还在"
-    assert got["0_static"]["wfNoFlowApi"] is True, \
-        "前端还在请求已下线的 /api/workflow 或 /api/ai/workflow"
-    assert got["0_static"]["wfObjectPackage"] is True, \
-        "流程对象包入口没保留"
-    assert got["0_static"]["wfAiSheetAnalyze"] is True, \
-        "流程页导入 Excel 没有走 AI 表头识别"
-    assert got["0_static"]["wfNoChatBox"] is True, \
-        "流程页又出现了对话框，用户要的是 AI 分析导入的 Excel"
-    assert got["0_static"]["wfPreview"] is True, \
-        "流程页 AI 识别后没有预览/确认这一步"
-    assert got["0_static"]["wfAllFallback"] is True, \
-        "没勾流程驱动时没有回退到全部对象 / 没带 X-Workflow-All"
-    assert got["0_static"]["wfNoFlowFlagBlame"] is True, \
-        "前端还在让用户回 Excel 把「流程驱动」改成「是」"
-    assert got["0_static"]["wfNoZeroObjectToast"] is True, \
-        "流程页又出现「0 个对象，按固定三步」这种误导提示"
+    # 流程模式复用普通模式：不再有独立流程页/对象包，导出 zip + XML
+    assert got["0_static"]["workflowReusesImportBar"] is True, \
+        "流程模式还保留独立的选项栏/页面"
+    assert got["0_static"]["wfNoSeparatePage"] is True, \
+        "流程模式还保留独立页面/流程对象包/旧预览"
+    assert got["0_static"]["flowModeBar"] is True, \
+        "流程模式没有固定的 开始→审核→通过 提示"
+    assert got["0_static"]["flowXmlButton"] is True, \
+        "结果页没有「下载流程 XML」按钮"
+    assert got["0_static"]["flowModeSwitch"] is True, \
+        "流程模式没有复用普通工作区（PP6SetFlowMode）"
+    assert got["0_static"]["flowXmlApi"] is True, \
+        "流程 XML 没有接 /api/workflow 或 X-Workflow-All"
     # 返回按钮位置统一：第 2/3 步都在页头 .file-row，底部操作条不再有返回
     assert got["0_static"]["backButtonsTop"] is True, \
         "第 2 步或第 3 步的返回按钮不在页头 .file-row 里（一上一下，用户来回找）"

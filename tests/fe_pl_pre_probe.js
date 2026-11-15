@@ -317,14 +317,13 @@ function staticChecks() {
     hasImportBar: /id="plPreImportBar"/.test(html),
     importBarOnTop: /id="plPreImportBar"/.test(html)
       && html.indexOf('id="plPreImportBar"') < html.indexOf('id="aiChatLaunch"'),
-    // 三个页面（普通/流程/存量包）的选项栏：都在各自页面顶部，文案/选项一致
-    threeBars: ["plPreImportBar", "plPreWorkflowBar", "plPrePatchBar"]
+    // 普通/存量两页的选项栏；流程模式复用普通页，不再单独一套
+    twoBars: ["plPreImportBar", "plPrePatchBar"]
       .every((id) => html.indexOf(`id="${id}"`) >= 0),
     barsAtTop: html.indexOf('id="plPreImportBar"') < html.indexOf('id="aiChatLaunch"')
-      && html.indexOf('id="plPreWorkflowBar"') < html.indexOf('id="wfImport"')
       && html.indexOf('id="plPrePatchBar"') < html.indexOf('id="patchPickZip"'),
-    sameTitle: (html.match(/业务对象关联项目/g) || []).length >= 3,
-    sameHint: (html.match(/先选：/g) || []).length >= 3,
+    sameTitle: (html.match(/业务对象关联项目/g) || []).length >= 2,
+    sameHint: (html.match(/先选：/g) || []).length >= 2,
     patchAllLabel: /name="plPrePatch" value="on">\s*关联<\/label>/.test(html),
     patchOffLabel: /name="plPrePatch" value="off">\s*不关联<\/label>/.test(html),
     noAllPrefix: !/> 全部[^<]*<\/label>/.test(html),
@@ -339,27 +338,16 @@ function staticChecks() {
     aiSheetAcceptsDoc: /id="aiSheetInput"[^>]*accept="[^"]*\.pdf[^"]*\.docx/.test(html),
     aiDocEntry: /handleAiSource/.test(src) && /\/api\/extract/.test(src)
       && /pickFile\("source"\)/.test(src),
-    // 流程模式：固定 开始→审核→通过；不再有流程图设计器 / AI 生成 / XML 下载
-    wfFixedFlow: /id="wfFixedFlow"/.test(html)
-      && />开始<\/span>/.test(html) && />审核<\/span>/.test(html) && />通过<\/span>/.test(html),
-    wfNoFlowDesigner: !/id="wfList"|id="wfBody"|id="btnWfDownload"/.test(html),
-    wfAiSheetAnalyze: /id="btnWfPick"/.test(html) && /wfAnalyzeSheet/.test(src)
-      && /\/api\/ai\/sheet/.test(src),
-    wfNoChatBox: !/id="wfAiText"|id="wfAiSend"/.test(html),
-    // AI 识别 Excel 后先出预览，确认后才生成流程对象包
-    wfPreview: /id="wfPreview"/.test(html) && /id="wfPreviewApply"/.test(html)
-      && /renderWfPreview/.test(src),
-    wfNoFlowApi: !/\/api\/workflow|\/api\/ai\/workflow/.test(src),
-    wfObjectPackage: /id="btnWfObjects"/.test(html),
-    // 没有「流程驱动=是」时按全部对象走固定三步；不再让用户回 Excel 改标志
-    wfAllFallback: /driven\.length \? driven : allObjects\(\)/.test(src)
-      && /X-Workflow-All/.test(src),
-    wfNoFlowFlagBlame: !/把「流程驱动」改成「是」/.test(src),
-    wfNoZeroObjectToast: !/0 个对象，按固定三步/.test(src),
-    hasWorkflowBar: /id="plPreWorkflowBar"/.test(html),
+    // 流程模式 = 普通模式同一套页面；导出时 zip 含流程对象，并单独给流程 XML
+    flowModeBar: /id="flowModeBar"/.test(html)
+      && /id="flowModeBar"[\s\S]{0,400}开始[\s\S]{0,80}审核[\s\S]{0,80}通过/.test(html),
+    flowXmlButton: /id="btnFlowXml"/.test(html) && /id="btnPack"/.test(html),
+    flowModeSwitch: /PP6SetFlowMode/.test(src) && /flowMode/.test(src),
+    flowXmlApi: /\/api\/workflow/.test(src) && /X-Workflow-All/.test(src),
+    wfNoSeparatePage: !/id="mode-workflow"|id="btnWfObjects"|id="wfPreview"|id="btnWfDownload"/.test(html),
+    workflowReusesImportBar: !/id="plPreWorkflowBar"/.test(html),
     hasPatchBar: /id="plPrePatchBar"/.test(html),
     importValues: (html.match(/name="plPreImport" value="([a-z]+)"/g) || []).map((s) => s.split('"')[3]),
-    workflowValues: (html.match(/name="plPreWorkflow" value="([a-z]+)"/g) || []).map((s) => s.split('"')[3]),
     patchValues: (html.match(/name="plPrePatch" value="([a-z]+)"/g) || []).map((s) => s.split('"')[3]),
     // 默认勾的是「不关联」
     importDefaultOff: /name="plPreImport" value="off" checked/.test(html),

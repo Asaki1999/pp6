@@ -786,12 +786,12 @@ def _():
 
 
 @case("WF24", "workflow", "流程驱动对象不填流程表也能出三步兜底流程", "P0",
-      ["自动生成 开始→部门审批→通过", "审批人留空只警告不拦截", "Handler 回落人工选择"])
+      ["自动生成 开始→审核→通过", "审批人留空只警告不拦截", "Handler 回落人工选择"])
 def _():
     """这个 app 的主业是出对象和表单，不逼人配流程。
 
     勾了「流程驱动」但三张流程表一个字没填时，必须自动给一条能导入的最小流程：
-    开始 → 部门审批 → 通过。审批人允许留空（项目经理到系统里指定），
+    开始 → 审核 → 通过。审批人允许留空（项目经理到系统里指定），
     所以 validate 只能警告，不能拦出包——拦了就等于又逼人回来填表。
     """
     from pp6kit.validate import validate
@@ -807,9 +807,9 @@ def _():
     root = ET.fromstring(files[0].path.read_bytes())
     chart = root.find("designer/FlowDefinition/FlowCharts/FlowChart")
     acts = list(chart)
-    assert [a.get("Name") for a in acts] == ["开始", "部门审批", "通过"], [a.get("Name") for a in acts]
+    assert [a.get("Name") for a in acts] == ["开始", "审核", "通过"], [a.get("Name") for a in acts]
     assert [a.get("State") for a in acts] == ["Start", "Ongoing", "Passed"], acts
-    # 直线：开始 → 部门审批 → 通过
+    # 直线：开始 → 审核 → 通过
     assert [t.get("Target") for t in acts[0].findall("Transition")] == ["2"]
     assert [t.get("Target") for t in acts[1].findall("Transition")] == ["3"]
     assert acts[2].findall("Transition") == []
@@ -855,7 +855,7 @@ def _():
     assert body1 == body2, "同一份 Excel 两次下载应完全一致"
     root = ET.fromstring(body1)
     acts = list(root.find("designer/FlowDefinition/FlowCharts/FlowChart"))
-    assert [a.get("Name") for a in acts] == ["开始", "部门审批", "通过"], acts
+    assert [a.get("Name") for a in acts] == ["开始", "审核", "通过"], acts
 
 
 @case("WF27", "workflow", "processState 四个短码是平台系统常量", "P0",
@@ -1052,3 +1052,23 @@ def _():
     forms = [n for n in names if n.startswith("form/")]
     assert any("create" in n for n in forms), names
     assert any("details" in n for n in forms), names
+
+
+@case("WF32", "workflow", "流程模式固定三步：忽略 9_流程 里配的复杂流程", "P0",
+      ["X-Workflow-All 时强制重建 开始→审核→通过", "不把用户的复杂流程带进 XML"])
+def _():
+    # 用户表里填了一条完全不同的流程（申请人→部门审批→通过），
+    # 流程模式下应被固定三步覆盖，避免页面说三步、XML 却是别的。
+    data = xlsx(sheets([
+        START,
+        {"流程名称": "项目立项", "节点序号": 2, "节点名称": "部门审批", "节点类型": "审批",
+         "处理人类型": "角色", "处理人": "部门经理"},
+        PASS,
+    ]))
+    body, name, ctype = webui.workflow_files(data, workflow_all=True)
+    assert ctype == "application/xml; charset=utf-8", ctype
+    root = ET.fromstring(body)
+    chart = root.find("designer/FlowDefinition/FlowCharts/FlowChart")
+    acts = list(chart)
+    assert [a.get("Name") for a in acts] == ["开始", "审核", "通过"], [
+        a.get("Name") for a in acts]

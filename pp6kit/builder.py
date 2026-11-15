@@ -172,7 +172,7 @@ def ensure_default_workflow(project) -> list[str]:
             auto=True,
             nodes=[
                 WfNode(wf="", name="开始", kind=WF_START, id=1),
-                WfNode(wf="", name="部门审批", kind=WF_ONGOING, id=2),
+                WfNode(wf="", name="审核", kind=WF_ONGOING, id=2),
                 WfNode(wf="", name="通过", kind=WF_PASSED, id=3),
             ],
             # 不写流转：生成器会按节点行序自动串成直线（开始→部门审批→通过），
@@ -182,7 +182,7 @@ def ensure_default_workflow(project) -> list[str]:
         for n in wf.nodes:
             n.wf = wf.name
         project.workflows.append(wf)
-        made.append(f"{bo.code} → 流程「{wf.name}」（开始 → 部门审批 → 通过）")
+        made.append(f"{bo.code} → 流程「{wf.name}」（开始 → 审核 → 通过）")
     return made
 
 

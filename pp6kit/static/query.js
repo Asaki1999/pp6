@@ -22,23 +22,22 @@ async function qApi(path, body) {
 /* ---------------- 模式切换 ---------------- */
 /* 上下文栏 / 状态栏跟着工作区走，避免「切了页面但标题还是上一个」 */
 const MODE_META = {
-  import:   { title: "普通模式", desc: "普通业务对象 + 表单/列表/数据集，出一个同步包（导入走 发布管理 › 导入同步包）；流程对象看「流程模式」" },
+  import:   { title: "普通模式", desc: "普通业务对象 + 表单/列表/数据集，出一个同步包（导入走 发布管理 › 导入同步包）" },
   patch:    { title: "存量包修订", desc: "在原 zip 的 bo/*.xml 上打最小补丁，除新增字段外字节原样保留；对齐系统管理 › 发布管理 › 导入同步包，变更区非必经；反解会重造包，补字段请用这里" },
   query:    { title: "数据查询",   desc: "用一句话查数据库，生成 SQL 并查看结果" },
-  workflow: { title: "流程模式",   desc: "沿用普通模式的对象；固定 开始→审核→通过，只出流程对象包，不生成流程图/XML" },
+  workflow: { title: "流程模式",   desc: "和普通模式同一套操作；固定 开始→审核→通过，导出 zip 时额外给一份流程 XML" },
   settings: { title: "系统设置",   desc: "大模型、数据库连接与本地配置" },
 };
 
 function switchMode(mode) {
   document.querySelectorAll(".mode").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
-  document.getElementById("mode-import").hidden = mode !== "import";
+  // 流程模式复用普通模式的工作区：导入/AI/预览/编辑完全同一套，
+  // 只有导出时是否附带固定三步 XML 不同。
+  document.getElementById("mode-import").hidden = !(mode === "import" || mode === "workflow");
   document.getElementById("mode-patch").hidden = mode !== "patch";
   document.getElementById("mode-query").hidden = mode !== "query";
-  document.getElementById("mode-workflow").hidden = mode !== "workflow";
   document.getElementById("mode-settings").hidden = mode !== "settings";
-  // 流程页和普通模式共用同一份解析结果：切过去要立刻按当前对象刷新，
-  // 不能等用户再选一次 Excel（否则会看到「还没有导入」或旧的 0 对象状态）。
-  if (mode === "workflow" && window.Workflow) window.Workflow.refresh();
+  if (window.PP6SetFlowMode) window.PP6SetFlowMode(mode === "workflow");
   // 底部 dock 只放状态栏：主操作统一留在卡片里，
   // 避免切换工作区时操作条忽隐忽现、工作区高度跟着跳。
   const bar = document.getElementById("actionbar");

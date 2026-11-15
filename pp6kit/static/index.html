@@ -31,7 +31,7 @@
           </svg>
           <span class="mode-label">普通模式</span><kbd>1</kbd>
         </button>
-        <button class="mode" data-mode="workflow" title="流程模式 (2)：固定开始-审核-通过 + 流程对象包，不生成流程图/XML">
+        <button class="mode" data-mode="workflow" title="流程模式 (2)：普通模式同一套操作；导出 zip + 固定 开始-审核-通过 XML">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="5" cy="6" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="12" cy="18" r="2.2"/>
             <path d="M7.2 6h9.6"/><path d="M6.2 8 10.8 16"/><path d="M17.8 8 13.2 16"/>
@@ -199,6 +199,12 @@
     <div class="step" data-step="3"><b>3</b><span>下载导入包</span></div>
   </nav>
 
+  <!-- 流程模式 = 普通模式的同一套操作，仅导出时多给一份固定三步 XML -->
+  <div class="pl-pre" id="flowModeBar" hidden>
+    <b>流程模式</b>
+    <span class="sub">和普通模式同一套操作；导出时 zip 会包含流程对象，另给一份固定 开始 → 审核 → 通过 的流程 XML。</span>
+  </div>
+
   <!-- ========== 第 1 步：对话即入口，说完就开始生成 ========== -->
   <section id="stepInput">
     <!-- P0-4 反解摘要卡片：必须留在 #stepInput 内，inspectZip() 的 finally 会 goStep(1) -->
@@ -358,7 +364,7 @@
           <h3>要导出哪些模块</h3>
           <div class="sub">
             这里只出<b>普通业务对象</b>和它们的表单/列表，默认全选打成一个整包（直接上传即可）。
-            流程模式的对象在左侧「流程模式」里单独导出，不混在这一个包里。
+            流程模式会把这些对象一起放进 zip，并另给一份固定 开始→审核→通过 的流程 XML。
           </div>
         </div>
         <div class="mod-actions">
@@ -368,8 +374,9 @@
       </div>
       <div class="mod-list" id="modList"></div>
       <div class="pack-bar">
-        <span class="sub" id="packHint">已选全部模块 → 出整包（bo/form/data_template 同包，注释 CONFIG_SYNC_NOTE:）· 导入：系统管理 › 发布管理 › 导入同步包 · 流程对象不在此包，见左侧「流程模式」</span>
+        <span class="sub" id="packHint">普通模式只含普通对象；流程模式 zip 含流程对象，另给一份固定三步流程 XML · 导入：系统管理 › 发布管理 › 导入同步包</span>
         <div class="ai-btns">
+          <button class="btn ghost" id="btnFlowXml" hidden>下载流程 XML</button>
           <button class="btn primary" id="btnPack">下载导入包 zip</button>
         </div>
       </div>
@@ -626,89 +633,7 @@
   </div>
 </main>
 
-<main id="mode-workflow" hidden>
-  <div class="wf-layout">
 
-    <!-- 第 1 步：对象级选择放在**导入前**（和普通模式共享同一档状态） -->
-    <div class="pl-pre" id="plPreWorkflowBar">
-      <b>第 1 步 · 业务对象关联项目</b>
-      <label><input type="radio" name="plPreWorkflow" value="off" checked> 不关联</label>
-      <label><input type="radio" name="plPreWorkflow" value="on"> 关联</label>
-      <span class="sub">导入前先选：关联=这份 Excel 里每个对象都关联项目；不关联=一个都不关联。导入后不再弹选择框。</span>
-    </div>
-
-    <!-- 流程这一侧只出「流程对象包」：固定开始→审核→通过，
-         不再生成流程图 / 流程 XML，也不在这里配节点和分支。 -->
-    <section class="card wf-import" id="wfImport">
-      <div class="card-head">
-        <div>
-          <h3>导入 Excel，AI 识别字段</h3>
-          <div class="sub">
-            不要求标准模板：选一份你自己整理的表，AI 读表头识别业务对象和字段，
-            再按固定 开始 → 审核 → 通过 出流程对象包。不用先填「流程驱动」，也不生成流程图 / 流程 XML。
-          </div>
-        </div>
-        <div class="wf-actions">
-          <span class="wf-file" id="wfFileTag" hidden></span>
-          <button class="btn primary" id="btnWfPick">选择 Excel</button>
-          <input type="file" id="wfFileInput" accept=".xlsx,.xlsm" hidden>
-        </div>
-      </div>
-      <div class="wf-import-stat" id="wfImportStat">还没有导入：点右上「选择 Excel」，AI 会分析表头并识别字段</div>
-    </section>
-
-    <!-- AI 识别结果预览：确认后才生成流程对象包，避免“导完直接出包” -->
-    <section class="card wf-preview" id="wfPreview" hidden>
-      <div class="card-head">
-        <div>
-          <h3>AI 识别结果</h3>
-          <div class="sub" id="wfPreviewMeta"></div>
-        </div>
-        <div class="wf-actions">
-          <button class="btn ghost" id="wfPreviewCancel">重新选 Excel</button>
-          <button class="btn primary" id="wfPreviewApply">确认并生成流程对象包</button>
-        </div>
-      </div>
-      <div class="wf-preview-body" id="wfPreviewBody"></div>
-    </section>
-
-    <!-- 导入的 Excel 不要求是标准模板：交给 AI 读表头，识别业务对象和字段；
-         流程仍然固定 开始→审核→通过，不生成流程图/XML。 -->
-    <section class="wf-main">
-      <div class="card wf-head-card">
-        <div class="card-head">
-          <div>
-            <h3>流程对象包</h3>
-            <div class="sub">
-              固定流程：开始 → 审核 → 通过。这里只导出流程对象及其表单 / 列表 / 数据集，
-              不生成流程图或流程 XML。
-            </div>
-          </div>
-          <div class="wf-actions">
-            <button class="btn primary" id="btnWfObjects" disabled
-                    title="导出流程对象包（不含流程 XML）">导出流程对象包</button>
-          </div>
-        </div>
-
-        <div class="wf-fixed" id="wfFixedFlow">
-          <div class="wf-fixed-head">
-            <strong>固定流程</strong>
-            <span class="muted">所有流程驱动对象统一走这三步</span>
-          </div>
-          <div class="wf-steps">
-            <span class="wf-step">开始</span>
-            <span class="wf-arrow">→</span>
-            <span class="wf-step">审核</span>
-            <span class="wf-arrow">→</span>
-            <span class="wf-step">通过</span>
-          </div>
-          <div class="sub">节点处理人、条件分支、退回规则不在本工具配置；导入后在系统里按需设置。</div>
-        </div>
-      </div>
-    </section>
-
-  </div>
-</main>
 
     </div><!-- /workspace -->
 

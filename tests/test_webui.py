@@ -437,9 +437,9 @@ def _():
     assert data["ok"] is False and ".docx" in data["error"], data
 
 
-@case("WEB22", "webui", "流程预览是真实 DOM 元素，不能被 HTML 注释吞掉", "P0",
-      ["wfPreview / wfPreviewApply / wfPreviewBody 都是 start tag",
-       "HTML 注释必须闭合（上一次 */ 写成注释结尾，整个预览被吞）"])
+@case("WEB22", "webui", "流程模式按钮/普通工作区是真实 DOM，不能被 HTML 注释吞掉", "P0",
+      ["flowModeBar / btnFlowXml / btnPack / aiResult / result 都是 start tag",
+       "HTML 注释必须闭合（上一次 */ 写成注释结尾，整块 UI 被吞）"])
 def _():
     from html.parser import HTMLParser
     from pathlib import Path
@@ -461,6 +461,6 @@ def _():
     p = _Ids()
     p.feed((Path(__file__).resolve().parents[1] / "pp6kit" / "static" / "index.html")
            .read_text(encoding="utf-8"))
-    for wanted in ("wfPreview", "wfPreviewApply", "wfPreviewBody", "wfPreviewMeta"):
+    for wanted in ("flowModeBar", "btnFlowXml", "btnPack", "aiResult", "result"):
         assert wanted in p.ids, f"#{wanted} 不是真实 DOM 元素（可能在注释里）"
-    assert not any("wfPreviewApply" in c for c in p.comments), "预览按钮还在注释里"
+    assert not any("btnFlowXml" in c for c in p.comments), "流程 XML 按钮还在注释里"

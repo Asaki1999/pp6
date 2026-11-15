@@ -935,7 +935,7 @@ def import_module(data: bytes, code: str,
         shutil.rmtree(work, ignore_errors=True)
 
 
-def workflow_files(data: bytes) -> tuple[bytes, str, str]:
+def workflow_files(data: bytes, workflow_all: bool = False) -> tuple[bytes, str, str]:
     """流程定义是裸 XML：一条流程回一个 .xml，多条回一个 zip（内含 {流程名}.xml）。
 
     返回 (body, filename, content_type)。
@@ -943,15 +943,20 @@ def workflow_files(data: bytes) -> tuple[bytes, str, str]:
     为什么不复用 ``import_module``：那个接口的语义是「单模块单 zip」，
     而 9_流程 是多行表，多流程时它只会静默给出第一条（见架构文档 D3 方案 B 的否决理由）。
     """
-    proj = _cache_proj(data)
-    # 与 build/parse 同一套兜底：流程驱动对象即使不填 9_流程 也有默认三步，
-    # 否则这里会先拦住，用户点了「下载流程 XML」却被告知「9_流程 是空的」。
+    # 流程模式下所有对象都按固定三步出流程；deepcopy 避免污染缓存。
+    from copy import deepcopy
+    proj = deepcopy(_cache_proj(data)) if workflow_all else _cache_proj(data)
+    if workflow_all:
+        for bo in proj.bos:
+            bo.flow_driven = True
+        # 流程模式固定就是 开始 → 审核 → 通过：不读 9/10/11 里用户配的复杂流程，
+        # 统一重建默认三步，避免导出的 XML 与页面承诺不一致。
+        proj.workflows = []
+    # 与 build/parse 同一套兜底：没勾流程驱动也有默认三步。
     # _cache_proj 有缓存，ensure_default_workflow 幂等（按 bo_code 判重），不会越调越多。
     ensure_default_workflow(proj)
     if not proj.workflows:
-        raise ValueError(
-            "这份 Excel 里没有流程驱动对象：到「1_业务对象」把「流程驱动」改成「是」，"
-            "就会自动生成 开始 → 部门审批 → 通过")
+        raise ValueError("这份 Excel 里没有业务对象：先到「1_业务对象」填一行")
 
     # 只把**流程层面**的错误当阻断条件：用户可能只想先拿流程 XML，
     # 表单/列表那半边的问题不该拦住这个下载入口。
@@ -2275,6 +2280,9 @@ class Handler(BaseHTTPRequestHandler):
                 body, name = import_module(self._body(), code,
                                            _projlink_header(self.headers))
                 self._send(200, body, "application/zip", name)
+            elif self.path == "/api/workflow":
+                body, name, ctype = workflow_files(self._body(), _workflow_all(self.headers))
+                self._send(200, body, ctype, name)
             else:
                 self._send(404, b"not found", "text/plain")
         except nlq_guard.SqlRejected as exc:
