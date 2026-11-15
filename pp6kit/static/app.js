@@ -96,6 +96,9 @@ const state = {
   // 项目对齐：弹窗只在「同一份文件的第一次解析」自动弹一次（关掉不再打扰）
   plModalShown: false,
   plPending: 0,
+  // 分析完先弹「相近字段确认」，用户选完/保留后才渲染预览（结果页）。
+  // 这样不会出现「预览已经生成、又被遮罩盖住」的错觉。
+  plDeferred: false,
   // 第 1 步「业务对象关联项目」的两档（初始页控件，导入前就定）：
   // "off" 不关联（默认） / "on" 全部关联。
   // 普通模式与流程模式共享同一档，存 localStorage。
@@ -238,6 +241,23 @@ async function handleFile(file, { fromAi = false, quiet = false } = {}) {
     // 换文件 → 上一份的「按项目覆盖」勾选也作废：字段编码换了一批，
     // 留着会给新文件里同名编码的字段套上旧勾选（服务端还会当成有效决策）
     state.plAlign = {};
+    // 分析完先弹「相近字段确认」，用户选完/保留后才渲染预览（结果页）。
+    // 只在普通导入 / AI 套用走这条；流程页的 quiet 上传仍直接出结果（不抢页面）。
+    state.plDeferred = false;
+    if (!quiet && window.ProjLink) {
+      const vm = data.projectAlign;
+      const pending = window.ProjLink.pendingCount(vm);
+      const direct = window.ProjLink.directDiffCount
+        ? window.ProjLink.directDiffCount(vm) : 0;
+      if (pending || direct) {
+        state.plDeferred = true;
+        state.plModalShown = true;
+        setLoading(false);
+        window.ProjLink.openModal(vm);
+        toast(`分析完成：有 ${pending + direct} 个字段需要确认，确认完再生成预览`, 6000);
+        return;
+      }
+    }
     renderAll();
     // 直接从 AI 预览下来的 Excel → 进第 3 步；手动传的也进第 3 步，
     // 因为「结果」区里就是模块勾选 + 下载，这是流程的终点。
@@ -505,6 +525,18 @@ function renderProjectLink() {
   }
 }
 
+/* 分析完成 → 先弹确认，用户选完/保留后才真正渲染预览和结果页。
+ * 之前是 handleFile 先 renderAll + goStep(3)，弹窗只是盖在上面，用户会觉得
+ * 「预览已经生成了，还让我确认什么」。 */
+function finishPlDeferred() {
+  if (!state.plDeferred) return false;
+  state.plDeferred = false;
+  state.plModalShown = true;      // 已确认过这一轮，renderAll 里别再自动弹
+  renderAll();
+  goStep(3);
+  return true;
+}
+
 /* 结果页顶部的「关联项目」入口条。
  *
  * 开关本身在「业务对象」页签的卡片右上角，但那一屏要往下滚三个卡片才到，
@@ -619,6 +651,7 @@ async function applyProjectPicks() {
     // 一个都没勾 = 保留我方：不发请求、不改决策（省一次解析，也不留空头）
     window.ProjLink.closeModal();
     toast("没有勾选任何字段：这些相近字段都按原规则生成", 5000);
+    finishPlDeferred();          // 延迟渲染的话，现在才出预览/结果页
     return;
   }
   const merged = Object.assign({}, state.plAlign);
@@ -638,10 +671,13 @@ async function applyProjectPicks() {
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || "解析失败");
     state.data = data;
+    const wasDeferred = state.plDeferred;
+    state.plDeferred = false;
     state.plModalShown = true;            // 已确认过这一轮，别再自动弹
     resetParseArtifacts();
     window.ProjLink.closeModal();
     renderAll();
+    if (wasDeferred) goStep(3);           // 弹窗确认完才真正出预览/结果页
     toast(n
       ? `已按勾选覆盖 ${n} 个字段，预览与下载的包都已更新`
       : "已保留全部字段：没有勾选任何「按项目覆盖」", 6000);
@@ -2519,8 +2555,14 @@ function bind() {
   // 「保留我的」只关弹窗、不发 align（等于全部保留我方定义）。
   const plModal = $("#plMask");
   if (plModal) {
+    // × / 点遮罩 / Esc = 保留我方并继续：分析已经完成，不能让用户关掉弹窗
+    // 之后还停在空白第 1 步；延迟渲染的话，这里才出预览/结果页。
+    const dismiss = () => {
+      window.ProjLink.closeModal();
+      finishPlDeferred();
+    };
     const close = $("#plModalClose");
-    if (close) close.onclick = () => window.ProjLink.closeModal();
+    if (close) close.onclick = dismiss;
     const all = $("#plPickAll");
     if (all) all.onclick = () => window.ProjLink.selectAll(true);
     const none = $("#plPickNone");
@@ -2530,6 +2572,7 @@ function bind() {
     const backEdit = $("#plBackEdit");
     if (backEdit) {
       backEdit.onclick = () => {
+        state.plDeferred = false;       // 回第 1 步改 Excel：这次不出预览
         window.ProjLink.closeModal();
         backToInput();
         toast("改完 Excel 后，重新选一次这个文件即可重新解析", 6000);
@@ -2540,15 +2583,16 @@ function bind() {
       back.onclick = () => {
         window.ProjLink.closeModal();
         toast("已保留你方定义：这些相近字段都按原规则生成", 5000);
+        finishPlDeferred();
       };
     }
     const confirm = $("#plApplyPicked");
     if (confirm) confirm.onclick = () => { applyProjectPicks(); };
     plModal.addEventListener("click", (e) => {
-      if (e.target === plModal) window.ProjLink.closeModal();
+      if (e.target === plModal) dismiss();
     });
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && !plModal.hidden) window.ProjLink.closeModal();
+      if (e.key === "Escape" && !plModal.hidden) dismiss();
     });
   }
   const plOpen = $("#btnPlModal");

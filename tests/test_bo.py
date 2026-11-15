@@ -720,3 +720,20 @@ def _():
     assert any("只保留明确提到的字段" in n and "9 个" in n for n in notices), notices
     assert "8-16" not in ai_bo.SYSTEM, "提示词还在让 AI 凑 8-16 个字段"
     assert "只生成用户描述里明确提到的业务字段" in ai_bo.SYSTEM, "提示词没有严格要求只生成提到的字段"
+
+
+@case("BO35", "bo", "描述只说「预算」时，不许扩写成预算名称/预算金额", "P0",
+      ["只保留预算", "预算名称/预算金额被丢弃"])
+def _():
+    # 真实 AI 实测：一句「做一个预算表，记录预算。」被拆成「预算名称/预算金额」，
+    # 用户要的是「预算」本身。提示词加「用原词，不扩写」；这里再锁一道过滤。
+    from pp6kit import ai_bo
+    bo, notices = ai_bo.build_bo(
+        {"name": "预算", "code": "budget",
+         "fields": [{"name": "预算", "type": "number"},
+                    {"name": "预算名称", "type": "varchar"},
+                    {"name": "预算金额", "type": "number"}]},
+        description="做一个预算表，记录预算。")
+    assert [f.name for f in bo.fields] == ["预算"], [f.name for f in bo.fields]
+    assert any("2 个" in n for n in notices), notices
+    assert "不要生成「预算名称/预算金额」" in ai_bo.SYSTEM

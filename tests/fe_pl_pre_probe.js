@@ -514,6 +514,30 @@ async function scenarioDiffModal() {
     openedValues: opened,
     noDiffOpened: calls.length,
   };
+
+  /* 5b：分析完有待确认 → handleFile 不渲染、不进第 3 步，先弹；
+     finish 之后才 renderAll + goStep(3)。 */
+  calls.length = 0;
+  counters.render = 0;
+  counters.steps = [];
+  const p2 = mkPayload(OBJS, 7);
+  p2.projectAlign = { __diff: true, items: [] };
+  net.queue = [mkPayload(OBJS, 0), p2];
+  await ctx.handleFile(mkFile("defer.xlsx"));
+  out["5b_defer"] = {
+    deferred: st.plDeferred,
+    shown: st.plModalShown,
+    steps: counters.steps.slice(),
+    opened: calls.slice(),
+    renders: counters.render,
+  };
+  const finished = ctx.finishPlDeferred();
+  out["5b_finish"] = {
+    finished,
+    steps: counters.steps.slice(),
+    renders: counters.render,
+    deferred: st.plDeferred,
+  };
 }
 
 /* ---------------- ⑦ 存量包：三档预置勾选 ---------------- */

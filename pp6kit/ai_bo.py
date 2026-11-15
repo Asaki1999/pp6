@@ -94,6 +94,10 @@ JSON 结构：
    不要默认补「合同类型、状态、备注、附件、生效日期、到期日期、承办部门、
    关联项目」这类常见字段；字段数量不设下限，用户说几个就是几个。
    系统字段由生成器自动补，不要输出。
+   **字段名用用户的原词，不要扩写/拆写：** 用户说「预算」就生成「预算」，
+   不要生成「预算名称/预算金额」；说「合同」就生成「合同」，不要补
+   「合同名称/合同编号」。只有描述里明确写了「名称/编号/金额/日期」等后缀，
+   才生成带后缀的字段。
 5. **不要自动生成「关联项目 / 所属项目」这类链接字段。** 只有用户明确说
    「关联项目 / 所属项目」时才生成 object 字段；应用在勾选「关联项目」时
    会自动补 projectId，不需要 AI 生成。
@@ -344,11 +348,10 @@ def _as_pool(known) -> list[dict]:
     return [{"code": str(c), "name": ""} for c in known]
 
 
-_GENERIC_FIELD_WORDS = {
-    "合同", "项目", "申请", "名称", "编号", "日期", "时间", "金额", "数量",
-    "类型", "状态", "备注", "附件", "部门", "单位", "人员", "内容", "说明",
-    "描述", "单号", "类别", "分类", "是否", "台账", "记录",
-}
+_FIELD_SUFFIXES = (
+    "名称", "编号", "金额", "日期", "时间", "状态", "备注", "附件", "类型",
+    "部门", "人员", "数量", "说明", "描述", "单号", "类别", "分类",
+)
 
 
 def _norm_cn(value: str) -> str:
@@ -359,21 +362,19 @@ def _norm_cn(value: str) -> str:
 def _mentioned(name: str, description: str) -> bool:
     """字段名是否真的出现在用户描述里。
 
-    只认**完整名字**或长度 2-4、且不属于「合同/名称/状态」这类通用词的名字片段。
-    这样「合同类型」不会因为描述里有「合同」就被保留；「物品名称」在描述写「物品」
-    时仍能保留（片段「物品」不是通用词）。
+    只认**完整名字**，或「描述里既有词根、也明确出现了后缀」的组合。
+    这样用户说「记录预算」时，AI 生成的「预算名称/预算金额」会被丢掉——
+    用户没提名称/金额，不能替他把一个词拆成两个字段。
     """
     a, d = _norm_cn(name), _norm_cn(description)
     if not a or not d:
         return True
     if a in d:
         return True
-    for size in range(min(4, len(a)), 1, -1):
-        for i in range(len(a) - size + 1):
-            token = a[i:i + size]
-            if token in _GENERIC_FIELD_WORDS:
-                continue
-            if token in d:
+    for suffix in _FIELD_SUFFIXES:
+        if len(a) > len(suffix) and a.endswith(suffix):
+            base = a[:-len(suffix)]
+            if base in d and suffix in d:
                 return True
     return False
 

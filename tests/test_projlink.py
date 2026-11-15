@@ -1885,6 +1885,12 @@ def _():
     assert got["A_autoNoPick"] is True, "E0 自动覆盖行给了勾选框"
     assert "已自动对齐" in got["A_title"], got["A_title"]
     assert got["A_primaryDisabled"] is True, "没有待确认项时「按勾选覆盖」还能点"
+    # ②c 短名「预算」：pending 但有候选（总预算）也要给下拉，选了发编码
+    assert got["C_opened"] is True, got
+    assert got["C_select"] is True, "预算/总预算没有候选下拉"
+    assert got["C_pick"] == "totalBudget", got
+    assert got["C_collect"] == {"contract": {"yusuan": "totalBudget"}}, got
+    assert got["C_isPicked"] is True, got
     # ②b 无关字段：默认收起，但**能展开看到每一个字段名**（用户问的就是「哪些字段无关」）
     assert got["M_hasUnrelatedToggle"] is True, "无关字段没有可展开的清单"
     assert got["M_unrelatedNames"] is True, "展开后看不到具体字段名"
@@ -2347,3 +2353,74 @@ def _():
     assert 'aiChatSendFrom("aiChatText", "aiChatLog")' in app, "预览页发送被改坏了"
     assert 'btn.textContent = first ? "开始生成" : "发送修改"' in app, \
         "按钮文案仍按 state.aiData 判断，回到第 1 步会显示「发送修改」"
+
+
+@case("PL64", "projlink", "预算 → 预算状态/总预算：两个候选都列出来，手选总预算能落",
+      "P0", ["预算状态是最匹配", "总预算也在候选里", "选总预算按 C 规则应用"])
+def _():
+    # 用户口径（2026-11-15）：短名「预算」在项目里有「预算状态」「总预算」时，
+    # 不要只给一个最匹配，要把相关的都列出来让他选。
+    snap = projlink.Snapshot(
+        source="target_db", generated_at="2026-11-15T09:00:00+08:00",
+        project={"code": "project", "name": "项目", "tbl": "pp_project"},
+        fields=[_pf("budgetStatus", "预算状态", "varchar", 64, sn=1),
+                _pf("totalBudget", "总预算", "number", 20, sn=2),
+                _pf("name", "项目名称", "varchar", 200, sn=3)],
+        system_codes=set(projlink.SYSTEM_CODES), warnings=[], declared_total=3)
+    data = sheets([field("contract", "预算", "字符串", 字段编码="yusuan")],
+                  bos=[bo_row(关联项目="是")])
+    proj, errors = project_of(data)
+    assert not errors, errors
+    # 默认：最匹配是「预算状态」（S1），「总预算」作为候选列出，不自动选
+    vm = projlink.analyze(proj, snap, {"version": 1, "objects": {
+        "contract": {"linked": True}}})
+    rel = vm["items"][0]["relations"][0]
+    assert rel["status"] == "pending", rel
+    assert rel["target"]["code"] == "budgetStatus", rel["target"]
+    cands = {c["code"] for c in rel["candidates"]}
+    assert "totalBudget" in cands, rel["candidates"]
+    # 手选总预算：similar() 对「预算/总预算」是 None（PL04 的金额/总金额规则），
+    # 但用户明确选了，就得按 C（手动指定）落，不能忽略
+    dec = {"version": 1, "objects": {"contract": {
+        "linked": True, "align": {"yusuan": "totalBudget"}}}}
+    vm2 = projlink.analyze(proj, snap, dec)
+    rel2 = vm2["items"][0]["relations"][0]
+    assert rel2["status"] == "applied", rel2
+    assert rel2["target"]["code"] == "totalBudget", rel2["target"]
+    assert rel2["rule"] == "C", rel2
+    assert "手动指定" in rel2["basis"], rel2["basis"]
+    assert "totalBudget" in (rel2["note"] or ""), rel2["note"]
+    report = projlink.apply(proj, dec, snap=snap)
+    assert [r["newCode"] for r in report["aligned"]] == ["totalBudget"], report["aligned"]
+
+
+@case("PL65", "projlink", "分析完先弹确认，确认/保留后才渲染预览（不再先渲染再盖遮罩）",
+      "P0", ["handleFile 不提前 render/goStep3", "先弹确认", "finish 后才出结果页"])
+def _():
+    import json as _json
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    node = shutil.which("node")
+    if not node:
+        skip("没装 node：延迟渲染探针跳过")
+    static = Path(webui.STATIC)
+    probe = Path(__file__).resolve().parent / "fe_pl_pre_probe.js"
+    proc = subprocess.run(
+        [node, str(probe), str(static / "app.js"), str(static / "index.html")],
+        capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, f"node 探针失败：\n{proc.stderr[-1200:]}"
+    lines = [ln for ln in proc.stdout.strip().splitlines() if ln.strip()]
+    got = _json.loads(lines[-1])
+    d = got["5b_defer"]
+    assert d["deferred"] is True, d
+    assert d["shown"] is True, d
+    assert d["steps"] == [], f"分析完直接 goStep 了：{d['steps']}"
+    assert d["opened"] == [True], f"分析完没先弹确认：{d['opened']}"
+    assert d["renders"] == 0, f"分析完先 renderAll 了：{d['renders']}"
+    f = got["5b_finish"]
+    assert f["finished"] is True, f
+    assert f["steps"] == [3], f
+    assert f["renders"] == 1, f
+    assert f["deferred"] is False, f

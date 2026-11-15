@@ -164,6 +164,16 @@ const REL_UNRELATED = {
   basis: "", confidence: "low", target: null, candidates: [], diff: null,
   action: "按原规则生成", note: "项目对象里没有对应字段，按原规则生成",
 };
+const REL_BUDGET = {
+  fieldCode: "yusuan", fieldName: "预算", status: "pending", rule: "S1",
+  basis: "名称包含关系（短名被长名包含）", confidence: "low",
+  target: { code: "budgetStatus", name: "预算状态", fieldName: "budget_status_",
+    type: "字符串" },
+  candidates: [
+    { code: "totalBudget", name: "总预算", fieldName: "total_budget_", type: "数字" },
+  ],
+  diff: null, action: "待确认", note: "",
+};
 
 const RELS = [REL_AUTO, REL_S4, REL_S2, REL_SUSPECT, REL_AMBIG, REL_CONFLICT,
   REL_UNRELATED];
@@ -327,6 +337,20 @@ out.A_autoField = autoHtml.indexOf("项目编号") >= 0;
 out.A_autoNoPick = autoHtml.indexOf('data-pl-pick="contract.xiangMuBianHao"') < 0;
 out.A_title = el("plModalTitle").textContent;
 out.A_primaryDisabled = el("plApplyPicked").disabled === true;
+
+/* ④c 短名「预算」：最匹配预算状态，候选里还有总预算 → pending 也要给下拉 */
+const vmBudget = vmOf([REL_BUDGET, REL_UNRELATED], { diffs: [], diffCount: 0 });
+mask.hidden = true;
+PL.closeModal();
+PL.openModal(vmBudget);
+out.C_opened = mask.hidden === false;
+const budgetHtml = body.innerHTML;
+out.C_select = budgetHtml.indexOf('data-pl-cand="contract.yusuan"') >= 0
+  && budgetHtml.indexOf("总预算（totalBudget") >= 0;
+PL.selectAll(false);
+out.C_pick = PL.chooseCandidate("contract.yusuan", "totalBudget");
+out.C_collect = PL.collect();
+out.C_isPicked = PL.isPicked("contract", "yusuan");
 
 /* ⑤ 弹窗底部按钮：全选 / 全不选 / 保留我的 / 按勾选覆盖（HTML 里，不在 JS 里拼） */
 if (HTML) {

@@ -254,7 +254,9 @@ window.ProjLink = (function () {
     const checked = _picked.has(key);
     const disabled = r.status === "conflict";
     const diff = diffText(r.diff);
-    const cand = r.status === "ambiguous" ? candidateHtml({ ...r, objectCode: objCode }) : "";
+    const cand = (r.status !== "conflict"
+      && (r.status === "ambiguous" || (r.candidates && r.candidates.length)))
+      ? candidateHtml({ ...r, objectCode: objCode }) : "";
     const note = r.note
       ? `<div class="pl-rel-note">⚠ ${esc(r.note)}</div>` : "";
     const pick = auto

@@ -89,7 +89,8 @@ SYNONYM_GROUPS = (
 MIN_SNAPSHOT_FIELDS = 30
 
 # 规则等级：数字越小证据越强（架构 §3.5）
-RANK = {"E0": 0, "S3": 1, "S4": 2, "S2": 3, "S1": 4}
+# C = 仅候选（名称包含、但不是自动可判的强关系）：不自动覆盖，只供用户手选。
+RANK = {"E0": 0, "S3": 1, "S4": 2, "S2": 3, "S1": 4, "C": 5}
 
 _SOURCE_LABEL = {
     "target_db": "目标库",
@@ -1307,10 +1308,14 @@ def _basis_for(rule: str, own, target) -> str:
         return f"名称只差 {dist} 个字"
     if rule == "S1":
         return "名称包含关系（短名被长名包含）"
+    if rule == "C":
+        return (f"手动指定：名称包含（{normalize(_name_of(own))} ⊂ "
+                f"{normalize(_name_of(target))}）")
     return ""
 
 
-_CONFIDENCE = {"E0": "high", "S3": "high", "S4": "medium", "S2": "medium", "S1": "low"}
+_CONFIDENCE = {"E0": "high", "S3": "high", "S4": "medium", "S2": "medium",
+               "S1": "low", "C": "low"}
 
 
 def _decide(own: BoField, pool: list[ProjectField], update_mode: bool,
@@ -1340,6 +1345,15 @@ def _decide(own: BoField, pool: list[ProjectField], update_mode: bool,
         rule = similar(own, t)
         if rule:
             cands.append((RANK[rule], t.sn, rule, t))
+    # 用户口径（2026-11-15）：像「预算」这种短名，项目里有「预算状态」「总预算」时
+    # 都要列出来给他选。similar 的 S1 有收敛条件（短名 2 字、多 1 个字不判相似），
+    # 所以这里再补一层「名称包含」候选，只用于下拉/手选，不参与自动判定。
+    for t in pool:
+        if any(c[3].code == t.code for c in cands):
+            continue
+        a, b = normalize(own.name), normalize(t.name)
+        if len(a) >= 2 and len(b) >= 2 and (a in b or b in a):
+            cands.append((RANK["C"], t.sn, "C", t))
     if not cands:
         return {"fieldCode": own.code, "fieldName": own.name, "kind": "no_match",
                 "message": "项目对象里没有对应字段，按原规则生成"}
@@ -1360,7 +1374,7 @@ def _decide(own: BoField, pool: list[ProjectField], update_mode: bool,
         family_ok=family_ok,
         suspect=suspect,
         ambiguous=ambiguous,
-        candidates=others[:3],
+        candidates=others[:6],
         rename_code=(own.code if update_mode else best.code),
         rename_field=(own.resolved_field_name() if update_mode else best.field_name),
         diff=_diff_payload(own, best, rule, update_mode, bo),
@@ -1524,6 +1538,18 @@ def _conflict_of(action: AlignAction, own: BoField, taken: dict[str, str],
     return None
 
 
+def _manual_rule(own: BoField, picked: ProjectField) -> str:
+    """用户手选了一个「仅名称包含」的候选（如 预算 → 总预算）。
+
+    similar() 对「多 1 个字 + 短名 2 字」会刻意返回 None（PL04 的金额/总金额），
+    但用户明确选了它，就必须能落；规则记为 C，依据写明是手动指定。
+    """
+    a, b = normalize(own.name), normalize(picked.name)
+    if len(a) >= 2 and len(b) >= 2 and (a in b or b in a):
+        return "C"
+    return ""
+
+
 def _retarget(action: AlignAction, own: BoField, picked: ProjectField,
               update_mode: bool, bo: Bo | None) -> None:
     """把这条关系改指到**用户选中的**候选项目字段（多候选场景）。
@@ -1532,13 +1558,13 @@ def _retarget(action: AlignAction, own: BoField, picked: ProjectField,
     那一个覆盖。规则 / 依据 / 置信度 / 差异 / 会丢什么**全部按新目标重算**——
     沿用原来那套说明会让弹窗里写的依据和实际覆盖的字段对不上。
     """
-    rule = similar(own, picked) or action.rule
+    rule = similar(own, picked) or _manual_rule(own, picked) or action.rule
     # 选了 A 之后，「其它候选」就是除 A 之外的那些（含原来的最匹配）——
     # 不清理会留下 target 自己，前端下拉里出现两个一样的选项
     others = [t for t in ([action.target] + list(action.candidates or []))
               if t is not None and t.code != picked.code]
     action.target = picked
-    action.candidates = others[:3]
+    action.candidates = others[:6]
     action.rule = rule
     action.rank = RANK.get(rule, action.rank)
     action.family_ok = family(own.type_new) == family(picked.type_new)
