@@ -197,6 +197,12 @@ async function postParse(buf, plHeader) {
 
 async function handleFile(file, { fromAi = false, quiet = false } = {}) {
   if (!file) return;
+  const ext = (file.name.split(".").pop() || "").toLowerCase();
+  // 拖到下面「已有 Excel」区域也认 PDF / Word：转去 AI 输入口，别报“请选择 xlsx”
+  if (ext === "pdf" || ext === "docx" || ext === "doc") {
+    await handleAiSource(file);
+    return;
+  }
   if (!/\.(xlsx|xlsm)$/i.test(file.name)) {
     toast("请选择 .xlsx 文件");
     return;
