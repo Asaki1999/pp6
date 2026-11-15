@@ -289,6 +289,8 @@ function staticChecks() {
   const css = fs.existsSync(CSS_FILE) ? fs.readFileSync(CSS_FILE, "utf8") : "";
   out["0_static"] = {
     hasImportBar: /id="plPreImportBar"/.test(html),
+    importBarOnTop: /id="plPreImportBar"/.test(html)
+      && html.indexOf('id="plPreImportBar"') < html.indexOf('id="aiChatLaunch"'),
     hasWorkflowBar: /id="plPreWorkflowBar"/.test(html),
     hasPatchBar: /id="plPrePatchBar"/.test(html),
     importValues: (html.match(/name="plPreImport" value="([a-z]+)"/g) || []).map((s) => s.split('"')[3]),

@@ -2413,6 +2413,8 @@ def _():
     assert proc.returncode == 0, f"node 探针失败：\n{proc.stderr[-1200:]}"
     lines = [ln for ln in proc.stdout.strip().splitlines() if ln.strip()]
     got = _json.loads(lines[-1])
+    assert got["0_static"]["importBarOnTop"] is True, \
+        "普通模式的「关联项目」选项不在 AI 卡上方：会被长卡片挤到折叠线下，用户看不见"
     d = got["5b_defer"]
     assert d["deferred"] is True, d
     assert d["shown"] is True, d

@@ -203,6 +203,17 @@
   <section id="stepInput">
     <!-- P0-4 反解摘要卡片：必须留在 #stepInput 内，inspectZip() 的 finally 会 goStep(1) -->
     <div id="pp6zipInspectCard" hidden></div>
+
+    <!-- 第 1 步：对象级选择放在**导入前**，不再导入后弹窗问一遍。
+         两档共享一份状态（普通 / 流程两个菜单同一档），存 localStorage。
+         放在 AI 卡**上方**：这是导入/生成前就要定的开关，不能藏在长卡片下面。 -->
+    <div class="pl-pre" id="plPreImportBar">
+      <b>第 1 步 · 业务对象关联项目</b>
+      <label><input type="radio" name="plPreImport" value="off" checked> 不关联</label>
+      <label><input type="radio" name="plPreImport" value="on"> 全部关联</label>
+      <span class="sub">导入前先选：全部关联=这份 Excel 里每个对象都关联项目；不关联=一个都不关联。导入后不再弹选择框。</span>
+    </div>
+
     <section class="ai-box ai-chat-launch" id="aiChatLaunch">
       <div class="ai-chat-head">
         <h3>告诉我要建什么，或者直接说哪里要改</h3>
@@ -243,15 +254,6 @@
         <input type="file" id="aiSheetInput" accept=".xlsx,.xlsm" hidden>
       </div>
     </section>
-
-    <!-- 第 1 步：对象级选择放在**导入前**，不再导入后弹窗问一遍。
-         两档共享一份状态（普通 / 流程两个菜单同一档），存 localStorage。 -->
-    <div class="pl-pre" id="plPreImportBar">
-      <b>第 1 步 · 业务对象关联项目</b>
-      <label><input type="radio" name="plPreImport" value="off" checked> 不关联</label>
-      <label><input type="radio" name="plPreImport" value="on"> 全部关联</label>
-      <span class="sub">导入前先选：全部关联=这份 Excel 里每个对象都关联项目；不关联=一个都不关联。导入后不再弹选择框。</span>
-    </div>
 
     <section class="ai-box ai-box-lite">
       <div class="ai-head">
