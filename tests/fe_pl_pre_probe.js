@@ -343,7 +343,7 @@ function staticChecks() {
     // PDF / Word 入口：accept 里要有 .pdf/.docx；前端走 /api/extract
     aiSheetAcceptsDoc: /id="aiSheetInput"[^>]*accept="[^"]*\.pdf[^"]*\.docx/.test(html),
     fileInputAcceptsDoc: /id="fileInput"[^>]*accept="[^"]*\.pdf[^"]*\.docx/.test(html),
-    fileEntryFormats: /我有文件/.test(html) && /Excel \/ PDF \/ Word/.test(html)
+    fileEntryFormats: /文件生成/.test(html) && /Excel \/ PDF \/ Word/.test(html)
       && /id="fileInput"[^>]*accept="[^"]*\.xlsx[^"]*\.pdf/.test(html),
     aiDocEntry: /handleAiSource/.test(src) && /\/api\/extract/.test(src)
       && /pickFile\("source"\)/.test(src),
