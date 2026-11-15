@@ -435,3 +435,32 @@ def _():
          "X-Filename": urllib.parse.quote("旧文档.doc")})
     data = json.loads(body)
     assert data["ok"] is False and ".docx" in data["error"], data
+
+
+@case("WEB22", "webui", "流程预览是真实 DOM 元素，不能被 HTML 注释吞掉", "P0",
+      ["wfPreview / wfPreviewApply / wfPreviewBody 都是 start tag",
+       "HTML 注释必须闭合（上一次 */ 写成注释结尾，整个预览被吞）"])
+def _():
+    from html.parser import HTMLParser
+    from pathlib import Path
+
+    class _Ids(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.ids = set()
+            self.comments = []
+
+        def handle_starttag(self, tag, attrs):
+            for k, v in attrs:
+                if k == "id" and v:
+                    self.ids.add(v)
+
+        def handle_comment(self, data):
+            self.comments.append(data)
+
+    p = _Ids()
+    p.feed((Path(__file__).resolve().parents[1] / "pp6kit" / "static" / "index.html")
+           .read_text(encoding="utf-8"))
+    for wanted in ("wfPreview", "wfPreviewApply", "wfPreviewBody", "wfPreviewMeta"):
+        assert wanted in p.ids, f"#{wanted} 不是真实 DOM 元素（可能在注释里）"
+    assert not any("wfPreviewApply" in c for c in p.comments), "预览按钮还在注释里"

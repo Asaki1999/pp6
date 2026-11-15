@@ -2882,8 +2882,18 @@ async function wfAnalyzeSheet(file) {
     if (!res.ok || d.ok === false) throw new Error(d.error || `分析失败 ${res.status}`);
     state.aiData = d;
     renderWfPreview(d);
+    if (stat) {
+      stat.className = "wf-import-stat ok";
+      const nf = (d.bo && d.bo.fields ? d.bo.fields.length : 0);
+      stat.innerHTML = `AI 已识别 <b>${esc(file.name)}</b>：` +
+        `${esc((d.bo && d.bo.name) || "业务对象")}（${nf} 个字段），确认预览后生成流程对象包`;
+    }
     toast("AI 识别完成，确认预览后再生成流程对象包", 6000);
   } catch (err) {
+    if (stat) {
+      stat.className = "wf-import-stat";
+      stat.textContent = "AI 分析失败：" + (err && err.message ? err.message : err);
+    }
     toast("AI 分析 Excel 失败：" + (err && err.message ? err.message : err), 9000);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = label || "选择 Excel"; }
