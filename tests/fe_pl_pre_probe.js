@@ -342,6 +342,9 @@ function staticChecks() {
     btnPackLabel: /id="btnPack"[^>]*>下载导入包 zip/.test(html),
     // PDF / Word 入口：accept 里要有 .pdf/.docx；前端走 /api/extract
     aiSheetAcceptsDoc: /id="aiSheetInput"[^>]*accept="[^"]*\.pdf[^"]*\.docx/.test(html),
+    fileInputAcceptsDoc: /id="fileInput"[^>]*accept="[^"]*\.pdf[^"]*\.docx/.test(html),
+    fileEntryFormats: /我有文件/.test(html) && /Excel \/ PDF \/ Word/.test(html)
+      && /id="fileInput"[^>]*accept="[^"]*\.xlsx[^"]*\.pdf/.test(html),
     aiDocEntry: /handleAiSource/.test(src) && /\/api\/extract/.test(src)
       && /pickFile\("source"\)/.test(src),
     // 流程模式 = 普通模式同一套页面；导出时 zip 含流程对象，并单独给流程 XML

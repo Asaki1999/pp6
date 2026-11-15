@@ -218,9 +218,9 @@
         <span class="sub">描述要建什么，AI 出对象、字段、表单和列表</span>
       </button>
       <button class="entry-card" data-entry="excel">
-        <span class="entry-badge">Excel</span>
-        <strong>我有 Excel</strong>
-        <span class="sub">上传自己整理的表，AI 识别字段；标准模板也能直接解析</span>
+        <span class="entry-badge">文件</span>
+        <strong>我有文件</strong>
+        <span class="sub">Excel / PDF / Word 都行：标准 Excel 模板直接解析，其他格式交给 AI 识别</span>
       </button>
     </div>
 
@@ -284,16 +284,16 @@
     <section class="ai-box ai-box-lite">
       <div class="ai-head">
         <div>
-          <h3>已经有一份改好的 Excel？</h3>
-          <div class="sub">之前导出的预览表、或者你自己整理的表，直接拖进来继续出包，不用重来一遍</div>
+          <h3>已经有一份文件？</h3>
+          <div class="sub">Excel 标准模板直接解析；PDF / Word 提取文字后让 AI 生成。改完再选同一个文件即可重来</div>
         </div>
       </div>
       <div class="reimport" id="reimport">
         <label class="reimport-pick">
-          <input type="file" id="fileInput" accept=".xlsx,.xlsm" hidden>
-          <span>选择 Excel 文件</span>
+          <input type="file" id="fileInput" accept=".xlsx,.xlsm,.pdf,.docx" hidden>
+          <span>选择文件</span>
         </label>
-        <span class="sub" id="reimportHint">选完直接出包；有相近字段会先弹窗确认。改完 Excel 再选一次同一个文件即可重新解析</span>
+        <span class="sub" id="reimportHint">标准 Excel 直接解析；PDF / Word 会提取文字，确认后再生成。有相近字段会先弹窗确认</span>
         <button class="link" id="btnDemo">载入示例看效果</button>
       </div>
     </section>

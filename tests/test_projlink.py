@@ -2441,6 +2441,10 @@ def _():
         "结果页的「下载导入包 zip」被改坏了（真正的生成入口）"
     assert got["0_static"]["aiSheetAcceptsDoc"] is True, \
         "AI 文件入口的 accept 里没有 .pdf/.docx"
+    assert got["0_static"]["fileInputAcceptsDoc"] is True, \
+        "文件入口的 accept 里没有 .pdf/.docx"
+    assert got["0_static"]["fileEntryFormats"] is True, \
+        "入口卡还写着只有 Excel"
     assert got["0_static"]["aiDocEntry"] is True, \
         "前端没有接 /api/extract 或桌面 pick_source"
     # 流程模式复用普通模式：不再有独立流程页/对象包，导出 zip + XML

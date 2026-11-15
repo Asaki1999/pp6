@@ -202,6 +202,10 @@ async function handleFile(file, { fromAi = false, quiet = false } = {}) {
   const ext = (file.name.split(".").pop() || "").toLowerCase();
   // 拖到下面「已有 Excel」区域也认 PDF / Word：转去 AI 输入口，别报“请选择 xlsx”
   if (ext === "pdf" || ext === "docx" || ext === "doc") {
+    // 文件入口选 PDF/Word：切到 AI 面板并填入提取出的文字，
+    // 不让用户在一个「Excel」面板里看不到结果。
+    state.entryMode = "ai";
+    renderEntry();
     await handleAiSource(file);
     return;
   }
@@ -2563,7 +2567,7 @@ function renderBuildReport(report, name) {
 function bind() {
   const pickAndLoad = async () => {
     if (state.desktop) {
-      const file = await pickFile("excel");
+      const file = await pickFile("source");
       if (file) handleFile(file);
       return;
     }
