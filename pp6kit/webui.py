@@ -2220,6 +2220,17 @@ class Handler(BaseHTTPRequestHandler):
                                     "modules": len(objects.extra()["modules"])}})
                 except Exception as exc:
                     self._json({"ok": False, "error": str(exc)}, 400)
+            elif self.path == "/api/extract":
+                # PDF / Word 只抽文字，不直接生成对象；用户确认/修改后再走 /api/ai/bo
+                from urllib.parse import unquote
+                from . import doc_text
+                name = unquote(self.headers.get("X-Filename") or "")
+                try:
+                    self._json({"ok": True, **doc_text.extract(name, self._body())})
+                except ValueError as exc:
+                    self._json({"ok": False, "error": str(exc)})
+                except Exception as exc:
+                    self._json({"ok": False, "error": f"文档解析失败：{exc}"})
             elif self.path == "/api/ai/bo":
                 self._json(ai_generate_bo(json.loads(self._body())))
             elif self.path == "/api/ai/refine":

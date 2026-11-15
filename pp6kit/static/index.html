@@ -231,7 +231,7 @@
         <div class="ai-chat-foot">
           <span class="sub" id="aiChatHint1">Enter 发送，Shift+Enter 换行</span>
           <div class="ai-btns">
-            <button class="btn ghost" id="btnPickSheet">选择 Excel</button>
+            <button class="btn ghost" id="btnPickSheet" title="Excel / PDF / Word">选择文件</button>
             <button class="btn primary" id="aiChatSend1">开始生成</button>
           </div>
         </div>
@@ -247,11 +247,11 @@
 
       <div class="dz-inline dz-inline-quiet" id="dzInline">
         <div class="dz-inline-foot">
-          <span class="sub" id="aiFileTag">支持拖入 .xlsx / .xlsm（会读表头和样例数据）</span>
+          <span class="sub" id="aiFileTag">支持 .xlsx / .xlsm（读表头）或文字版 .pdf / .docx（提取文字后生成；扫描版 PDF 需 OCR）</span>
           <span class="sub" id="aiHint">字段类型自动判断：金额→数字，审批人→用户，备注→大文本，关联项目→对象；
             一串固定取值（状态/类别/部门名）→ 选项，候选值一并带上</span>
         </div>
-        <input type="file" id="aiSheetInput" accept=".xlsx,.xlsm" hidden>
+        <input type="file" id="aiSheetInput" accept=".xlsx,.xlsm,.pdf,.docx" hidden>
       </div>
     </section>
 

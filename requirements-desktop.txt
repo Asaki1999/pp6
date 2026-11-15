@@ -4,3 +4,4 @@ sqlglot>=25.0
 pywebview>=6.0
 pyinstaller>=6.0
 pypinyin>=0.50
+pypdf>=4.0

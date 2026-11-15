@@ -1235,9 +1235,16 @@ async function pickFile(kind) {
   const api = native();
   if (!api) return null;
   const isZip = kind === "zip";
-  const picked = await (isZip ? api.pick_zip() : api.pick_excel());
+  const isSource = kind === "source";
+  const picker = isZip ? api.pick_zip
+    : isSource && api.pick_source ? api.pick_source : api.pick_excel;
+  const picked = await picker.call(api);
   if (!picked) return null;
-  const mime = isZip ? "application/zip" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const ext = (picked.name.split(".").pop() || "").toLowerCase();
+  const mime = ext === "pdf" ? "application/pdf"
+    : ext === "docx" ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      : ext === "zip" ? "application/zip"
+        : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
   return b64ToFile(picked.data, picked.name, mime);
 }
 
@@ -1732,6 +1739,47 @@ function bindAiEdit() {
   });
 }
 
+/* 第 1 步的文件入口：Excel 走「读表 → AI 映射」；PDF/Word 只抽文字，
+ * 填进输入框让用户确认/删改后再生成。两条路都不直接出包。 */
+async function handleAiSource(file) {
+  const ext = (file.name.split(".").pop() || "").toLowerCase();
+  if (ext === "pdf" || ext === "docx" || ext === "doc") {
+    await extractDocText(file);
+    return;
+  }
+  await analyzeSheet(file);
+}
+
+async function extractDocText(file) {
+  const btn = $("#btnPickSheet") || $("#aiFromSheet");
+  const old = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "读文档中…"; }
+  try {
+    const res = await fetch("/api/extract", {
+      method: "POST",
+      body: await file.arrayBuffer(),
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-Filename": encodeURIComponent(file.name),
+      },
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok || d.ok === false) throw new Error(d.error || `读取失败 ${res.status}`);
+    const ta = $("#aiChatText1");
+    if (ta) {
+      ta.value = d.text;
+      ta.focus();
+      try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (_) {}
+    }
+    state.aiFile = null;              // 文档不是 Excel，别让旧的换表下拉串进来
+    toast(`已从 ${file.name} 提取 ${d.chars} 字${d.truncated ? "（太长已截断）" : ""}，确认/修改后点「开始生成」`, 9000);
+  } catch (err) {
+    toast("读取文档失败：" + err.message, 8000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = old || "选择文件"; }
+  }
+}
+
 /* 把项目经理自己整理的 Excel 交给 AI，映射成标准对象再预览 */
 async function analyzeSheet(file, sheet) {
   const btn = $("#btnPickSheet") || $("#aiFromSheet");
@@ -1763,7 +1811,7 @@ async function analyzeSheet(file, sheet) {
     box.classList.add("is-error");
     box.innerHTML = `<div class="ai-err">✗ ${esc(err.message)}</div>`;
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "选择 Excel"; }
+    if (btn) { btn.disabled = false; btn.textContent = "选择文件"; }
   }
 }
 
@@ -2508,9 +2556,9 @@ function bind() {
   const dz = $("#dzInline");
   $("#btnPickSheet").onclick = async () => {
     if (state.desktop) {
-      // 桌面壳里 <input type=file> 不可靠，走系统文件对话框
-      const file = await pickFile("excel");
-      if (file) await analyzeSheet(file);
+      // 桌面壳里 <input type=file> 不可靠，走系统文件对话框（Excel / PDF / Word）
+      const file = await pickFile("source");
+      if (file) await handleAiSource(file);
       return;
     }
     $("#aiSheetInput").click();
@@ -2518,16 +2566,16 @@ function bind() {
   $("#aiSheetInput").onchange = async (e) => {
     const file = e.target.files[0];
     e.target.value = "";
-    if (file) await analyzeSheet(file);
+    if (file) await handleAiSource(file);
   };
-  // 拖到输入区 = 走 AI 读表（不是模板导入）
+  // 拖到输入区 = 走 AI 读表 / 读文档（不是模板导入）
   ["dragenter", "dragover"].forEach((ev) =>
     dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("drag"); }));
   ["dragleave", "drop"].forEach((ev) =>
     dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("drag"); }));
   dz.addEventListener("drop", (e) => {
     const file = e.dataTransfer.files[0];
-    if (file) analyzeSheet(file);
+    if (file) handleAiSource(file);
   });
 
   // ---- 第 1 步（下半）：已经有一份标准 Excel，直接进预览
@@ -2664,7 +2712,7 @@ function bind() {
   $("#aiSheetInput").onchange = async (e) => {
     const file = e.target.files[0];
     e.target.value = "";
-    if (file) await analyzeSheet(file);
+    if (file) await handleAiSource(file);
   };
 
   // ?demo=1 直接进示例视图，便于截图与巡检

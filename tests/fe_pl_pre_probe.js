@@ -309,6 +309,10 @@ function staticChecks() {
       && /"下一步：核对字段/.test(src) && /"下一步：生成预览/.test(src),
     btnToPackNoGenerate: !/下一步：生成导入包/.test(html),
     btnPackLabel: /id="btnPack"[^>]*>下载导入包 zip/.test(html),
+    // PDF / Word 入口：accept 里要有 .pdf/.docx；前端走 /api/extract
+    aiSheetAcceptsDoc: /id="aiSheetInput"[^>]*accept="[^"]*\.pdf[^"]*\.docx/.test(html),
+    aiDocEntry: /handleAiSource/.test(src) && /\/api\/extract/.test(src)
+      && /pickFile\("source"\)/.test(src),
     hasWorkflowBar: /id="plPreWorkflowBar"/.test(html),
     hasPatchBar: /id="plPrePatchBar"/.test(html),
     importValues: (html.match(/name="plPreImport" value="([a-z]+)"/g) || []).map((s) => s.split('"')[3]),

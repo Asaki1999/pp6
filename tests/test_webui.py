@@ -406,3 +406,32 @@ def _():
     assert status == 400, status
     text = body.decode("utf-8", "replace")
     assert "X-Project-Link" in text and "JSON" in text, text
+
+
+@case("WEB21", "webui", "文档提取接口：Word/PDF 正常返回，旧 .doc 明确报错", "P1",
+      ["Word 正文/表格", "PDF 文字", "旧 .doc 不静默失败"])
+def _():
+    from tests.test_doc_text import _docx, _pdf
+    doc = _docx(["合同台账需求", "记录合同名称、金额。"],
+                [["字段", "类型"], ["合同名称", "文本"]])
+    status, headers, body = req(
+        "/api/extract", doc,
+        {"Content-Type": "application/octet-stream",
+         "X-Filename": urllib.parse.quote("需求.docx")})
+    data = json.loads(body)
+    assert status == 200 and data["ok"] is True, data
+    assert data["kind"] == "docx" and "合同台账需求" in data["text"], data
+    assert "合同名称 | 文本" in data["text"], data
+    status, headers, body = req(
+        "/api/extract", _pdf("Budget Test"),
+        {"Content-Type": "application/octet-stream",
+         "X-Filename": urllib.parse.quote("需求.pdf")})
+    data = json.loads(body)
+    assert status == 200 and data["ok"] is True, data
+    assert data["kind"] == "pdf" and "Budget Test" in data["text"], data
+    status, headers, body = req(
+        "/api/extract", b"x",
+        {"Content-Type": "application/octet-stream",
+         "X-Filename": urllib.parse.quote("旧文档.doc")})
+    data = json.loads(body)
+    assert data["ok"] is False and ".docx" in data["error"], data

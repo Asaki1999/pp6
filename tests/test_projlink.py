@@ -2435,6 +2435,10 @@ def _():
         "AI 预览仍出现「下一步：生成导入包」"
     assert got["0_static"]["btnPackLabel"] is True, \
         "结果页的「下载导入包 zip」被改坏了（真正的生成入口）"
+    assert got["0_static"]["aiSheetAcceptsDoc"] is True, \
+        "AI 文件入口的 accept 里没有 .pdf/.docx"
+    assert got["0_static"]["aiDocEntry"] is True, \
+        "前端没有接 /api/extract 或桌面 pick_source"
     d = got["5b_defer"]
     assert d["deferred"] is True, d
     assert d["shown"] is True, d

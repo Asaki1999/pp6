@@ -15,6 +15,7 @@ from pathlib import Path
 
 EXCEL_TYPES = ("Excel 文件 (*.xlsx;*.xlsm)",)
 ZIP_TYPES = ("导出包 (*.zip)",)
+SOURCE_TYPES = ("Excel / PDF / Word (*.xlsx;*.xlsm;*.pdf;*.docx)",)
 
 
 def _dialog(kind: str):
@@ -72,6 +73,10 @@ class DesktopApi:
     # ---- 暴露给前端
     def pick_excel(self) -> dict | None:
         return self._open(EXCEL_TYPES)
+
+    def pick_source(self) -> dict | None:
+        """AI 入口的文件选择：Excel 读表，PDF/Word 抽文字。"""
+        return self._open(SOURCE_TYPES)
 
     def pick_zip(self) -> dict | None:
         return self._open(ZIP_TYPES)
