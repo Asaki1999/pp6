@@ -1242,9 +1242,10 @@ async function pickFile(kind) {
   if (!api) return null;
   const isZip = kind === "zip";
   const isSource = kind === "source";
-  const picker = isZip ? api.pick_zip
-    : isSource && api.pick_source ? api.pick_source : api.pick_excel;
-  const picked = await picker.call(api);
+  let picked;
+  if (isZip) picked = await api.pick_zip();
+  else if (isSource && api.pick_source) picked = await api.pick_source();
+  else picked = await api.pick_excel();
   if (!picked) return null;
   const ext = (picked.name.split(".").pop() || "").toLowerCase();
   const mime = ext === "pdf" ? "application/pdf"
@@ -2563,8 +2564,12 @@ function bind() {
   $("#btnPickSheet").onclick = async () => {
     if (state.desktop) {
       // 桌面壳里 <input type=file> 不可靠，走系统文件对话框（Excel / PDF / Word）
-      const file = await pickFile("source");
-      if (file) await handleAiSource(file);
+      try {
+        const file = await pickFile("source");
+        if (file) await handleAiSource(file);
+      } catch (err) {
+        toast("打开文件选择失败：" + (err && err.message ? err.message : err), 7000);
+      }
       return;
     }
     $("#aiSheetInput").click();
