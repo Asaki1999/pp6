@@ -2422,9 +2422,9 @@ def _():
     assert got["0_static"]["sameTitle"] is True, "三个页面的标题不一致"
     assert got["0_static"]["sameHint"] is True, "三个页面的说明文案不一致"
     assert got["0_static"]["patchAllLabel"] is True, \
-        "存量包页的选项没有和普通/流程统一成「全部关联」"
-    assert got["0_static"]["noProjectSuffix"] is True, \
-        "选项被写成了「全部关联项目」：这是功能名，选项状态应该是「全部关联」"
+        "存量包页的选项没有和普通/流程统一成「全部关联项目」"
+    assert got["0_static"]["patchOffLabel"] is True, \
+        "存量包页的选项没有和普通/流程统一成「全部不关联项目」"
     d = got["5b_defer"]
     assert d["deferred"] is True, d
     assert d["shown"] is True, d
