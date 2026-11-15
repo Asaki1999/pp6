@@ -2452,6 +2452,8 @@ def _():
         "流程页导入 Excel 没有走 AI 表头识别"
     assert got["0_static"]["wfNoChatBox"] is True, \
         "流程页又出现了对话框，用户要的是 AI 分析导入的 Excel"
+    assert got["0_static"]["wfPreview"] is True, \
+        "流程页 AI 识别后没有预览/确认这一步"
     assert got["0_static"]["wfAllFallback"] is True, \
         "没勾流程驱动时没有回退到全部对象 / 没带 X-Workflow-All"
     assert got["0_static"]["wfNoFlowFlagBlame"] is True, \

@@ -657,6 +657,21 @@
       <div class="wf-import-stat" id="wfImportStat">还没有导入：点右上「选择 Excel」，AI 会分析表头并识别字段</div>
     </section>
 
+    <!-- AI 识别结果预览：确认后才生成流程对象包，避免“导完直接出包” */
+    <section class="card wf-preview" id="wfPreview" hidden>
+      <div class="card-head">
+        <div>
+          <h3>AI 识别结果</h3>
+          <div class="sub" id="wfPreviewMeta"></div>
+        </div>
+        <div class="wf-actions">
+          <button class="btn ghost" id="wfPreviewCancel">重新选 Excel</button>
+          <button class="btn primary" id="wfPreviewApply">确认并生成流程对象包</button>
+        </div>
+      </div>
+      <div class="wf-preview-body" id="wfPreviewBody"></div>
+    </section>
+
     <!-- 导入的 Excel 不要求是标准模板：交给 AI 读表头，识别业务对象和字段；
          流程仍然固定 开始→审核→通过，不生成流程图/XML。 -->
     <section class="wf-main">

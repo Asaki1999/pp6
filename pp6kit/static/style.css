@@ -2515,3 +2515,23 @@ body.pl-modal-open { overflow: hidden; }
   font-size: 13px;
 }
 .wf-arrow { color: var(--muted); font-size: 13px; }
+
+/* ---- 流程模式：AI 识别结果预览 ---- */
+.wf-preview-body { padding: 0 18px 16px; }
+.wf-preview-sec { margin-top: 12px; }
+.wf-preview-title { font-weight: 600; margin-bottom: 6px; }
+.wf-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.wf-preview-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.wf-preview-tbl th, .wf-preview-tbl td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.wf-preview-tbl th { color: var(--muted); font-weight: 500; }
+@media (max-width: 720px) {
+  .wf-preview-grid { grid-template-columns: 1fr; }
+}

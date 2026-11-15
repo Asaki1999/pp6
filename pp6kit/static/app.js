@@ -2803,12 +2803,70 @@ function bindWfImport() {
   };
 }
 
+
+/* AI 识别结果预览：对象/字段/表单/列表先看一眼，确认后才落 Excel 出包。 */
+function renderWfPreview(d) {
+  const box = $("#wfPreview");
+  const body = $("#wfPreviewBody");
+  const meta = $("#wfPreviewMeta");
+  const apply = $("#wfPreviewApply");
+  if (!box || !body) return;
+  const bo = d.bo || {};
+  const fields = bo.fields || [];
+  const types = {};
+  (d.types || []).forEach((t) => { types[t.code] = t.label; });
+  const typeLabel = (code) => types[code] || code || "—";
+  const rows = fields.map((f) => `
+    <tr><td>${esc(f.name || "")}</td><td><code>${esc(f.code || "")}</code></td>
+    <td>${esc(typeLabel(f.type))}</td></tr>`).join("");
+  const form = d.form || {};
+  const list = d.list || {};
+  const cols = (list.columns || []).map((c) => {
+    const code = typeof c === "string" ? c : (c.code || "");
+    const f = fields.find((x) => x.code === code);
+    return f ? f.name : code;
+  }).filter(Boolean);
+  if (meta) {
+    meta.textContent = `${bo.name || "未命名对象"}（${bo.code || ""}）· ` +
+      `${fields.length} 个字段 · 新建表单 + 自动详情表单`;
+  }
+  body.innerHTML = `
+    <div class="wf-preview-sec">
+      <div class="wf-preview-title">业务对象</div>
+      <div><b>${esc(bo.name || "")}</b> <code>${esc(bo.code || "")}</code></div>
+    </div>
+    <div class="wf-preview-sec">
+      <div class="wf-preview-title">字段 <span class="muted">${fields.length} 个</span></div>
+      <div class="tbl-wrap"><table class="wf-preview-tbl">
+        <thead><tr><th>字段名称</th><th>字段编码</th><th>类型</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="3" class="sub">没有字段</td></tr>'}</tbody>
+      </table></div>
+    </div>
+    <div class="wf-preview-grid">
+      <div class="wf-preview-sec">
+        <div class="wf-preview-title">表单</div>
+        <div>${esc(form.name || "新建表单")} <span class="muted">（新建）</span></div>
+        <div class="sub">出包时自动补一张只读详情表单（查看/流程用）。</div>
+      </div>
+      <div class="wf-preview-sec">
+        <div class="wf-preview-title">列表</div>
+        <div>${esc(list.name || "对象列表")}</div>
+        <div class="sub">${cols.length ? "列：" + esc(cols.join(" / ")) : "默认列"}</div>
+      </div>
+    </div>`;
+  box.hidden = false;
+  if (apply) apply.disabled = false;
+  if (box.scrollIntoView) box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
 /* 流程页导入 Excel：不要求标准模板，先让 AI 读表头识别业务对象和字段，
    再走 applyAiBo 生成标准 Excel → 解析 → 流程对象包。不是聊天框。 */
 async function wfAnalyzeSheet(file) {
   const btn = $("#btnWfPick");
   const stat = $("#wfImportStat");
   const label = btn ? btn.textContent : "";
+  const preview = $("#wfPreview");
+  if (preview) preview.hidden = true;
   if (btn) { btn.disabled = true; btn.textContent = "AI 分析中…"; }
   if (stat) {
     stat.className = "wf-import-stat";
@@ -2823,10 +2881,8 @@ async function wfAnalyzeSheet(file) {
     const d = await res.json().catch(() => ({}));
     if (!res.ok || d.ok === false) throw new Error(d.error || `分析失败 ${res.status}`);
     state.aiData = d;
-    const ok = await applyAiBo(d, { thenBuild: true, workflow: true });
-    if (!ok) throw new Error("生成流程对象包失败");
-    const nf = (d.bo && d.bo.fields ? d.bo.fields.length : 0);
-    toast(`AI 已识别：${d.bo.name}（${nf} 个字段），可以导出流程对象包`, 8000);
+    renderWfPreview(d);
+    toast("AI 识别完成，确认预览后再生成流程对象包", 6000);
   } catch (err) {
     toast("AI 分析 Excel 失败：" + (err && err.message ? err.message : err), 9000);
   } finally {
@@ -2834,11 +2890,41 @@ async function wfAnalyzeSheet(file) {
   }
 }
 
+$("#wfPreviewApply") && ($("#wfPreviewApply").onclick = async () => {
+  if (!state.aiData) { toast("先选 Excel，让 AI 识别字段"); return; }
+  const btn = $("#wfPreviewApply");
+  const label = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "正在生成…"; }
+  try {
+    const ok = await applyAiBo(state.aiData, { thenBuild: true, workflow: true });
+    if (ok) {
+      const box = $("#wfPreview");
+      if (box) box.hidden = true;
+      if (window.Workflow) window.Workflow.refresh();
+      toast("已生成流程对象包，可以点「导出流程对象包」下载", 7000);
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label || "确认并生成流程对象包"; }
+  }
+});
+$("#wfPreviewCancel") && ($("#wfPreviewCancel").onclick = () => {
+  const box = $("#wfPreview");
+  if (box) box.hidden = true;
+  const body = $("#wfPreviewBody");
+  if (body) body.innerHTML = "";
+  state.aiData = null;
+  if (window.Workflow) window.Workflow.refresh();
+  $("#btnWfPick") && $("#btnWfPick").click();
+});
+
 const WfView = {
   render() {
     renderWfImport();
     const btn = $("#btnWfObjects");
-    if (btn) btn.disabled = !state.file || !flowObjects().length;
+    if (!btn) return;
+    const pending = $("#wfPreview") && !$("#wfPreview").hidden;
+    // AI 识别结果还没确认时不允许出包，避免拿到上一份 state.data 的旧对象
+    btn.disabled = !!pending || !state.file || !flowObjects().length;
   },
 };
 

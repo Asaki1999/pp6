@@ -346,6 +346,9 @@ function staticChecks() {
     wfAiSheetAnalyze: /id="btnWfPick"/.test(html) && /wfAnalyzeSheet/.test(src)
       && /\/api\/ai\/sheet/.test(src),
     wfNoChatBox: !/id="wfAiText"|id="wfAiSend"/.test(html),
+    // AI 识别 Excel 后先出预览，确认后才生成流程对象包
+    wfPreview: /id="wfPreview"/.test(html) && /id="wfPreviewApply"/.test(html)
+      && /renderWfPreview/.test(src),
     wfNoFlowApi: !/\/api\/workflow|\/api\/ai\/workflow/.test(src),
     wfObjectPackage: /id="btnWfObjects"/.test(html),
     // 没有「流程驱动=是」时按全部对象走固定三步；不再让用户回 Excel 改标志
