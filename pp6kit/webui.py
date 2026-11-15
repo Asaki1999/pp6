@@ -599,8 +599,8 @@ def build_zip(data: bytes, codes: list[str] | None = None,
         # 这里提前拦住并说清楚该怎么拿（流程是裸 XML，系统的流程导入是另一个入口）。
         if not any(d.module == "all" or mod_def.of(d.module).zipped
                    for d in res.deliverables):
-            raise ValueError("流程是裸 XML，不走同步包：请点「下载流程 XML」，"
-                             "或到 管理 › 流程设计 › 导入 单独上传")
+            raise ValueError("流程模块不再单独导出：请到「流程模式」导出流程对象包；"
+                             "本工具不生成流程 XML")
 
         lines = [
             "PowerProject 同步包生成报告",
@@ -622,7 +622,7 @@ def build_zip(data: bytes, codes: list[str] | None = None,
                 "  只含流程模式的对象（mode=workflow）及其表单 / 列表 / 数据集。",
                 "  导入：管理 › 业务对象 › 导入（和普通对象同一个入口，但建议先导普通包，",
                 "        流程对象的父子关系要能找到已存在的父对象）。",
-                "  流程定义是裸 XML，另点「下载流程 XML」，到 管理 › 流程设计 › 导入。",
+                "  流程固定为 开始 → 审核 → 通过；本工具不生成流程图 / 流程 XML。",
                 "",
                 "  ⚠ 本包**不含**普通业务对象——那部分走左侧「普通模式」出包。",
                 "",
@@ -654,11 +654,8 @@ def build_zip(data: bytes, codes: list[str] | None = None,
                         mark = "  (流程模式)"
                 lines.append(f"       · {a.kind} {a.key}{mark}")
         if any(d.module == "workflow" for d in res.deliverables):
-            # 流程的 XML 确实**不在**这个 zip 里（_pack_all 会跳过），
-            # 不写清楚用户会以为包里漏了
             lines.append("")
-            lines.append("  ⚠ 流程是裸 XML，需在 管理 › 流程设计 › 导入 单独上传（本包不含流程）；"
-                         "页面底部「下载流程 XML」可以直接拿到。")
+            lines.append("  ⚠ 流程固定为 开始 → 审核 → 通过；本工具不再生成流程 XML。")
         if res.notices:
             lines += ["", "提示:"] + [f"  - {n}" for n in dict.fromkeys(res.notices)]
         if align_report and not align_report.get("noop", True):
@@ -900,10 +897,9 @@ def import_module(data: bytes, code: str,
     if code not in mod_def.BY_CODE:
         raise ValueError(f"未知模块 {code}")
     if not mod_def.of(code).zipped:
-        # 流程是裸 XML。这个接口只回 zip：不拦住就会把 .xml 当 application/zip
-        # 发出去（前端那个按钮虽然被禁用，接口是公开的，curl 一下就能踩到）
-        raise ValueError(f"「{mod_def.label(code)}」是裸 XML，不走模块包："
-                         f"请用「下载流程 XML」按钮（/api/workflow）")
+        # 流程定义已从工具里下线：固定三步，只出流程对象包，不再生成流程 XML。
+        raise ValueError(f"「{mod_def.label(code)}」不再单独导出："
+                         f"请到「流程模式」导出流程对象包；本工具不生成流程 XML")
     # **必须深拷贝**：_cache_proj() 是跨请求共享的同一个 Project，apply 会改字段
     # 定义、改名、重写引用——直接改缓存的话，下一次「没带头」的请求也会带着
     # projectId（用户会看到开关关不掉，且顺序不同结果不同，极难排查）。
@@ -2250,20 +2246,6 @@ class Handler(BaseHTTPRequestHandler):
                 with_list = (qs.get("list") or ["1"])[0] != "0"
                 self._json(ai_from_sheet(self._body(), hint=hint, sheet=sheet,
                                          with_form=with_form, with_list=with_list))
-            elif self.path.startswith("/api/ai/workflow"):
-                # 和 /api/ai/sheet 同一套：xlsx 走二进制 body，说明和当前流程名放 query
-                from urllib.parse import parse_qs, urlparse
-                qs = parse_qs(urlparse(self.path).query)
-                instruction = (qs.get("instruction") or [""])[0]
-                focus = (qs.get("focus") or [""])[0]
-                body, name, summary = ai_workflow(self._body(), instruction, focus)
-                # HTTP 头只能放 latin-1：摘要先转 JSON 再 URL 编码，前端 decodeURIComponent
-                self._send(
-                    200, body,
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    name,
-                    extra={"X-AI-Summary": quote(json.dumps(summary, ensure_ascii=False))},
-                )
             elif self.path == "/api/ai/bo/apply":
                 body, name = ai_apply_bo(json.loads(self._body()),
                                          _relations_header(self.headers))
@@ -2276,11 +2258,6 @@ class Handler(BaseHTTPRequestHandler):
                 body, name = import_module(self._body(), code,
                                            _projlink_header(self.headers))
                 self._send(200, body, "application/zip", name)
-            elif self.path == "/api/workflow":
-                # 流程是裸 XML：单条回 application/xml，多条回 zip。
-                # ctype 由 workflow_files 决定（它比路由更清楚这次是哪种）
-                body, name, ctype = workflow_files(self._body())
-                self._send(200, body, ctype, name)
             else:
                 self._send(404, b"not found", "text/plain")
         except nlq_guard.SqlRejected as exc:

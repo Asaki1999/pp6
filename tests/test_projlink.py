@@ -2439,6 +2439,15 @@ def _():
         "AI 文件入口的 accept 里没有 .pdf/.docx"
     assert got["0_static"]["aiDocEntry"] is True, \
         "前端没有接 /api/extract 或桌面 pick_source"
+    # 流程模式固定三步：没有流程图设计器 / AI 生成 / XML 下载
+    assert got["0_static"]["wfFixedFlow"] is True, \
+        "流程模式没有固定的 开始→审核→通过"
+    assert got["0_static"]["wfNoFlowDesigner"] is True, \
+        "流程图/节点编辑/AI 生成/XML 下载的入口还在"
+    assert got["0_static"]["wfNoFlowApi"] is True, \
+        "前端还在请求已下线的 /api/workflow 或 /api/ai/workflow"
+    assert got["0_static"]["wfObjectPackage"] is True, \
+        "流程对象包入口没保留"
     # 返回按钮位置统一：第 2/3 步都在页头 .file-row，底部操作条不再有返回
     assert got["0_static"]["backButtonsTop"] is True, \
         "第 2 步或第 3 步的返回按钮不在页头 .file-row 里（一上一下，用户来回找）"

@@ -405,7 +405,7 @@ def _():
 
 
 @case("WF13", "workflow", "只选流程时导出 zip 给出中文错误而不是 BadZipFile", "P1",
-      ["流程是裸 XML，不进同步包", "错误要说清怎么拿"])
+      ["流程模块不再单独导出", "错误指向流程对象包"])
 def _():
     data = xlsx(sheets([START, APPROVE, PASS]))
     try:
@@ -413,14 +413,14 @@ def _():
     except zipfile.BadZipFile:                       # noqa: PERF203
         raise AssertionError("抛了 BadZipFile：流程 XML 被当成 zip 打开了") from None
     except ValueError as exc:
-        assert "裸 XML" in str(exc) and "下载流程 XML" in str(exc), str(exc)
+        assert "不再单独导出" in str(exc) and "流程对象包" in str(exc), str(exc)
     else:
         raise AssertionError("只选流程时不应该成功返回 zip")
     # /api/import/workflow 同样要守住（否则会把 .xml 当 zip 发出去）
     try:
         webui.import_module(data, "workflow")
     except ValueError as exc:
-        assert "裸 XML" in str(exc), str(exc)
+        assert "不再单独导出" in str(exc) or "不生成流程 XML" in str(exc), str(exc)
     else:
         raise AssertionError("import_module 不应该给出流程的 zip")
 
@@ -474,12 +474,11 @@ def _():
         with zipfile.ZipFile(allp.path) as z:
             names = z.namelist()
         assert names and all(not n.startswith("workflow/") for n in names), names
-    # build_zip 写的包注释（CONFIG_SYNC_NOTE）里要看得到「流程是裸 XML」这句提醒，
-    # 否则用户会以为包里漏了流程
+    # 包注释里要说明不再生成流程 XML，否则用户会以为包里漏了流程
     body, _name = webui.build_zip(xlsx(sheets([START, APPROVE, PASS])), ["bo", "workflow"])
     with zipfile.ZipFile(io.BytesIO(body)) as z:
         comment = (z.comment or b"").decode("utf-8", "ignore")
-    assert "流程是裸 XML" in comment, comment[-300:]
+    assert "不再生成流程 XML" in comment, comment[-300:]
 
 
 @case("WF17", "workflow", "五类节点的 Properties 键序与样本 v30 逐字一致（更正 #1 / #2）", "P0",

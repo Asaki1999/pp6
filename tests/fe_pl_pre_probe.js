@@ -339,6 +339,12 @@ function staticChecks() {
     aiSheetAcceptsDoc: /id="aiSheetInput"[^>]*accept="[^"]*\.pdf[^"]*\.docx/.test(html),
     aiDocEntry: /handleAiSource/.test(src) && /\/api\/extract/.test(src)
       && /pickFile\("source"\)/.test(src),
+    // 流程模式：固定 开始→审核→通过；不再有流程图设计器 / AI 生成 / XML 下载
+    wfFixedFlow: /id="wfFixedFlow"/.test(html)
+      && />开始<\/span>/.test(html) && />审核<\/span>/.test(html) && />通过<\/span>/.test(html),
+    wfNoFlowDesigner: !/id="wfAi"|id="wfList"|id="wfBody"|id="btnWfDownload"/.test(html),
+    wfNoFlowApi: !/\/api\/workflow|\/api\/ai\/workflow/.test(src),
+    wfObjectPackage: /id="btnWfObjects"/.test(html),
     hasWorkflowBar: /id="plPreWorkflowBar"/.test(html),
     hasPatchBar: /id="plPrePatchBar"/.test(html),
     importValues: (html.match(/name="plPreImport" value="([a-z]+)"/g) || []).map((s) => s.split('"')[3]),

@@ -465,8 +465,11 @@ function renderAll() {
   renderLists();
   renderIssues();
   state.imported = new Set();
+  // 流程模块不再作为可导出模块出现：流程对象走「流程模式」的对象包，
+  // 固定三步，不生成流程 XML。
   state.picked = new Set(
-    (d.modules || []).filter((m) => m.count > 0).map((m) => m.code)
+    (d.modules || []).filter((m) => m.count > 0 && m.code !== "workflow")
+      .map((m) => m.code)
   );
   renderModules();
 
@@ -474,20 +477,12 @@ function renderAll() {
   // P0-1：第 7 tab 两态同渲染；predict 用 state.data，actual 用 state.buildReport。
   // 放在 updateBar() 之后，不动 updateBar / #btnPack 文案与行为。
   renderPackage(state.data, state.packageMode);
-
-  // 有流程才显示「下载流程 XML」：流程是裸 XML，不走同步包，单独一个入口。
-  // 只切 hidden，不碰 updateBar 里对 #btnPack 的禁用逻辑（两者互不影响）。
-  const wfBtn = $("#btnWorkflow");
-  if (wfBtn) {
-    const wfMod = (d.modules || []).find((m) => m.code === "workflow");
-    wfBtn.hidden = !(wfMod && wfMod.count > 0);
-  }
 }
 
 /* 底部按钮与提示随勾选变化 */
 function updateBar() {
   const d = state.data;
-  const mods = (d.modules || []).filter((m) => m.count > 0);
+  const mods = (d.modules || []).filter((m) => m.count > 0 && m.code !== "workflow");
   const picked = mods.filter((m) => state.picked.has(m.code));
   const btn = $("#btnPack") || $("#btnBuild");
   if (btn) btn.disabled = d.errorCount > 0 || !picked.length;
@@ -807,39 +802,9 @@ async function downloadConfirmedExcel() {
   }
 }
 
-/* 下载流程定义：流程是裸 XML，不进同步包，走独立的 /api/workflow 接口。
-   单条流程直接回 .xml，多条回一个 zip（内含 {流程名}.xml）。 */
-async function downloadWorkflow(btn) {
-  if (!state.file) return;
-  const label = btn ? btn.textContent : "";
-  if (btn) { btn.disabled = true; btn.textContent = "正在生成…"; }
-  try {
-    const buf = await state.file.arrayBuffer();
-    const res = await fetch("/api/workflow", {
-      method: "POST",
-      body: buf,
-      headers: { "Content-Type": "application/octet-stream" },
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || "生成失败");
-    }
-    const blob = await res.blob();
-    const name = decodeURIComponent(res.headers.get("X-Filename") || "流程.xml");
-    if (await saveBlob(blob, name)) {
-      toast(`已下载 ${name}：到 管理 › 流程设计 › 导入 上传`, 6000);
-    }
-  } catch (err) {
-    toast("下载流程 XML 失败：" + err.message, 6000);
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = label; }
-  }
-}
-
 /* 导出流程对象包：流程模式的对象 + 它的表单/列表/数据集。
    和同步包复用同一个 /api/build，用 X-Object-Scope 分开——同步包只出普通对象，
-   流程对象在这里出。导入是两步：对象包 → 管理 › 业务对象 › 导入；
-   流程 XML → 管理 › 流程设计 › 导入。 */
+   流程对象在这里出。固定三步，不再生成流程 XML；导入只走对象包。 */
 const WF_OBJECT_MODULES = ["bo", "form", "list", "dataset", "filter"];
 async function downloadWorkflowObjects(btn) {
   if (!state.file) return;
@@ -868,7 +833,7 @@ async function downloadWorkflowObjects(btn) {
     const blob = await res.blob();
     const name = decodeURIComponent(res.headers.get("X-Filename") || "流程对象.zip");
     if (await saveBlob(blob, name)) {
-      toast(`已下载 ${name}：到 管理 › 业务对象 › 导入 上传；流程 XML 再点「下载流程 XML」`, 7000);
+      toast(`已下载 ${name}：到 管理 › 业务对象 › 导入 上传；固定流程 开始→审核→通过，不生成流程 XML`, 7000);
     }
   } catch (err) {
     toast("导出流程对象包失败：" + err.message, 6000);
@@ -879,7 +844,8 @@ async function downloadWorkflowObjects(btn) {
 
 /* 按模块导入 / 导出：系统里每个模块单独导入，所以左边一个开关、右边两个动作 */function renderModules() {
   const box = $("#modList");
-  const mods = state.data.modules || [];
+  // 流程不再作为独立导出模块：对象包在「流程模式」里出，不生成流程 XML
+  const mods = (state.data.modules || []).filter((m) => m.code !== "workflow");
   if (!mods.length) { box.innerHTML = ""; return; }
   mods.forEach((m) => { MOD_LABEL[m.code] = m.label; });
   box.innerHTML = mods.map((m) => {
@@ -2392,10 +2358,12 @@ function renderPackageTable(vm) {
     // D1 硬禁令：predict 态只给占位行，绝不出现伪造的 001-xxx.xml / 假 size。
     // 逐模块一行（§5.1：说明列 = label · 预计 count 项 · items.slice(0,3)），
     // 与 actual 态共用同一段模板。
-    const placeholders = (vm.modules || []).length
-      ? vm.modules
-      : (vm.dirs || []).map((g) => ({ folder: g.kind, label: g.label,
-                                      count: g.count, items: [], zipped: true }));
+    const visibleModules = (vm.modules || []).filter((m) => m.code !== "workflow");
+    const placeholders = visibleModules.length
+      ? visibleModules
+      : (vm.dirs || []).filter((g) => g.kind !== "workflow")
+        .map((g) => ({ folder: g.kind, label: g.label,
+                       count: g.count, items: [], zipped: true }));
     entryRows = placeholders.map((m) => `
       <tr><td><code>${esc(m.folder)}/</code></td>
           <td class="sub">（出包后显示实际条目名）</td>
@@ -2702,8 +2670,6 @@ function bind() {
   $("#btnDemo").onclick = loadDemo;
   const packBtn = $("#btnPack") || $("#btnBuild");
   if (packBtn) packBtn.onclick = () => buildZip();
-  const wfBtn = $("#btnWorkflow");
-  if (wfBtn) wfBtn.onclick = () => downloadWorkflow(wfBtn);
 
   // ---- 首屏对话已由 bindAiChat 绑定，这里不再重复绑「生成预览」
 
@@ -2746,25 +2712,23 @@ function bind() {
 
 /* ============================================================ 流程工作区
  *
- * 流程是**裸 XML**，不进同步包（导入走 管理 › 流程设计 › 导入），
- * 所以它单独占一个左侧工作区，而不是混在「要导出哪些模块」里。
- *
- * 这个工作区自带 Excel 导入：流程模式的对象、它的表单/列表、流程定义
- * 都从同一份填写表来，没必要让用户先去「普通模式」传一遍再切回来。
- *
- * 数据来自同一次 /api/parse（webui._wf_payload），这里只负责渲染：
- * 左列流程清单、右列节点表 + 流转表。下载复用 downloadWorkflow()。
+ * 流程模式只做一件事：把「流程驱动=是」的对象连同表单/列表/数据集打成
+ * **流程对象包**。流程固定为 开始 → 审核 → 通过，不再生成流程图 / 流程 XML，
+ * 也没有节点、分支、处理人的编辑入口。
  */
 
-/* 导入区状态：文件名 + 这次会出多少东西。
-   数字从 state.data 算，和 parse 接口同源，不另开统计口径。 */
+function flowObjects() {
+  return ((state.data && state.data.objects) || []).filter((o) => o.flowDriven);
+}
+
+/* 导入区状态：文件名 + 这次会出多少对象/表单/列表。 */
 function renderWfImport() {
   const tag = $("#wfFileTag");
   const stat = $("#wfImportStat");
   if (!tag || !stat) return;             // 面板不在（旧 HTML）
+  tag.hidden = true;
+  stat.className = "wf-import-stat";
   if (!state.file) {
-    tag.hidden = true;
-    stat.className = "wf-import-stat";
     stat.textContent = "还没有导入：点右上「选择 Excel」，或把 .xlsx 直接拖到这里";
     return;
   }
@@ -2773,23 +2737,23 @@ function renderWfImport() {
   tag.title = state.file.name;
 
   const d = state.data || {};
-  const objs = (d.objects || []).filter((o) => o.flowDriven);
+  const objs = flowObjects();
   if (!objs.length) {
-    stat.className = "wf-import-stat";
     stat.innerHTML = `已解析 <b>${esc(state.file.name)}</b>，但里面没有流程驱动对象：` +
-      `到 <code>1_业务对象</code> 把「流程驱动」改成「是」就会自动补一条默认流程。`;
+      `到 <code>1_业务对象</code> 把「流程驱动」改成「是」即可。`;
     return;
   }
   const codes = new Set(objs.map((o) => o.code));
   const forms = (d.forms || []).filter((f) => codes.has(f.boCode));
-  const wfs = (d.workflows || []).length;
+  const lists = (d.lists || []).filter((x) => codes.has(x.boCode));
   stat.className = "wf-import-stat ok";
-  stat.innerHTML = `本次会出：<b>${objs.length}</b> 个流程对象 · <b>${forms.length}</b> 张表单 · ` +
-    `<b>${wfs}</b> 条流程定义`;
+  stat.innerHTML = `本次会出：<b>${objs.length}</b> 个流程对象 · ` +
+    `<b>${forms.length}</b> 张表单 · <b>${lists.length}</b> 个列表`;
 }
 
-/* 流程页上传：解析完留在本页（quiet），直接能出对象包和 XML */
-function bindWfImport() {  const pick = $("#btnWfPick");
+/* 流程页上传：解析完留在本页（quiet），直接能出对象包。 */
+function bindWfImport() {
+  const pick = $("#btnWfPick");
   const input = $("#wfFileInput");
   const box = $("#wfImport");
   if (!pick || !input) return;
@@ -2810,205 +2774,11 @@ function bindWfImport() {  const pick = $("#btnWfPick");
   };
 }
 
-/* 一句话生成/修改流程：把当前 xlsx + 描述发给 /api/ai/workflow，
-   后端只重写 9/10/11 三张表并回一份新 Excel；这里拿它替换当前文件，
-   后面的预览和导出就都基于新流程。 */
-async function aiMakeWorkflow() {
-  if (!state.file) { toast("先在上面导入 Excel：AI 要知道流程挂在哪个对象上"); return; }
-  const box = $("#wfAiText");
-  const text = (box && box.value || "").trim();
-  if (!text) { toast("先说清楚流程要怎么走，例如：部门经理 → 财务 → 总经理"); if (box) box.focus(); return; }
-  const btn = $("#wfAiSend");
-  const label = btn ? btn.textContent : "";
-  if (btn) { btn.disabled = true; btn.textContent = "生成中…"; }
-  try {
-    const buf = await state.file.arrayBuffer();
-    const cur = WfView.current();
-    const qs = new URLSearchParams({ instruction: text, focus: cur ? cur.name : "" });
-    const res = await fetch("/api/ai/workflow?" + qs.toString(), {
-      method: "POST",
-      body: buf,
-      headers: { "Content-Type": "application/octet-stream" },
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || "生成失败");
-    }
-    const blob = await res.blob();
-    const name = decodeURIComponent(res.headers.get("X-Filename") || "流程草稿.xlsx");
-    let summary = null;
-    const rawSum = res.headers.get("X-AI-Summary");
-    if (rawSum) {
-      try { summary = JSON.parse(decodeURIComponent(rawSum)); } catch (_) { /* 头缺失就只提示成功 */ }
-    }
-    // 用新草稿替换当前文件：原 xlsx 不动，后面导出的都是这次的结果
-    await handleFile(new File([blob], name, { type: blob.type }), { quiet: true });
-    const notes = (summary && summary.notes) || [];
-    if (notes.length) toast(notes.slice(0, 3).join("；"), 9000);
-    else toast(`已按描述生成流程（${name}），原文件没动`, 7000);
-    if (box) box.value = "";
-  } catch (err) {
-    toast("生成流程失败：" + err.message, 9000);
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = label; }
-  }
-}
-
-/* 流程模式概要里的「关联项目」开关：与对象卡片上那枚同一款、同一套行为
- * （勾了就带决策头重新解析，预览即时生效）。
- * 绑定对象是没勾流程驱动的对象 / 没有对象时不出这个开关，避免点了没反应。 */
-function bindWfProjLink(wf) {
-  const box = $("#wfMeta");
-  if (!box || !wf || !wf.boCode) return;
-  const bo = ((state.data && state.data.objects) || []).find((o) => o.code === wf.boCode);
-  if (!bo) return;
-  const canToggle = !!state.file;
-  const tip = canToggle
-    ? "勾选后自动补「所属项目」链接字段，并把与项目对象同名/近义/相似的字段照项目定义覆盖（差异会汇总成一个对照弹窗）"
-    : "示例数据请先上传 Excel，再勾「关联项目」";
-  const wrap = document.createElement("label");
-  wrap.className = "pl-switch wf-meta-pl";
-  wrap.title = tip;
-  wrap.innerHTML = `<input type="checkbox" data-pl-link="${esc(wf.boCode)}"
-      ${bo.projectLink ? "checked" : ""} ${canToggle ? "" : "disabled"}><span>关联项目</span>`;
-  box.appendChild(wrap);
-  const el = wrap.querySelector("[data-pl-link]");
-  if (el) el.onchange = () => toggleProjLink(el.dataset.plLink, el.checked, el);
-}
-
 const WfView = {
-  // 选中项按**流程名**记，不按下标：重新解析后行序可能变，
-  // 按下标会「选着 A 结果显示 B」。名字没了就回落到第一条。
-  picked: "",
-
-  current() {
-    const list = (state.data && state.data.workflows) || [];
-    if (!list.length) return null;
-    return list.find((w) => w.name === this.picked) || list[0];
-  },
-
   render() {
     renderWfImport();
-    const list = (state.data && state.data.workflows) || [];
-    const empty = $("#wfEmpty");
-    const body = $("#wfBody");
-    const btn = $("#btnWfDownload");
-    // 流程对象包：和 XML 是两步导入，数据到位才允许点，避免导出一份空包
-    const objs = $("#btnWfObjects");
-    if (!empty || !body || !btn) return;      // 面板不在（旧 HTML）
-
-    if (!state.data) {
-      empty.hidden = false;
-      body.hidden = true;
-      btn.disabled = true;
-      if (objs) objs.disabled = true;
-      $("#wfEmptySub").textContent =
-        "点上面的「选择 Excel」（或把文件拖进那个虚线框），流程对象和节点安排会出现在这里。";
-      $("#wfList").innerHTML = '<div class="wf-list-empty">还没有数据</div>';
-      return;
-    }
-    if (!Array.isArray(state.data.workflows)) {
-      empty.hidden = false;
-      body.hidden = true;
-      btn.disabled = true;
-      if (objs) objs.disabled = true;
-      $("#wfEmptySub").textContent =
-        "这次解析没有返回流程数据。后端可能是旧版本，重启应用后再试。";
-      $("#wfList").innerHTML = "";
-      return;
-    }
-    if (!list.length) {
-      empty.hidden = false;
-      body.hidden = true;
-      btn.disabled = true;
-      if (objs) objs.disabled = true;
-      $("#wfEmptySub").textContent =
-        "这份 Excel 里没有流程驱动对象。到「1_业务对象」把「流程驱动」改成「是」，" +
-        "就会自动生成一条 开始 → 部门审批 → 通过，不用填 9_流程 / 10_流程节点。";
-      $("#wfList").innerHTML = '<div class="wf-list-empty">9_流程 为空</div>';
-      return;
-    }
-
-    empty.hidden = true;
-    body.hidden = false;
-    btn.disabled = false;
-    if (objs) objs.disabled = false;
-
-    const wf = this.current();
-    this.picked = wf.name;
-
-    // ---- 左列：流程清单
-    $("#wfList").innerHTML = list.map((w) => {
-      const on = w.name === wf.name ? " active" : "";
-      return `<button class="wf-item${on}" data-wf="${esc(w.name)}">
-        <div class="wf-item-name">${esc(w.name)}${w.auto
-          ? '<span class="wf-auto">默认</span>' : ""}</div>
-        <div class="wf-item-sub">${esc(w.boName || w.boCode || "未绑定对象")}${
-          w.boName && w.boCode ? `（${esc(w.boCode)}）` : ""}</div>
-        <div class="wf-item-meta">${w.nodeCount} 节点 · ${w.edgeCount} 流转</div>
-      </button>`;
-    }).join("");
-    $$("#wfList .wf-item").forEach((el) => {
-      el.onclick = () => { this.picked = el.dataset.wf; this.render(); };
-    });
-
-    // ---- 右列：概要
-    $("#wfMeta").innerHTML = [
-      ["流程名称", wf.name],
-      ["绑定对象", `${wf.boName || ""}${wf.boCode ? `（${wf.boCode}）` : ""}` || "—"],
-      ["来源", wf.auto ? "自动生成（可在系统里改）" : "9_流程 里配置"],
-      ["启用", wf.active ? "是" : "否"],
-      ["规模", `${wf.nodeCount} 个节点 / ${wf.edgeCount} 条流转`],
-    ].map(([k, v]) => `<div class="wf-meta-item"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join("");
-    // 流程模式里也放同一款「关联项目」开关：这块的「绑定对象」就是流程驱动对象，
-    // 人正在看这条流程时最想勾的就是它，绕回结果页反而更远。
-    // 只加一个 pill，不改 .wf-meta 的 flex 排布（flex-wrap 会自动换行）。
-    bindWfProjLink(wf);
-
-    // ---- 节点：主行「序号 + 名称 + 类型」，第二行放元信息。
-    // 之前是 8 列表格，宽容器里会把卡片顶宽、把右上按钮挤出视口；
-    // 行列表天然自适应宽度，节点多了也不会变形。
-    const meta = (pairs) => pairs
-      .filter(([, v]) => v !== null && v !== undefined && v !== "")
-      .map(([k, v]) => `<span><i>${esc(k)}</i>${v}</span>`).join("");
-
-    $("#wfNodeCount").textContent = `${wf.nodeCount} 个`;
-    $("#wfNodes").innerHTML = wf.nodes.map((n) => `
-      <div class="wf-row">
-        <div class="wf-idx">${n.id}</div>
-        <div class="wf-row-body">
-          <div class="wf-row-name">
-            ${esc(n.name)}
-            <span class="wf-tag wf-tag-${esc(n.kind)}">${esc(n.kind)}</span>
-          </div>
-          <div class="wf-row-meta">${meta([
-            ["处理人", n.handler ? esc(n.handler)
-                     : (n.kind === "审批" ? '<span class="muted">待指定</span>' : "—")],
-            ["表单", n.formKey ? `<code>${esc(n.formKey)}</code>` : "自动"],
-            ["业务状态", esc(n.state || "—")],
-            ["办理时限", n.days ? `${n.days} 天` : ""],
-            ["可退回", n.kind === "审批" ? (n.goBack ? esc(n.goBack) : "自动") : ""],
-          ])}</div>
-        </div>
-      </div>`).join("");
-
-    // ---- 流转：同一套行列表，起点 → 终点当主行
-    $("#wfEdgeCount").textContent = `${wf.edgeCount} 条`;
-    $("#wfEdges").innerHTML = wf.edges.length
-      ? wf.edges.map((e) => `
-        <div class="wf-row">
-          <div class="wf-idx">${e.order || 0}</div>
-          <div class="wf-row-body">
-            <div class="wf-row-name">
-              ${esc(e.src)}<span class="wf-arrow">→</span>${esc(e.dst)}
-            </div>
-            <div class="wf-row-meta">${meta([
-              ["流转", esc(e.name || "—")],
-              ["条件", esc(e.condition || "无条件")],
-            ])}</div>
-          </div>
-        </div>`).join("")
-      : '<div class="wf-rows-empty">没有流转</div>';
+    const btn = $("#btnWfObjects");
+    if (btn) btn.disabled = !state.file || !flowObjects().length;
   },
 };
 
@@ -3018,11 +2788,5 @@ window.Workflow = {
   refresh() { WfView.render(); },
 };
 
-$("#btnWfDownload") && ($("#btnWfDownload").onclick = () => downloadWorkflow($("#btnWfDownload")));
 $("#btnWfObjects") && ($("#btnWfObjects").onclick = () => downloadWorkflowObjects($("#btnWfObjects")));
 bindWfImport();
-$("#wfAiSend") && ($("#wfAiSend").onclick = aiMakeWorkflow);
-$("#wfAiText") && ($("#wfAiText").onkeydown = (e) => {
-  // Enter 发送、Shift+Enter 换行，和普通模式的对话区一致
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); aiMakeWorkflow(); }
-});

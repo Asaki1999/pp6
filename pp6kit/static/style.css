@@ -2482,3 +2482,36 @@ body.pl-modal-open { overflow: hidden; }
   margin: 4px 0 6px; font-size: 12px; color: var(--text-2);
 }
 .patch-obj-link .muted { font-size: 11px; }
+
+/* ---- 流程模式：固定三步（不再有流程图/流程 XML/节点编辑） ---- */
+.wf-fixed {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.wf-fixed-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.wf-fixed-head strong { font-size: 14px; }
+.wf-fixed-head .muted { font-size: 12px; }
+.wf-steps {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 8px;
+  flex-wrap: wrap;
+}
+.wf-step {
+  padding: 6px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-weight: 600;
+  font-size: 13px;
+}
+.wf-arrow { color: var(--muted); font-size: 13px; }

@@ -31,7 +31,7 @@
           </svg>
           <span class="mode-label">普通模式</span><kbd>1</kbd>
         </button>
-        <button class="mode" data-mode="workflow" title="流程模式 (2)：流程对象包 + 流程 XML，两步导入">
+        <button class="mode" data-mode="workflow" title="流程模式 (2)：固定开始-审核-通过 + 流程对象包，不生成流程图/XML">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="5" cy="6" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="12" cy="18" r="2.2"/>
             <path d="M7.2 6h9.6"/><path d="M6.2 8 10.8 16"/><path d="M17.8 8 13.2 16"/>
@@ -370,7 +370,6 @@
       <div class="pack-bar">
         <span class="sub" id="packHint">已选全部模块 → 出整包（bo/form/data_template 同包，注释 CONFIG_SYNC_NOTE:）· 导入：系统管理 › 发布管理 › 导入同步包 · 流程对象不在此包，见左侧「流程模式」</span>
         <div class="ai-btns">
-          <button class="btn ghost" id="btnWorkflow" hidden>下载流程 XML</button>
           <button class="btn primary" id="btnPack">下载导入包 zip</button>
         </div>
       </div>
@@ -638,15 +637,15 @@
       <span class="sub">导入前先选：关联=这份 Excel 里每个对象都关联项目；不关联=一个都不关联。导入后不再弹选择框。</span>
     </div>
 
-    <!-- 流程这一侧自成闭环：对象包和 XML 都在这里出，
-         不该逼用户先跑去「普通模式」传一遍 Excel -->
+    <!-- 流程这一侧只出「流程对象包」：固定开始→审核→通过，
+         不再生成流程图 / 流程 XML，也不在这里配节点和分支。 -->
     <section class="card wf-import" id="wfImport">
       <div class="card-head">
         <div>
           <h3>导入 Excel</h3>
           <div class="sub">
-            同一份填写表：<b>「流程驱动=是」的对象</b>连同它的表单/列表在这里出包，
-            <code>9_流程</code> 出流程定义；普通对象走左侧「普通模式」。
+            同一份填写表：把 <b>「流程驱动=是」的对象</b>连同它的表单/列表打成对象包；
+            固定流程是 开始 → 审核 → 通过，不生成流程图 / 流程 XML。普通对象走左侧「普通模式」。
           </div>
         </div>
         <div class="wf-actions">
@@ -658,61 +657,35 @@
       <div class="wf-import-stat" id="wfImportStat">还没有导入：点右上「选择 Excel」，或把 .xlsx 直接拖到这里</div>
     </section>
 
-    <!-- 一句话生成/修改流程：节点顺序、处理人、分支条件都能说，比在 Excel 里填三张表快 -->
-    <section class="card wf-ai" id="wfAi">
-      <div class="card-head">
-        <div>
-          <h3>用一句话生成或修改流程</h3>
-          <div class="sub">
-            改已有流程时先在下面选中它，AI 按那条改；没说到的流程不动。生成的是<b>新草稿</b>，不会改你原来的文件。
-          </div>
-        </div>
-      </div>
-      <div class="wf-ai-body">
-        <textarea id="wfAiText" rows="2"
-          placeholder="例：采购申请要三级审批——先部门经理，金额≥10万再加财务和总经理，最后归档；金额小于5000只要部门经理"></textarea>
-        <div class="wf-ai-foot">
-          <span class="sub" id="wfAiHint">Enter 生成，Shift+Enter 换行 · 处理人写角色名，具体角色 ID 到系统里对</span>
-          <button class="btn primary" id="wfAiSend">生成流程</button>
-        </div>
-      </div>
-    </section>
-
-    <aside class="wf-side">
-      <div class="card wf-list-card">
-        <div class="card-head"><div><h3>流程清单</h3><div class="sub">点一个查看；不带标记的是 9_流程 里配的</div></div></div>
-        <div class="wf-list" id="wfList"></div>
-      </div>
-    </aside>
-
     <section class="wf-main">
       <div class="card wf-head-card">
         <div class="card-head">
           <div>
-            <h3>流程详情</h3>
+            <h3>流程对象包</h3>
             <div class="sub">
-              流程对象走「导出流程对象包」→ <code>业务对象 › 导入</code>；
-              流程定义走「下载流程 XML」→ <code>流程设计 › 导入</code>（裸 XML，不进同步包）。
+              固定流程：开始 → 审核 → 通过。这里只导出流程对象及其表单 / 列表 / 数据集，
+              不生成流程图或流程 XML。
             </div>
           </div>
           <div class="wf-actions">
-            <button class="btn ghost" id="btnWfObjects" disabled
-                    title="把流程模式的对象及其表单/列表打成一个同步包">导出流程对象包</button>
-            <button class="btn primary" id="btnWfDownload" disabled>下载流程 XML</button>
+            <button class="btn primary" id="btnWfObjects" disabled
+                    title="导出流程对象包（不含流程 XML）">导出流程对象包</button>
           </div>
         </div>
-        <div class="wf-empty" id="wfEmpty">
-          <div class="wf-empty-title">还没有可预览的流程</div>
-          <div class="wf-empty-sub" id="wfEmptySub">
-            点上面的「选择 Excel」（或把文件拖进那个虚线框），流程对象和节点安排会出现在这里。
+
+        <div class="wf-fixed" id="wfFixedFlow">
+          <div class="wf-fixed-head">
+            <strong>固定流程</strong>
+            <span class="muted">所有流程驱动对象统一走这三步</span>
           </div>
-        </div>
-        <div class="wf-body" id="wfBody" hidden>
-          <div class="wf-meta" id="wfMeta"></div>
-          <div class="wf-tbl-title">节点 <span class="muted" id="wfNodeCount"></span></div>
-          <div class="wf-rows" id="wfNodes"></div>
-          <div class="wf-tbl-title">流转 <span class="muted" id="wfEdgeCount"></span></div>
-          <div class="wf-rows" id="wfEdges"></div>
+          <div class="wf-steps">
+            <span class="wf-step">开始</span>
+            <span class="wf-arrow">→</span>
+            <span class="wf-step">审核</span>
+            <span class="wf-arrow">→</span>
+            <span class="wf-step">通过</span>
+          </div>
+          <div class="sub">节点处理人、条件分支、退回规则不在本工具配置；导入后在系统里按需设置。</div>
         </div>
       </div>
     </section>
