@@ -1788,7 +1788,7 @@ function bindAiSheetPick(d) {
 async function applyAiBo(d, { thenBuild = false } = {}) {
   const btns = ["#aiApply", "#btnExportXlsx2", "#btnToPack"]
     .map((sel) => $(sel)).filter(Boolean);
-  const label0 = thenBuild ? "生成导入包…" : "生成 Excel…";
+  const label0 = thenBuild ? "正在核对字段…" : "生成 Excel…";
   btns.forEach((b) => { b.disabled = true; });
   if (thenBuild) $("#btnToPack").textContent = label0;
   try {
@@ -1811,7 +1811,7 @@ async function applyAiBo(d, { thenBuild = false } = {}) {
     const apply = $("#aiApply");
     if (apply) apply.textContent = "套用并下载 Excel";
     const toPack = $("#btnToPack");
-    if (toPack) toPack.textContent = "下一步：生成导入包 →";
+    if (toPack) toPack.textContent = "下一步：核对字段 →";
   }
 }
 

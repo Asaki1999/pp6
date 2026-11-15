@@ -302,6 +302,10 @@ function staticChecks() {
     patchAllLabel: /name="plPrePatch" value="on">\s*关联<\/label>/.test(html),
     patchOffLabel: /name="plPrePatch" value="off">\s*不关联<\/label>/.test(html),
     noAllPrefix: !/> 全部[^<]*<\/label>/.test(html),
+    // AI 预览的按钮只做核对，不生成 zip；生成包在结果页，且在核验窗口之后
+    btnToPackLabel: /id="btnToPack"[^>]*>下一步：核对字段/.test(html),
+    btnToPackNoGenerate: !/下一步：生成导入包/.test(html),
+    btnPackLabel: /id="btnPack"[^>]*>下载导入包 zip/.test(html),
     hasWorkflowBar: /id="plPreWorkflowBar"/.test(html),
     hasPatchBar: /id="plPrePatchBar"/.test(html),
     importValues: (html.match(/name="plPreImport" value="([a-z]+)"/g) || []).map((s) => s.split('"')[3]),

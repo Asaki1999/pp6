@@ -2427,6 +2427,12 @@ def _():
         "存量包页的选项没有和普通/流程统一成「不关联」"
     assert got["0_static"]["noAllPrefix"] is True, \
         "选项标签又加了「全部」：控件本身就是对整份 Excel 的批量设置，不需要重复"
+    assert got["0_static"]["btnToPackLabel"] is True, \
+        "AI 预览的按钮还叫「生成导入包」：它只做核对，用户会以为点了才开始核验"
+    assert got["0_static"]["btnToPackNoGenerate"] is True, \
+        "AI 预览仍出现「下一步：生成导入包」"
+    assert got["0_static"]["btnPackLabel"] is True, \
+        "结果页的「下载导入包 zip」被改坏了（真正的生成入口）"
     d = got["5b_defer"]
     assert d["deferred"] is True, d
     assert d["shown"] is True, d
