@@ -59,7 +59,7 @@ const PL_PRE_KEY = "pp6.plPre";
 const PL_PRE_PATCH_KEY = "pp6.plPrePatch";
 const PL_PRE_MODES = ["off", "on"];
 const PL_PRE_PATCH_MODES = ["off", "on", "keep"];
-const PL_PRE_LABEL = { off: "全部不关联项目", on: "全部关联项目" };
+const PL_PRE_LABEL = { off: "不关联", on: "关联" };
 const PL_PRE_PATCH_LABEL = { off: "不关联", on: "关联", keep: "按包内" };
 
 /* 读本地偏好：值不在白名单里（旧版本留下的、手改过的）就当没设过，用默认档。

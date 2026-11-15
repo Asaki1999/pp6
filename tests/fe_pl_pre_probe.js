@@ -299,8 +299,9 @@ function staticChecks() {
       && html.indexOf('id="plPrePatchBar"') < html.indexOf('id="patchPickZip"'),
     sameTitle: (html.match(/业务对象关联项目/g) || []).length >= 3,
     sameHint: (html.match(/先选：/g) || []).length >= 3,
-    patchAllLabel: /name="plPrePatch" value="on">\s*全部关联项目<\/label>/.test(html),
-    patchOffLabel: /name="plPrePatch" value="off">\s*全部不关联项目<\/label>/.test(html),
+    patchAllLabel: /name="plPrePatch" value="on">\s*关联<\/label>/.test(html),
+    patchOffLabel: /name="plPrePatch" value="off">\s*不关联<\/label>/.test(html),
+    noAllPrefix: !/> 全部[^<]*<\/label>/.test(html),
     hasWorkflowBar: /id="plPreWorkflowBar"/.test(html),
     hasPatchBar: /id="plPrePatchBar"/.test(html),
     importValues: (html.match(/name="plPreImport" value="([a-z]+)"/g) || []).map((s) => s.split('"')[3]),
@@ -311,15 +312,15 @@ function staticChecks() {
     workflowDefaultOff: /name="plPreWorkflow" value="off" checked/.test(html),
     patchDefaultKeep: /name="plPrePatch" value="keep" checked/.test(html),
     step1Numbering: /第 1 步 · 业务对象关联项目/.test(html),
-    // 两个状态都要带「项目」：全部关联项目 / 全部不关联项目
-    saysAllLinked: /全部关联项目/.test(html),
-    saysAllUnlinked: /全部不关联项目/.test(html),
+    // 选项只写状态（关联 / 不关联）；「全部」是多余的，控件本身就是对整份 Excel 批量设置
+    saysLinked: /name="plPreImport" value="on">\s*关联<\/label>/.test(html),
+    saysUnlinked: /name="plPreImport" value="off" checked>\s*不关联<\/label>/.test(html),
     // 第三档「按 Excel」整块删干净：值、文案、说明都不留
     noExcelValue: !/value="excel"/.test(html),
     noExcelLabel: !/按 Excel/.test(html),
     // 说明是大白话：两档各是什么后果 + 导入后不再弹
-    hintExplainsGears: /全部关联项目=这份 Excel 里每个对象都关联项目/.test(html)
-      && /全部不关联项目=一个都不关联/.test(html)
+    hintExplainsGears: /关联=这份 Excel 里每个对象都关联项目/.test(html)
+      && /不关联=一个都不关联/.test(html)
       && /导入后不再弹选择框/.test(html),
     // 旧的第 1 步弹窗必须整块消失（DOM / 按钮 / 样式都不留死代码）
     noSelectModal: !/id="plSelect"/.test(html) && !/plSelectGo/.test(html),

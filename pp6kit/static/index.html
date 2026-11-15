@@ -209,9 +209,9 @@
          放在 AI 卡**上方**：这是导入/生成前就要定的开关，不能藏在长卡片下面。 -->
     <div class="pl-pre" id="plPreImportBar">
       <b>第 1 步 · 业务对象关联项目</b>
-      <label><input type="radio" name="plPreImport" value="off" checked> 全部不关联项目</label>
-      <label><input type="radio" name="plPreImport" value="on"> 全部关联项目</label>
-      <span class="sub">导入前先选：全部关联项目=这份 Excel 里每个对象都关联项目；全部不关联项目=一个都不关联。导入后不再弹选择框。</span>
+      <label><input type="radio" name="plPreImport" value="off" checked> 不关联</label>
+      <label><input type="radio" name="plPreImport" value="on"> 关联</label>
+      <span class="sub">导入前先选：关联=这份 Excel 里每个对象都关联项目；不关联=一个都不关联。导入后不再弹选择框。</span>
     </div>
 
     <section class="ai-box ai-chat-launch" id="aiChatLaunch">
@@ -409,10 +409,10 @@
     <!-- 对象级选择同样放在**导入前**：按包内 = 保留包里的现状，不强制点分析 -->
     <div class="pl-pre" id="plPrePatchBar">
       <b>存量包 · 业务对象关联项目</b>
-      <label><input type="radio" name="plPrePatch" value="off"> 全部不关联项目</label>
-      <label><input type="radio" name="plPrePatch" value="on"> 全部关联项目</label>
+      <label><input type="radio" name="plPrePatch" value="off"> 不关联</label>
+      <label><input type="radio" name="plPrePatch" value="on"> 关联</label>
       <label><input type="radio" name="plPrePatch" value="keep" checked> 按包内</label>
-      <span class="sub">读包前先选：按包内=保留包里现状；全部关联项目=每个对象都关联；全部不关联项目=一个都不关联。</span>
+      <span class="sub">读包前先选：按包内=保留包里现状；关联=每个对象都关联；不关联=一个都不关联。</span>
     </div>
 
     <section class="card">
@@ -622,9 +622,9 @@
     <!-- 第 1 步：对象级选择放在**导入前**（和普通模式共享同一档状态） -->
     <div class="pl-pre" id="plPreWorkflowBar">
       <b>第 1 步 · 业务对象关联项目</b>
-      <label><input type="radio" name="plPreWorkflow" value="off" checked> 全部不关联项目</label>
-      <label><input type="radio" name="plPreWorkflow" value="on"> 全部关联项目</label>
-      <span class="sub">导入前先选：全部关联项目=这份 Excel 里每个对象都关联项目；全部不关联项目=一个都不关联。导入后不再弹选择框。</span>
+      <label><input type="radio" name="plPreWorkflow" value="off" checked> 不关联</label>
+      <label><input type="radio" name="plPreWorkflow" value="on"> 关联</label>
+      <span class="sub">导入前先选：关联=这份 Excel 里每个对象都关联项目；不关联=一个都不关联。导入后不再弹选择框。</span>
     </div>
 
     <!-- 流程这一侧自成闭环：对象包和 XML 都在这里出，

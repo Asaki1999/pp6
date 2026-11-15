@@ -2422,9 +2422,11 @@ def _():
     assert got["0_static"]["sameTitle"] is True, "三个页面的标题不一致"
     assert got["0_static"]["sameHint"] is True, "三个页面的说明文案不一致"
     assert got["0_static"]["patchAllLabel"] is True, \
-        "存量包页的选项没有和普通/流程统一成「全部关联项目」"
+        "存量包页的选项没有和普通/流程统一成「关联」"
     assert got["0_static"]["patchOffLabel"] is True, \
-        "存量包页的选项没有和普通/流程统一成「全部不关联项目」"
+        "存量包页的选项没有和普通/流程统一成「不关联」"
+    assert got["0_static"]["noAllPrefix"] is True, \
+        "选项标签又加了「全部」：控件本身就是对整份 Excel 的批量设置，不需要重复"
     d = got["5b_defer"]
     assert d["deferred"] is True, d
     assert d["shown"] is True, d
