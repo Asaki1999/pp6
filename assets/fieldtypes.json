@@ -87,8 +87,8 @@
     "table": {
       "label": "表格",
       "datatype": "clob",
-      "verified": false,
-      "note": "推断：子表以 JSON 存在大文本字段"
+      "verified": true,
+      "note": "2026-11-15 实测：project_create 的 planExcel/budgetExcel/riskExcel 三个字段都是 datatype=clob、dataTypeNew=table，子列存在 options.columns 数组里（不建物理列）；表单侧控件是 fieldType=tableField"
     },
     "autoNumber": {
       "label": "自动编号",

@@ -12,6 +12,12 @@ const TYPE_LABEL = {
   dic: "字典",
   autoNumber: "自动编号",
   userGroupCate: "用户组",
+  // 表格（子表）：以前没这一条，预览里直接露出英文 table
+  table: "表格",
+  i18n: "国际化",
+  attachment: "附件列表",
+  formula: "公式",
+  date: "日期",
 };
 
 const KIND_LABEL = {
@@ -37,6 +43,10 @@ const CTRL_LABEL = {
   // clob 字段
   textarea: "多行文本",
   hidden: "隐藏",
+  // 表格字段（子表）控件 / 嵌列表的明细表控件：两者不是一回事，
+  // 以前都没有中文名，预览里会露出 tableField / dataTemplate
+  tableField: "表格（子表）",
+  dataTemplate: "明细表",
 };
 
 /* ---------------------------------- 第 1 步：业务对象关联项目（两档，导入前就定）
@@ -1013,9 +1023,20 @@ function wfRows(fields, collapsed) {
       <td class="sub">${[
         f.index ? "索引" : "",
         f.objectType ? "关联 " + f.objectType : "",
+        // 表格字段（子表）：把前几列点出来，列名写错一眼能看到。
+        // 列的增删改在「2.1_表格列」，这里只读。
+        tableColsText(f),
       ].filter(Boolean).map(esc).join(" / ") || "—"}</td>
     </tr>
   `).join("");
+}
+
+/* 子表列摘要：子表 3 列：物料名称 / 数量 / 单价 … */
+function tableColsText(f) {
+  const cols = Array.isArray(f.columns) ? f.columns : [];
+  if (!cols.length) return "";
+  const names = cols.slice(0, 3).map((c) => c.name).join(" / ");
+  return `子表 ${cols.length} 列：${names}${cols.length > 3 ? " …" : ""}`;
 }
 
 function renderForms() {

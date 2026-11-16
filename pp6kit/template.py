@@ -66,6 +66,19 @@ def sheet_data(proj: Project) -> dict[str, list[list]]:
                 # 控制键：全局字典只有靠它们才能往返不丢（resolved() 会剥掉）
                 f.default_value, _dump_json(f.excel_options()), f.desc,
             ])
+            # 表格字段的子列：一行一列挂到「2.1_表格列」。
+            # 列类型写中文名（和 2_字段 的「数据类型」一致），读回来 resolve_column_type 认。
+            if fieldtypes.resolve(f.type_new) != "table":
+                continue
+            for i, col in enumerate(sorted(f.table_columns, key=lambda c: c.sn or 0), start=1):
+                out[spec.S_TABLE_COL].append([
+                    bo.code, f.code, col.sn or i, col.name,
+                    fieldtypes.COLUMN_LABELS.get(col.input_type, col.input_type),
+                    "\n".join(col.choices), col.dict_ref,
+                    _num(col.width_percent), _ALIGN_TO_LABEL.get(col.align, ""),
+                    "是" if col.required else "否",
+                    _num(col.precision), "是" if col.multiple else "否",
+                ])
 
     for form in proj.forms:
         out[spec.S_FORM].append([
@@ -141,6 +154,20 @@ _WF_KIND_TO_LABEL = {
     "Start": "开始", "Ongoing": "审批", "Branch": "判断",
     "Passed": "通过", "Rejected": "驳回",
 }
+
+# 表格列的对齐：XML 写 left/center/right，模板里给人看左/中/右
+_ALIGN_TO_LABEL = {"left": "左", "center": "中", "right": "右"}
+
+
+def _num(value):
+    """整数写整数（10 而不是 10.0），空值写空串——Excel 里好看，读回也不歧义。"""
+    if value is None or value == "":
+        return ""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return value
+    return int(f) if f == int(f) else f
 
 
 def write_workflows(wb, proj: Project) -> None:
@@ -330,7 +357,7 @@ def build_workbook(proj: Project, data: dict[str, list[list]] | None = None) -> 
 
 def demo_project() -> Project:
     """给模板预置一套最小可用的示例（采购申请），用户可直接改名改字。"""
-    from .model import Bo, BoField, DataSet, Form, FormField, ListDef, Project
+    from .model import Bo, BoField, DataSet, Form, FormField, ListDef, Project, TableColumn
 
     bo = Bo(
         code="demo_purchase",
@@ -361,6 +388,20 @@ def demo_project() -> Project:
             choices=choices,
         ))
 
+    # 表格字段示例（子表）：列定义写在「2.1_表格列」，这里预置 5 列，
+    # 用户照这一组改成自己的明细列即可。缩进/宽度/精度都演示一遍。
+    bo.fields.append(BoField(
+        bo_code=bo.code, code="lineItems", name="采购明细", type_new="table",
+        sn=len(bo.fields) + 1,
+        table_columns=[
+            TableColumn("物料名称", "varchar", width_percent=20, align="left", sn=1),
+            TableColumn("数量", "number", precision=0, width_percent=10, align="right", sn=2),
+            TableColumn("单价", "number", precision=2, width_percent=15, align="right", sn=3),
+            TableColumn("金额", "number", precision=2, width_percent=15, align="right", sn=4),
+            TableColumn("是否急件", "dic", choices=["是", "否"], width_percent=10, sn=5),
+        ],
+    ))
+
     form = Form(key="create_demo_purchase", name="新建采购申请", bo_code=bo.code,
                 layout=2, kind="bundle")
     # 控件类型要和业务对象字段对得上（列在 _CONTROL_BY_TYPE 里）：
@@ -376,6 +417,8 @@ def demo_project() -> Project:
         ("urgency", "紧急程度", "dictionary", False, False, "demo_purchase_urgency", "金额与时间"),
         ("applyDate", "申请日期", "datePicker", False, False, "", "金额与时间"),
         ("applyReason", "申请事由", "textarea", False, True, "", "补充说明"),
+        # 子表控件：字段类型=表格，控件自动出 tableField（这里显式写出来当范例）
+        ("lineItems", "采购明细", "tableField", False, True, "", "采购明细"),
     ]:
         form.fields.append(FormField(
             form_key=form.key, name=name, label=label, field_type=ftype,

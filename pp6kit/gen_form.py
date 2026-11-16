@@ -37,7 +37,19 @@ from .xmlw import DECL_STANDALONE, el, json_attr, wrap
 _FULL_ROW_TYPES = {"editor", "textarea", "tablelayout", "tabs", "card", "attachment",
                    # 明细表（子表）控件横向要铺满，跟原生表单一致：
                    # 项目汇报表里 4 个 dataTemplate 全在独立的 fieldset 里各占一行
-                   "dataTemplate"}
+                   "dataTemplate",
+                   # 表格字段（子表）控件同理，而且它连 grid_layout 都不进
+                   "tableField"}
+
+# 直挂容器的控件类型：一个分区只有一个、且是这两种时，容器 columns 直接引用控件 id，
+# 中间不加 grid_layout。依据：真实表单里 dataTemplate 与 tableField 都是这个形态
+# （项目汇报表的明细表、project_create 的 3 个表格字段），塞进 grid_layout 的 rows
+# 里系统不渲染。
+_DIRECT_TYPES = {"dataTemplate", "tableField"}
+
+
+def _is_direct_row(row: list[FormField]) -> bool:
+    return len(row) == 1 and row[0].field_type in _DIRECT_TYPES
 
 # 控件图标：从项目详情表单 / 立项表单两个真实包里逐个字段统计来的，
 # 缺了会让设计器里的控件图标变成问号。
@@ -225,6 +237,37 @@ def _inherit_cascade(form: Form, bo: Bo | None, notices: list[str]) -> None:
         )
 
 
+def _inherit_table_columns(form: Form, bo: Bo | None, notices: list[str]) -> None:
+    """表格字段 -> 表格控件 的两处对齐。
+
+    1. 控件类型：字段类型是「表格」就一定要出 tableField。用户在 4_表单控件 里
+       手填 text / textarea / dataTemplate（历史习惯）时自动纠正并提示——
+       填 dataTemplate 的话，子表会去找一个同名列表，找不到就是一片空白。
+    2. 列快照：Excel 手写的控件行不带列，从对象字段那里补；
+       预览/流程节点权限都靠这份快照，缺了会生成没有列的空子表。
+    """
+    if bo is None:
+        return
+    by_code = {bf.code: bf for bf in bo.fields}
+    for ff in form.fields:
+        bf = by_code.get(ff.name)
+        if bf is not None and bf.type_new == "table":
+            if not ff.table_columns:
+                ff.table_columns = list(bf.table_columns or [])
+            if ff.field_type != "tableField":
+                notices.append(
+                    f"控件 {ff.name}: 字段类型是「表格」，控件类型 {ff.field_type} "
+                    f"已按系统规范改成 tableField")
+                ff.field_type = "tableField"
+            ff.full_row = True
+        elif ff.field_type == "tableField":
+            # 反过来：控件填了 tableField 但字段不是表格（从别处复制来的行）
+            notices.append(
+                f"控件 {ff.name}: 对象里没有对应字段或字段不是「表格」，"
+                f"tableField 已退回单行文本")
+            ff.field_type = "text"
+
+
 def _is_cascade_control(field: FormField, parents: set[str] | None = None) -> bool:
     """这个控件在不在级联链上（自己是子级，或者自己是别人的父级）。
 
@@ -263,7 +306,94 @@ def _dict_cascade_shape(out: dict, field: FormField) -> None:
     out.setdefault("options", [])
 
 
-def _apply_options(base: dict, field: FormField, parents: set[str] | None = None) -> dict:
+# 表格列（表格字段的子列）的 inputType → 表格控件里那一列的控件类型。
+# 依据真实表单 project_create 详情（planExcel / budgetExcel / riskExcel）：
+#   varchar / clob → type=text    date → type=date
+#   number         → type=number  dic  → type=select
+# user / department 在真实样本里**没有出现在表单列上**（riskExcel 的「风险责任人」
+# 只写在对象定义里），表格单元格目前没有人员选择器；这里降级成 text 保证能渲染，
+# 出包时的提示里会说明可以到设计器改。
+_TABLE_CELL_TYPE = {
+    "varchar": ("text", "text"),
+    "clob": ("text", "text"),
+    "number": ("number", "number"),
+    "date": ("date", "date"),
+    "datetime": ("date", "date"),
+    "dic": ("select", "select"),
+    "user": ("text", "text"),
+    "department": ("text", "text"),
+}
+
+
+def _table_cell(col, index: int, scope: str) -> dict:
+    """把一列落成 tableField 控件 options.columns 里的一项。
+
+    真实样本里「类型 / 显示类型 / inputType」是分开的三层：type 是单元格控件
+    （text/date/select…），displayType 是只读态的呈现方式，inputType 才是对象
+    字段的存储类型（clob/varchar/dic…）。少写 inputType，「编辑列」里就认不出原类型。
+    """
+    typ = col.input_type
+    wtype, display = _TABLE_CELL_TYPE.get(typ, ("text", "text"))
+    cell: dict = {
+        "id": col.col_id(scope, index),
+        "name": "",
+        "label": col.name,
+        "type": wtype,
+        "displayType": display,
+        "inputType": typ,
+        "align": col.align or "left",
+        "fixed": "",
+        "editable": True,
+        "isTree": False,
+        "main": False,
+        "nameEn": col.name_en or "",
+        "required": bool(col.required),
+    }
+    if col.width_percent is not None:
+        w = float(col.width_percent)
+        cell["widthPercent"] = int(w) if w == int(w) else w
+    if typ == "number":
+        cell["precision"] = col.precision if col.precision is not None else 0
+    if typ == "datetime":
+        cell["datefmt"] = "yyyy-MM-dd HH:mm:ss"
+    if typ in ("dic", "user", "department"):
+        cell["multiple"] = bool(col.multiple)
+    if typ == "dic":
+        if col.dict_ref:
+            cell["optionSource"] = "DIC_TYPE"
+            cell["objectType"] = col.dict_ref
+        else:
+            cell["optionSource"] = "BO_ATTR_DIC_TYPE"
+            cell["objectType"] = None
+            if col.choices:
+                cell["selectOptions"] = [
+                    {"value": c, "label": c, "text": c, "disabled": 0,
+                     "dependValues": [], "data": {}} for c in col.choices
+                ]
+        cell["cascadeEnabled"] = False
+        cell["cascadeParentCode"] = ""
+    return cell
+
+
+def _table_configurable(cell: dict) -> dict:
+    """「可配置列」那一份：只留 id/标题/类型 + 四个开关。
+
+    真实样本里它与 columns 一一对应、id 相同，但键不同（title/type/forbidConfig*）。
+    type 写的是 **inputType**（clob/varchar/dic…），不是单元格控件类型。
+    """
+    return {
+        "id": cell["id"],
+        "title": cell["label"],
+        "type": cell["inputType"],
+        "forbidConfigHidden": False,
+        "forbidConfigEditable": False,
+        "forbidConfigRequired": False,
+        "forbidConfigFilter": False,
+    }
+
+
+def _apply_options(base: dict, field: FormField, parents: set[str] | None = None,
+                   bo_code: str = "") -> dict:
     out = copy.deepcopy(base)
     t = field.field_type
 
@@ -330,6 +460,27 @@ def _apply_options(base: dict, field: FormField, parents: set[str] | None = None
         out.setdefault("is_margin", False)
         # 明细表没有占位提示，留骨架里的「请输入」会在子表上方飘一行灰字
         out.pop("placeholder", None)
+    elif t == "tableField":
+        # 表格字段（子表）：两套列定义都从字段的列快照生成，id 用同一批，
+        # 设计器里「编辑列」改的列才认得回哪一列。
+        # scope 用「对象编码/字段编码」——与 model.TableColumn.option 算的完全一样，
+        # 两处不一致的话对象里列 A、表单里列 B，改一次列就多出一列。
+        cols = list(field.table_columns or [])
+        scope = f"{bo_code}/{field.name}" if bo_code else field.name
+        cells = [_table_cell(c, i, scope) for i, c in enumerate(cols, 1)]
+        out["columns"] = cells
+        out["configurableColumns"] = [_table_configurable(c) for c in cells]
+        out.setdefault("dbFieldType", "clob")
+        out.setdefault("operation",
+                       {"addEnabled": True, "deleteEnabled": True, "dragEnabled": True})
+        out.setdefault("allowConfigRowRight", True)
+        out.setdefault("hide_label", True)
+        out.setdefault("default_value_type", "fixed")
+        out.setdefault("multiSummaryEnabled", False)
+        out.setdefault("multiSummaryColumns", [])
+        # 注意这里**不要** pop placeholder：原生表格控件的 fieldOptions 里就有
+        # "placeholder": "请输入"（planExcel 逐键比对），照抄更稳。
+
 
     # 级联下拉：系统只认这两个键。
     # 线上样本（项目表单包含级联关系…zip）里，根节点是 cascadeEnabled=false +
@@ -361,7 +512,7 @@ def node_field_meta(form: Form, field: FormField, snip: "Snippets") -> tuple[str
     parents = _cascade_parent_names(form)
     ftype = _effective_type(field, parents)
     base, fallback = snip.field_options(ftype)
-    return ftype, _apply_options(base, field, parents), fallback
+    return ftype, _apply_options(base, field, parents, form.bo_code), fallback
 
 
 def _is_dic_field(field: FormField) -> bool:
@@ -388,6 +539,10 @@ _RULE_TYPES: dict[str, tuple[str, str, str]] = {
     "selectObject": ("selectObject", "object", "iform-icon-link"),
     "linkdata": ("linkdata", "object", "iform-icon-link"),
     "autoNumber": ("autoNumber", "string", "iform-icon-font"),
+    # 表格字段（子表）作为条件隐藏的对象时，快照里必须是 tableField，
+    # 否则设计器把「隐藏 里程碑计划表」显示成一个普通文本框规则。
+    # field_data_type 给 string：子表本身是 clob 存的 JSON，可用的算子只有为空/不为空。
+    "tableField": ("tableField", "string", "iform-icon-font"),
 }
 
 
@@ -576,6 +731,7 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
     # 下面 _HIDDEN_FIELDS 会补 hidden 控件（不改对象字段本身）。
     form.fields = [f for f in form.fields if f.name not in _PROCESS_CODES]
     _inherit_cascade(form, bo, notices)
+    _inherit_table_columns(form, bo, notices)
     # 库里有同 key 的模板 → 沿用它的 id，导入才是「更新」而不是又建一个同名表单
     form_id = form.exist_key or new_id()
 
@@ -661,10 +817,8 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
     # 而 grid_layout 里放 dataTemplate 系统不渲染（见下面 direct 分支注释）。
     _split: list[tuple[str, list[list[FormField]]]] = []
     for _title, _rows in groups:
-        _plain = [r for r in _rows
-                  if not (len(r) == 1 and r[0].field_type == "dataTemplate")]
-        _dms = [r for r in _rows
-                if len(r) == 1 and r[0].field_type == "dataTemplate"]
+        _plain = [r for r in _rows if not _is_direct_row(r)]
+        _dms = [r for r in _rows if _is_direct_row(r)]
         if _plain:
             _split.append((_title, _plain))
         for _r in _dms:
@@ -702,12 +856,12 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
     parents = _cascade_parent_names(form)
 
     for gi, (title, rows) in enumerate(groups, start=1):
-        # 明细表（dataTemplate）单独成容器：原生表单里它**不经过** grid_layout，
-        # 直接挂在容器的 columns 上（项目汇报表里 4 个明细表、新建模板测试用例
-        # 的 1 个，容器 columns 引用的就是控件 id 本身）。塞进 grid_layout 的
-        # rows 里系统不认，子表整块不渲染——这跟普通控件「两条链路都要写」正相反。
-        direct = (len(rows) == 1 and len(rows[0]) == 1
-                  and rows[0][0].field_type == "dataTemplate")
+        # 明细表（dataTemplate）/ 表格字段（tableField）单独成容器：原生表单里它们
+        # **不经过** grid_layout，直接挂在容器的 columns 上（项目汇报表里 4 个明细表、
+        # project_create 详情里 3 个表格字段，容器 columns 引用的就是控件 id 本身）。
+        # 塞进 grid_layout 的 rows 里系统不认，子表整块不渲染——
+        # 这跟普通控件「两条链路都要写」正相反。
+        direct = len(rows) == 1 and _is_direct_row(rows[0])
 
         container_id, grid_id = new_id(), new_id()
         # 直挂模式下控件 id 要先定：容器的 columns 要引用它
@@ -744,13 +898,18 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
         sn += 1
 
         if direct:
-            # 明细表：容器下只有一个控件，没有布局层
+            # 明细表 / 表格字段：容器下只有一个控件，没有布局层
             f = rows[0][0]
-            opts, fallback = snip.field_options("dataTemplate")
+            dft = _effective_type(f, parents)
+            opts, fallback = snip.field_options(dft)
             if fallback:
                 notices.append(
-                    f"控件 {f.name}: 样例中没有 dataTemplate 类型骨架，已用 text 兜底，导入后请核对"
+                    f"控件 {f.name}: 样例中没有 {dft} 类型骨架，已用 text 兜底，导入后请核对"
                 )
+            if dft == "tableField" and not (f.table_columns or []):
+                notices.append(
+                    f"控件 {f.name}: 表格字段一列都没有，导入后子表是空白——"
+                    f"请到「2.1_表格列」补列定义")
             body.append(el("formField", {
                 "id": dm_cid,
                 "formId": form_id,
@@ -758,8 +917,8 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
                 "name": f.name,
                 "label": f.label,
                 "desc": f.desc or "",
-                "fieldType": "dataTemplate",
-                "fieldOptions": json_attr(_apply_options(opts, f, parents)),
+                "fieldType": dft,
+                "fieldOptions": json_attr(_apply_options(opts, f, parents, bo_code)),
                 "sn": 1,
             }, indent=2))
             continue
@@ -793,7 +952,7 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
                     notices.append(
                         f"控件 {f.name}: 样例中没有 {ftype} 类型骨架，已用 text 兜底，导入后请核对"
                     )
-                fo = _apply_options(opts, f, parents)
+                fo = _apply_options(opts, f, parents, bo_code)
                 bf = bo_fields.get(f.name)
                 cell_id_el = new_id()
                 cells.append({

@@ -1020,6 +1020,53 @@ data_template/004-zl.xml
 
 导入系统后字段直接就有候选值，**不用再去后台配字典**。
 
+### 表格字段（数据类型=表格 / 子表）
+
+「2_字段」里数据类型选「表格」，再在**「2.1_表格列」**逐行定义这张子表有哪些列：
+
+| 对象编码 | 字段编码 | 序号 | 列名 | 列类型 | 选项值 | 关联字典 | 宽度% | 对齐 | 必填 | 精度 | 多选 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 项目立项 | planExcel | 1 | 阶段 | 字符串（varchar） | | | 10 | 中 | 否 | | |
+| 项目立项 | planExcel | 2 | 计划开始时间 | 日期（date） | | | 10 | 中 | 否 | | |
+| 项目立项 | planExcel | 3 | 金额 | 数字（number） | | | 15 | 右 | 否 | 2 | |
+| 项目立项 | planExcel | 4 | 是否里程碑 | 选项（dic） | 是 / 否（换行） | | 10 | 中 | 否 | | 否 |
+
+「字段编码」就是「2_字段」里那张表格的编码（如 `planExcel`），写错不会静默丢列，
+`check` 会明确报「列没有挂上」。
+
+产物结构与线上真实包逐键一致（样本：`project_create` 的 `planExcel` / `budgetExcel` / `riskExcel`）：
+
+```xml
+<tns:attribute code="planExcel" fieldName="plan_excel_" name="里程碑计划表"
+               type="" datatype="clob" dataTypeNew="table"
+               options='{"isMultiple":false,"isDefault":false,"uniqueCheck":false,
+                         "optionSource":"BO_ATTR_DIC_TYPE",
+                         "columns":[{"id":"…","name":"阶段","nameEn":"",
+                                     "inputType":"varchar","required":false,
+                                     "align":"center","widthPercent":10}],
+                         "identities":[],"format":null,"formula":null}'
+               isnull="Y" isindex="N" sn="8"/>
+```
+
+几个关键点：
+
+- **不建物理列**，整张子表按 JSON 存进一个 `clob` 字段（所以表和「大文本」同族）；
+- 表单侧自动出 **`tableField`** 控件（不是 `dataTemplate`——后者是把「5_列表」的列表模板
+  嵌进表单，和表格字段无关）；它**直挂分区容器**、不进 `grid_layout`，跟原生表单一致；
+- 控件里的 `columns` 与 `configurableColumns` 两套列定义都从同一批列生成，**列 id 与对象
+  那边完全相同**；同一份 Excel 反复出包列 id 也不变 —— 这样「更新导入」才是改这一列，
+  而不是每次新增一列（列 id 变了线上已有子表数据就丢了）；
+- 「关联字典」填共享字典的 typeKey（如 `risk_rating`）时出 `optionSource=DIC_TYPE`，
+  否则按自定义选项把候选值内嵌成 `selectOptions`；
+- 反解（`inspect`）会把已有包的 `options.columns` 还原成「2.1_表格列」的行，并保留原列 id；
+  存量包修订（`patch`）新增表格字段时走的是同一条 `TableColumn` 路径。
+
+已知边界：
+
+- 列类型 `user` / `department` 在**对象**里正常写 `inputType`，但表单单元格目前没有人员选择器，
+  出成文本单元格（真实样本里这类列也不出现在表单列上）；要人员选择器请导入后在设计器里换控件；
+- 列级的只读 / 隐藏 / 合计不在 Excel 里配，导入后到表单设计器点该控件的「编辑列」设置。
+
 ### 内置字段（11 个）
 
 模板里**不出现**，生成 zip 时自动补齐：

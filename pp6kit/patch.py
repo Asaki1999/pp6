@@ -50,7 +50,7 @@ from . import gen_bo
 from .blueprint import control_for
 from .builder import package_name
 from .inspect import inspect_path
-from .model import BoField, FormField
+from .model import TABLE_COLUMN_TYPES, BoField, FormField, TableColumn
 from .template import build_workbook
 from .xmlw import cdata, esc_attr
 
@@ -168,8 +168,42 @@ def normalize_field(raw: dict, bo_code: str, sn: int = 0) -> BoField:
         object_type=str(raw.get("objectType") or "").strip(),
         cascade_parent=str(raw.get("cascadeParent") or "").strip(),
         choices=_split_choices(raw.get("choices")),
+        # 表格字段（子表）：新增字段时前端可以带 columns，走和 Excel 主流程
+        # 完全相同的 TableColumn → options.columns 生成路径。
+        table_columns=_normalize_columns(raw.get("columns")),
         sn=sn,
     )
+
+
+def _normalize_columns(raw) -> list[TableColumn]:
+    """前端/Excel 传来的表格列 → TableColumn。格式与 ai_bo._clean_columns 一致。"""
+    if not isinstance(raw, list):
+        return []
+    out: list[TableColumn] = []
+    for i, item in enumerate(raw, start=1):
+        if isinstance(item, str):
+            item = {"name": item}
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        typ = _ft.resolve_column_type(item.get("type") or "varchar")
+        if typ not in TABLE_COLUMN_TYPES:
+            typ = "varchar"
+        out.append(TableColumn(
+            name=name,
+            input_type=typ,
+            choices=[str(x).strip() for x in (item.get("choices") or item.get("values") or [])
+                     if str(x).strip()],
+            precision=item.get("precision") if isinstance(item.get("precision"), int) else None,
+            width_percent=(float(item["widthPercent"])
+                           if isinstance(item.get("widthPercent"), (int, float)) else None),
+            required=bool(item.get("required")),
+            multiple=bool(item.get("multiple")),
+            sn=i,
+        ))
+    return out
 
 
 def field_payload(field: BoField) -> dict:
@@ -186,6 +220,12 @@ def field_payload(field: BoField) -> dict:
         "index": field.is_index,
         "fieldName": field.field_name,
         "desc": field.desc,
+        "columns": [
+            {"name": c.name, "type": c.input_type, "choices": list(c.choices or []),
+             "precision": c.precision, "widthPercent": c.width_percent,
+             "required": bool(c.required), "multiple": bool(c.multiple)}
+            for c in (field.table_columns or [])
+        ],
     }
 
 

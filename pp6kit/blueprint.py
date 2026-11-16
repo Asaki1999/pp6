@@ -46,10 +46,13 @@ _CONTROL_BY_TYPE = {
     # 以下类型没有专用控件，退化为单行文本
     "i18n": "text",
     "formula": "text",
-    # table = 子表/明细表，出 dataTemplate 控件（把列表模板嵌进表单）。
-    # 2026-11-12 拿到原生包后才支持：项目汇报表里 4 个 dataTemplate 全是这种用法。
-    # 之前退化成 text，等于子表在表单上是个文本框，整块功能废掉。
-    "table": "dataTemplate",
+    # 表格 = 子表（明细行）。真实控件名是 **tableField**，不是 dataTemplate。
+    # 依据：project_create 的 3 个表格字段（planExcel / budgetExcel / riskExcel）
+    # 在 form/002-project_create_detail_.xml 里全是 fieldType="tableField"，
+    # 控件自己带 columns/configurableColumns 两套列定义。
+    # dataTemplate 是「把 5_列表 的列表模板嵌进表单」，和表格字段无关——
+    # 以前把 table 映射成 dataTemplate，结果子表挂到一个不相干的列表上，整块是空的。
+    "table": "tableField",
 }
 
 # 流程冗余字段 / 流程状态是系统反写用的，不在表单上给用户填。
@@ -100,11 +103,14 @@ def fields_from_bo(bo: Bo, kind: str, form_key: str = "") -> list[FormField]:
                 name=f.code,
                 label=f.name,
                 field_type=control_for(f),
-                full_row=f.type_new == "clob",
+                # 子表横向铺满：真实表单里表格控件独占一行（连 grid_layout 都不进）
+                full_row=f.type_new in ("clob", "table"),
                 # 取值来源只有 BoField.value_source() 一处真相：
                 # 全局字典（dict_ref）与自定义字典（dict_key）在这里分流，
                 # 三处各写一遍「dic → dict_key()」时全局字典必然指向空下拉。
                 value_source=f.value_source(),
+                # 表格字段的列随控件走：Excel/界面里改的列定义要在表单上体现
+                table_columns=list(f.table_columns or []),
             )
         )
     return out

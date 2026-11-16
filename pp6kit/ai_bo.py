@@ -13,15 +13,24 @@ import re
 
 from . import fieldtypes, objects
 from .nlq import llm
-from .model import Bo, BoField, Project, truthy
+from .model import (
+    TABLE_COLUMN_TYPES,
+    Bo,
+    BoField,
+    Project,
+    TableColumn,
+    truthy,
+)
 
 # 只让 AI 用这些类型——表/公式/国际化没做验证，别让它张口就来。
 # 顺序照系统「添加字段 › 字段类型」下拉（用户截图给的 14 项，去掉没验证的 4 项）：
 #   1 Str.字符串 2 数字 3 日期时间 4 大文本 5 用户 6 部门 7 附件列表
 #   8 国际化   9 选项 10 对象  11 用户组 12 表格 13 自动编号 14 公式
+# 2026-11-15：table（表格）拿到真实包核对后放开，前提是模型必须给出 columns
+# （见 SYSTEM 第 10 条）；给不出列的子表导入后是一片空白，反而比没有更糟。
 ALLOWED_TYPES = (
     "varchar", "number", "datetime", "clob", "user", "department",
-    "attachment", "dic", "object", "autoNumber",
+    "attachment", "dic", "object", "table", "autoNumber",
 )
 
 SYSTEM = """你是 PowerProject V6 项目管理系统的实施顾问，负责设计业务对象（数据表）。
@@ -120,6 +129,14 @@ JSON 结构：
    这样出包时每个子项会带上自己属于哪些父值的级联值（dependValues），
    导入后选「中药」子级就只剩 OTC/RX/双跨/其他。**不要把分组拍平**——
    拍平后级联声明还在，但过滤不出任何东西。
+10. 类型用 `table`（表格/子表）时，**必须同时给出 `columns`**，否则这字段会被降级成
+   大文本（没有列的子表导入后是一片空白，比没有更糟）。每条列写：
+   `{"name": "列名", "type": "varchar|number|date|datetime|clob|dic|user|department"}`
+   可选 `precision`（数字列小数位）、`widthPercent`（列宽百分比）、`values`（选项列的候选值）。
+   例：里程碑计划表 → `"columns": [{"name":"阶段","type":"varchar"},
+   {"name":"计划开始时间","type":"date"},{"name":"是否里程碑","type":"dic","values":["是","否"]}]`。
+   只有用户明确说「明细/多行/表格/子表」（如「里程碑计划」「预算明细」）时才用 table；
+   普通的一对一字段不要用。
 """
 
 
@@ -500,6 +517,18 @@ def build_bo(spec: dict, known_objects: list | None = None,
         # （2026-11-12 用户实测：导入后品种分类随品种类别不联动）。
         _flat, _groups = _clean_values(raw.get("values"))
 
+        # 表格字段（子表）：列定义由模型给，走和 Excel「2.1_表格列」同一条模型路径
+        table_columns = _clean_columns(raw.get("columns"))
+        if ftype == "table" and not table_columns:
+            notices.append(
+                f"字段「{raw.get('name') or fcode}」是表格但没给列定义，已按大文本处理"
+                f"（空子表导入后是一片空白）")
+            ftype = "clob"
+        if ftype == "table":
+            # 子表按 clob 落库，没有「长度」概念
+            length = None
+            object_type = ""
+
         bo.fields.append(BoField(
             bo_code=code,
             code=fcode,
@@ -512,6 +541,7 @@ def build_bo(spec: dict, known_objects: list | None = None,
             choice_groups=_groups,
             # 级联：AI 想表达「这个下拉只列父字段选过之后剩下的项」就填父字段编码
             cascade_parent=str(raw.get("cascadeParent") or "").strip(),
+            table_columns=table_columns,
             sn=len(bo.fields) + 1,
         ))
 
@@ -536,6 +566,43 @@ def build_bo(spec: dict, known_objects: list | None = None,
                 f"⚠ 字段「{f.name}」的级联父级「{p}」在本对象里不存在"
                 f"（既不是字段编码也不是字段名），请预览里改成正确编码")
     return bo, notices
+
+
+def _clean_columns(raw) -> list[TableColumn]:
+    """AI 给的表格列 → TableColumn 列表。
+
+    宽容两种写法：`["名称","数量"]`（只给列名）与
+    `[{"name":"名称","type":"varchar","precision":0,"values":[...]}]`。
+    认不出的类型降级成字符串，不整条丢弃——丢列比降级更难发现。
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[TableColumn] = []
+    for i, item in enumerate(raw, start=1):
+        if isinstance(item, str):
+            item = {"name": item}
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("label") or "").strip()[:40]
+        if not name:
+            continue
+        typ = fieldtypes.resolve_column_type(
+            item.get("type") or item.get("inputType") or "varchar")
+        if typ not in TABLE_COLUMN_TYPES:
+            typ = "varchar"
+        values = [str(x).strip()[:40] for x in (item.get("values") or item.get("choices") or [])
+                  if str(x).strip()]
+        prec = item.get("precision")
+        width = item.get("widthPercent")
+        out.append(TableColumn(
+            name=name,
+            input_type=typ,
+            choices=values,
+            precision=prec if isinstance(prec, int) else None,
+            width_percent=float(width) if isinstance(width, (int, float)) else None,
+            sn=i,
+        ))
+    return out
 
 
 def _clean_values(raw) -> tuple[list[str], dict[str, list[str]]]:
@@ -748,6 +815,18 @@ def to_dict(bo: Bo) -> dict:
                 # 级联分组（父值→子值）：预览往返 / 再改一版同样不能丢，
                 # 丢了出包就写不出 dependValues（2026-11-12 品种分类实测）
                 "choiceGroups": dict(f.choice_groups or {}),
+                # 表格字段的子列：预览里要能看到「这张子表有几列、分别是什么」，
+                # 往返时也不能丢，否则「再改一版」后子表就空了
+                "columns": [
+                    {"name": c.name, "type": c.input_type,
+                     "typeLabel": fieldtypes.COLUMN_LABELS.get(c.input_type, c.input_type),
+                     "choices": list(c.choices or []),
+                     "precision": c.precision,
+                     "widthPercent": c.width_percent,
+                     "required": bool(c.required),
+                     "multiple": bool(c.multiple)}
+                    for c in (f.table_columns or [])
+                ],
             }
             for f in bo.fields
         ],

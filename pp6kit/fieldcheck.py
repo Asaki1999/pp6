@@ -78,7 +78,10 @@ _FORM_TYPE_CN = {
     "autoNumber": "自动编号",
     "attachment": "附件",
     "hidden": "隐藏字段",
-    "tableField": "明细表",
+    "tableField": "表格（子表）",
+    # dataTemplate 是「把 5_列表 的列表模板嵌进表单」，和表格字段（子表）是两码事，
+    # 以前这两个在界面上都叫「明细表」，出问题时看不出是哪种。
+    "dataTemplate": "明细表（嵌列表）",
     "user": "用户",
     "department": "部门",
     "cascader": "级联选择",

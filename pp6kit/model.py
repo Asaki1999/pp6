@@ -186,6 +186,97 @@ def table_name_for(code: str) -> str:
     return base if base.lower().startswith("pp_") else "pp_" + base
 
 
+# 表格字段（dataTypeNew=table）的子列。
+#
+# 真实结构出处（2026-11-15 核对两份生产包）：
+#   PP6/业务对象/项目立项业务对象.zip        planExcel 里程碑计划表 / budgetExcel 预算编辑表格
+#   PP6/流程/config-sync-20261113150255.zip  planExcel / budgetExcel / riskExcel 主要风险控制
+# 结论：表格字段本身是 ``datatype="clob" dataTypeNew="table"``，子列不在物理表里，
+# 而是塞进 attribute 的 options.columns 数组，一行一个 JSON：
+#   {id, name, nameEn, inputType, required, [precision | multiple, optionSource,
+#    objectType, cascadeEnabled, cascadeParentCode | align, widthPercent]}
+# 表单侧对应的控件是 fieldType="tableField"，它自己也带一份 columns（见 gen_form）。
+#
+# id 用 uuid5 按「对象编码/字段编码/列名/序号」算：同一个 Excel 反复出包得到同一批
+# id，导入时才是「更新这几列」；换随机 id 会让同一列在系统里被当成新列，旧数据丢。
+_TABLE_COL_NS = uuid.UUID("6f1c7e2a-5b93-4d1e-9c3a-8f2d4b6a1e07")
+
+# 子列能用的类型（对应系统「表格」字段编辑列时的下拉）。
+# 只放真实样本里出现过的 + 字段层同一套同义类型：
+#   varchar 字符串 / number 数字 / date 日期 / datetime 日期时间 /
+#   clob 大文本 / dic 选项 / user 用户 / department 部门
+TABLE_COLUMN_TYPES = ("varchar", "number", "date", "datetime", "clob", "dic",
+                      "user", "department")
+
+
+@dataclass
+class TableColumn:
+    """表格字段里的一列。"""
+
+    name: str
+    input_type: str = "varchar"
+    choices: list[str] = field(default_factory=list)   # dic 列的候选值（中文名）
+    dict_ref: str = ""                # 引用全局字典时填 typeKey（DIC_TYPE 分支）
+    width_percent: float | None = None
+    align: str = ""                   # left / center / right，留空不写
+    required: bool = False
+    precision: int | None = None      # number 列的小数位
+    multiple: bool = False            # dic / user / department 是否多选
+    name_en: str = ""                 # 英文名，样本里都是空串
+    exist_id: str = ""                # 反解已有包时原样保留列 id
+    sn: int = 0                       # 列顺序（Excel 里的「序号」/ 反解按原序）
+
+    def col_id(self, scope: str, index: int) -> str:
+        if self.exist_id:
+            return self.exist_id
+        return str(uuid.uuid5(_TABLE_COL_NS, f"{scope}/{index}/{self.name}"))
+
+    def option(self, scope: str, index: int) -> dict:
+        """落成 options.columns 里的一项。
+
+        键序照生产包：基础四键 → required → 各类型专属键。系统按 inputType 取用，
+        多写的键会被忽略，所以 dic 的四个键只在 dic 列出现，不铺给别的类型。
+        """
+        typ = self.input_type if self.input_type in TABLE_COLUMN_TYPES else "varchar"
+        out: dict[str, Any] = {
+            "id": self.col_id(scope, index),
+            "name": self.name,
+            "nameEn": self.name_en or "",
+            "inputType": typ,
+            "required": bool(self.required),
+        }
+        if typ == "number":
+            out["precision"] = self.precision if self.precision is not None else 0
+        if typ in ("dic", "user", "department"):
+            out["multiple"] = bool(self.multiple)
+        if typ == "dic":
+            if self.dict_ref:
+                # 引用线上已有共享字典（对应 riskExcel 的「风险等级」：
+                # optionSource=DIC_TYPE + objectType=risk_rating）
+                out["optionSource"] = "DIC_TYPE"
+                out["objectType"] = self.dict_ref
+            else:
+                out["optionSource"] = "BO_ATTR_DIC_TYPE"
+                out["objectType"] = None
+                if self.choices:
+                    # 行内候选值：value/label/text 都用中文，不依赖字典表
+                    # （真实表单里「是否里程碑」就是这么写的）
+                    out["selectOptions"] = [
+                        {"value": c, "label": c, "text": c, "disabled": 0,
+                         "dependValues": [], "data": {}}
+                        for c in self.choices
+                    ]
+            out["cascadeEnabled"] = False
+            out["cascadeParentCode"] = ""
+        if self.align:
+            out["align"] = self.align
+        if self.width_percent is not None:
+            # 整数写整数：真实包里是 10 而不是 10.0，导出/导入往返才不会假差异
+            w = float(self.width_percent)
+            out["widthPercent"] = int(w) if w == int(w) else w
+        return out
+
+
 @dataclass
 class BoField:
     bo_code: str
@@ -236,6 +327,9 @@ class BoField:
     dict_items: list[dict] = field(default_factory=list)
     #   [{"key":"MonthlyReportModules","name":"月报","sn":146}, ...]
     #   ↑ 候选值 key 是**固定业务码**，不可按 md5 重算，只能原样照抄
+    # 表格字段（type_new=table）的子列定义。来源：Excel「2.1_表格列」，
+    # 或反解已有包的 options.columns，或「扩展参数」里手写的 columns。
+    table_columns: list[TableColumn] = field(default_factory=list)
 
     def sub_choices(self) -> list[str]:
         """去重后的全部子选项（分组映射为空时退回 choices）。"""
@@ -315,7 +409,9 @@ class BoField:
         datatype = self.datatype or cfg["datatype"]
         length = self.length if self.length is not None else cfg["length"]
         fmt = cfg["format"]
-        if type_new == "clob":
+        if type_new in ("clob", "table"):
+            # 表格字段和「大文本」一样按 clob 落库（子列只存在于 options.columns，
+            # 不建物理列），所以长度/格式一律不写，否则导入端会当成 varchar 建表。
             length, fmt = None, None
         if type_new == "datetime":
             length = None
@@ -398,6 +494,29 @@ class BoField:
                     "duplicateScope": "",
                     "queryCondition": {"condition": "AND", "rules": []},
                 }]
+
+        # 表格字段：子列写在 options.columns 里，其余六个键照真实包铺满。
+        #
+        # 出处（PP6/流程/config-sync-20261113150255.zip › bo/001-project_create.xml）：
+        #   planExcel / budgetExcel / riskExcel 三个表格字段的 options 全是这 8 个键，
+        #   键序 isMultiple, isDefault, uniqueCheck, optionSource, columns,
+        #   identities, format, formula —— 与 gen_bo._OPTION_KEY_ORDER_FULL 一致。
+        # 没有 columns 的表格导入后是一片空白子表，所以「有列」这件事由 validate 报错拦住。
+        if type_new == "table":
+            for k, v in (
+                ("isMultiple", False), ("isDefault", False), ("uniqueCheck", False),
+                ("optionSource", "BO_ATTR_DIC_TYPE"),
+            ):
+                opts.setdefault(k, v)
+            generated = [c.option(f"{self.bo_code}/{self.code}", i)
+                         for i, c in enumerate(self.table_columns, 1)]
+            # 优先级：2.1_表格列 / 反解出来的 table_columns > 扩展参数里手写的 columns。
+            # 后者是逃生口（老工作簿把整块 JSON 塞在「扩展参数」里），有列就原样保留。
+            if generated or not isinstance(opts.get("columns"), list):
+                opts["columns"] = generated
+            opts.setdefault("identities", [])
+            opts.setdefault("format", None)
+            opts.setdefault("formula", None)
 
         # dic 字段必须显式声明取数来源，否则界面上选项列表是空的。
         #
@@ -553,6 +672,12 @@ class FormField:
     # 分区（表单布局 V1.0 的卡片/分组框标题）。同名的控件归到同一个容器，
     # 留空则整张表单只出一个容器（标题「基本信息」）。
     group: str = ""
+    # 表格控件（tableField）带的列快照。来源两处：
+    #   ① blueprint.fields_from_bo 从 BoField.table_columns 复制；
+    #   ② gen_form 里按对象字段补齐（Excel 手填 4_表单控件 时不带这个）。
+    # 表单 XML 里同一个表格要写两份 columns（控件一份、configurableColumns 一份），
+    # 都从这里来；流程 nodePermissions 的控件快照也用它，保证三处一致。
+    table_columns: list[TableColumn] = field(default_factory=list)
 
 
 # 条件隐藏：系统里叫「表单规则（formRules）」，存在 formDef 的 extendAttr 里。

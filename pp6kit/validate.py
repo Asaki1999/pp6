@@ -5,7 +5,15 @@ import re
 from dataclasses import dataclass
 
 from . import fieldtypes, naming, spec
-from .model import EMPTY_OPERATORS, HIDE_OPERATORS, LABEL_BY_OP, Bo, BoField, Project
+from .model import (
+    EMPTY_OPERATORS,
+    HIDE_OPERATORS,
+    LABEL_BY_OP,
+    TABLE_COLUMN_TYPES,
+    Bo,
+    BoField,
+    Project,
+)
 
 KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 CODE_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
@@ -75,6 +83,25 @@ def _widget_issues(form, bo, where: str, proj: Project) -> list[Issue]:
     out: list[Issue] = []
     list_keys = {x.key for x in proj.lists}
     for ff in form.fields:
+        # ---- 表格字段（子表）：控件是 tableField，列来自对象字段
+        if ff.field_type == "tableField":
+            bf = bo.field_by_code(ff.name) if bo is not None else None
+            if bf is None:
+                out.append(Issue(
+                    "error", where,
+                    f"表格控件 {ff.name} 在对象字段中不存在——"
+                    f"tableField 绑定的是「表格」类型的字段编码"))
+            elif fieldtypes.resolve(bf.type_new) != "table":
+                out.append(Issue(
+                    "warn", where,
+                    f"控件 {ff.name} 是表格控件，但字段类型是"
+                    f"「{fieldtypes.ui_label(bf.type_new)}」，导入后可能显示异常"))
+            elif not (bf.table_columns or ff.table_columns):
+                out.append(Issue(
+                    "error", where,
+                    f"表格字段 {ff.name} 一列都没有，导入后是一张空白子表。"
+                    f"请在「2.1_表格列」里按「对象编码 + 字段编码」补列"))
+            continue
         # ---- 明细表：字段编码填的是列表 key，得对着 5_列表 核
         if ff.field_type == "dataTemplate":
             if not ff.value_source:
@@ -93,17 +120,18 @@ def _widget_issues(form, bo, where: str, proj: Project) -> list[Issue]:
                     f"导入前请确认系统里已经有这个列表，否则子表是空的"
                     f"（本包可选：{', '.join(sorted(list_keys)[:3])}）"))
             continue
-        # ---- 字段类型是数字/日期，控件却是文本框
+        # ---- 字段类型是数字/日期/表格，控件却是文本框
         if bo is None or ff.field_type != "text":
             continue
         bf = bo.field_by_code(ff.name)
-        want = {"number": "number", "datetime": "datePicker"}.get(
+        want = {"number": "number", "datetime": "datePicker", "table": "tableField"}.get(
             bf.type_new if bf else "", "")
         if want:
             out.append(Issue(
                 "warn", where,
                 f"控件 {ff.name}（{bf.name}）的字段类型是 {bf.type_new}，"
-                f"控件类型却填了 text，导入后是普通文本框（建议改成 {want}）"))
+                f"控件类型却填了 text，导入后是普通文本框（建议改成 {want}，"
+                f"表格字段可留空控件类型，出包时会自动按 tableField 生成）"))
     return out
 
 
@@ -597,6 +625,54 @@ def _object_pool(proj: Project) -> list[dict]:
         return []
 
 
+def _check_table_field(f: BoField, issues: list[Issue], w: str) -> None:
+    """表格字段（子表）的列定义体检。
+
+    真实约束来自生产包（project_create 的 planExcel / budgetExcel / riskExcel）：
+      · 有列才有意义——没有 columns 的表单导入后是一张空白子表；
+      · 列名在同一张表里不能重复（系统按列名找列，重名会串）；
+      · 选项列要么给候选值，要么引用已有共享字典，否则单元格是个空下拉。
+    这些都是「不看不知道、导入后才发现」的问题，所以放在 check 阶段拦。
+    """
+    cols = list(f.table_columns or [])
+    if not cols:
+        # 逃生口：「扩展参数」里手写的 columns（老工作簿、或从原生包直接抄的整块 JSON）
+        raw = (f.options or {}).get("columns")
+        if isinstance(raw, list) and raw:
+            return          # 有列就放行，结构对不对由导入端兜底
+        issues.append(Issue(
+            "error", w,
+            "「表格」字段没有任何列，导入后是一张空白子表。"
+            "请到「2.1_表格列」按「对象编码 + 字段编码」补列（一列一行）"))
+        return
+
+    seen: dict[str, int] = {}
+    for i, c in enumerate(cols, 1):
+        name = (c.name or "").strip()
+        if not name:
+            issues.append(Issue("error", w, f"第 {i} 列的列名为空"))
+            continue
+        if name in seen:
+            issues.append(Issue(
+                "error", w,
+                f"列名「{name}」重复（第 {seen[name]} 列和第 {i} 列），系统按列名定位会串列"))
+        else:
+            seen[name] = i
+        if c.input_type not in TABLE_COLUMN_TYPES:
+            issues.append(Issue(
+                "warn", w,
+                f"第 {i} 列「{name}」的类型 {c.input_type} 不认识，按字符串处理"))
+        if c.input_type == "dic" and not c.choices and not c.dict_ref:
+            issues.append(Issue(
+                "warn", w,
+                f"第 {i} 列「{name}」是选项列，既没填「选项值」也没填「关联字典」，"
+                f"单元格是个空下拉"))
+        if c.input_type != "number" and c.precision:
+            issues.append(Issue(
+                "warn", w,
+                f"第 {i} 列「{name}」不是数字列，「精度」不会生效"))
+
+
 def _check_object_ref(f: BoField, issues: list[Issue], w: str,
                       pool: list[dict] | None = None) -> None:
     """核对 object 字段的「关联对象/字典」。
@@ -726,6 +802,8 @@ def _validate_fields(bo: Bo, issues: list[Issue],
                 f"导入后父级选完子级仍会全量显示。按「父选项：子1、子2」逐行填写即可"))
         elif f.type_new == "object":
             _check_object_ref(f, issues, w, obj_pool)
+        elif f.type_new == "table":
+            _check_table_field(f, issues, w)
         # 手册：编码不得出现「项目类型ID」这类命名，应直接叫「项目类型」
         # 例外：项目对象与系统原生的编码本来就带 Id（stateId / classificationId /
         # gradeId / projectId…）。对齐就是为了「跟项目完全一致」，再报「建议去掉

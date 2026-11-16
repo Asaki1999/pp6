@@ -11,6 +11,7 @@ from .model import (
     FORM_BUNDLE,
     FORM_KIND_LABEL,
     OP_BY_LABEL,
+    TABLE_COLUMN_TYPES,
     WF_KIND_BY_LABEL,
     WF_ONGOING,
     Bo,
@@ -21,6 +22,7 @@ from .model import (
     HideRule,
     ListDef,
     Project,
+    TableColumn,
     WfEdge,
     WfNode,
     Workflow,
@@ -80,6 +82,15 @@ def _int(value, default=None):
         if value is None or str(value).strip() == "":
             return default
         return int(float(str(value).strip()))
+    except ValueError:
+        return default
+
+
+def _float(value, default=None):
+    """解析「宽度%」这类小数格：允许 10 / 10.5 / 10% 。"""
+    text = str(value or "").strip().rstrip("%")
+    try:
+        return float(text) if text else default
     except ValueError:
         return default
 
@@ -224,6 +235,43 @@ def _node_ref(raw, name_by_id: dict[str, str]) -> str:
     if not text:
         return ""
     return name_by_id.get(text, text)
+
+
+def _align_table_controls(proj: Project, auto_notes: list[str]) -> None:
+    """把「表格」字段对应的控件统一成 tableField，并从对象字段补上列快照。
+
+    为什么要在这里做（而不是只在 gen_form 里）：
+      · 用户在 4_表单控件 里常常把表格字段写成 text / textarea，
+        更糟的是写成 dataTemplate——那会让子表去找一个**同名列表**，
+        找不到就是一片空白，导入后还看不出原因；
+      · 界面预览读的是 reader 的产物，这里不改的话预览显示成文本框，
+        用户会以为「表格字段没生效」。
+
+    gen_form._inherit_table_columns 里还有同样一份（AI/blueprint 那条路不经过这里），
+    两处都是幂等的，重复跑不会改坏。
+    """
+    by_bo: dict[str, dict[str, BoField]] = {
+        b.code: {f.code: f for f in b.fields} for b in proj.bos}
+
+    for form in proj.forms:
+        fields = by_bo.get(form.bo_code) or {}
+        for ff in form.fields:
+            bf = fields.get(ff.name)
+            is_table = bf is not None and fieldtypes.resolve(bf.type_new) == "table"
+            if is_table:
+                if not ff.table_columns:
+                    ff.table_columns = list(bf.table_columns or [])
+                if ff.field_type != "tableField":
+                    auto_notes.append(
+                        f"控件 {ff.name}（{ff.label}）：字段类型是「表格」，"
+                        f"控件类型 {ff.field_type} 已改成 tableField")
+                    ff.field_type = "tableField"
+                ff.full_row = True
+            elif ff.field_type == "tableField":
+                auto_notes.append(
+                    f"控件 {ff.name}（{ff.label}）：对象里没有对应的「表格」字段，"
+                    f"表格控件已退回单行文本")
+                ff.field_type = "text"
 
 
 def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
@@ -377,6 +425,76 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
                             if isinstance(ctrl.get("dict_items"), list) else []),
             )
             bo.fields.append(f)
+
+    # ---- 表格字段的子列
+    # 单独一张表，按「对象编码 + 字段编码」挂回 2_字段 里那张表格。
+    # 必须在字段全部读完后再挂（用户完全可以把列写在前、字段写在后），
+    # 所以这段放在字段块之后、表单块之前。
+    if spec.S_TABLE_COL in wb.sheetnames:
+        ws = wb[spec.S_TABLE_COL]
+        bucket: dict[tuple[str, str], list[TableColumn]] = {}
+        for row_no, get in SheetReader(ws, spec.COLUMNS[spec.S_TABLE_COL], errors,
+                                       spec.S_TABLE_COL).rows():
+            bo_code = str(get("bo_code") or "").strip()
+            field_code = str(get("field_code") or "").strip()
+            name = str(get("name") or "").strip()
+            if not (bo_code or field_code or name):
+                continue
+            if not bo_code or not field_code:
+                errors.append(f"[{spec.S_TABLE_COL}] 第{row_no}行: 对象编码与字段编码都要填")
+                continue
+            if not name:
+                errors.append(f"[{spec.S_TABLE_COL}] 第{row_no}行: 列名不能为空")
+                continue
+            raw_type = str(get("input_type") or "").strip()
+            input_type = fieldtypes.resolve_column_type(raw_type)
+            if input_type not in TABLE_COLUMN_TYPES:
+                errors.append(
+                    f"[{spec.S_TABLE_COL}] 第{row_no}行: 列类型「{raw_type}」不认识，"
+                    f"可选：{'、'.join(fieldtypes.column_choices())}")
+                input_type = "varchar"
+            align_raw = str(get("align") or "").strip()
+            align = {"左": "left", "中": "center", "右": "right",
+                     "left": "left", "center": "center", "right": "right"}.get(align_raw, "")
+            bucket.setdefault((bo_code, field_code), []).append(TableColumn(
+                name=name,
+                input_type=input_type,
+                choices=_parse_choices(get("options_text")),
+                dict_ref=str(get("dict_ref") or "").strip(),
+                width_percent=_float(get("width_percent"), None),
+                align=align,
+                required=truthy(get("required")),
+                precision=_int(get("precision"), None),
+                multiple=truthy(get("multiple")),
+                sn=_int(get("sn"), 0) or 0,
+            ))
+        used: set[tuple[str, str]] = set()
+        for (bo_code, field_code), cols in bucket.items():
+            bo = proj.bo(bo_code)
+            if bo is None:
+                # 对象编码写错（或留空被自动改过）时别静默丢列，报出来让用户改
+                errors.append(
+                    f"[{spec.S_TABLE_COL}] 对象编码 {bo_code} 在 1_业务对象 中不存在，"
+                    f"字段 {field_code} 的 {len(cols)} 列没有挂上")
+                continue
+            field = bo.field_by_code(field_code)
+            if field is None:
+                errors.append(
+                    f"[{spec.S_TABLE_COL}] 对象 {bo_code} 里没有字段 {field_code}，"
+                    f"这 {len(cols)} 列没有挂上（字段编码要填 2_字段 里那张表格的编码）")
+                continue
+            if fieldtypes.resolve(field.type_new) != "table":
+                errors.append(
+                    f"[{spec.S_TABLE_COL}] 字段 {bo_code}.{field_code} 的数据类型是"
+                    f"「{fieldtypes.ui_label(field.type_new)}」，不是「表格」——"
+                    f"请先在 2_字段 把类型改成「表格」，这些列才会生效")
+                continue
+            # 用户可能没写序号：按行序补齐，再按序号稳定排序
+            for i, col in enumerate(cols, start=1):
+                if not col.sn:
+                    col.sn = i
+            field.table_columns = sorted(cols, key=lambda c: c.sn)
+            used.add((bo_code, field_code))
 
     # 关联对象字段归一：这一列用户会填「项目」「关联客户」「pp_project」，
     # 系统只认对象编码（iform_bo_def.code_），填错导入后是空下拉框。
@@ -695,6 +813,12 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
                 inform=None if (inform_raw is None or str(inform_raw).strip() == "")
                 else truthy(inform_raw),
             ))
+
+    # 表格字段的最后一道对齐：把「字段类型=表格」的控件统一成 tableField，
+    # 并把列快照从对象字段带过来。放在读表阶段而不是只放在出包阶段，
+    # 是因为界面预览读的是这里的结果——不然预览里那张子表显示成文本框，
+    # 用户以为没生效，直到出包才发现其实已经是 tableField。
+    _align_table_controls(proj, auto_notes)
 
     stats = {
         "业务对象": len(proj.bos),

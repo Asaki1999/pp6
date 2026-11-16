@@ -88,6 +88,55 @@ def _load() -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+# ---------------------------------------------------------------- 表格字段的子列
+#
+# 「表格」字段的子列类型是**另一套下拉**（系统里在表格字段的「编辑列」弹窗里），
+# 取值是 inputType，和字段层的 dataTypeNew 同源但不完全同名（没有 attachment/
+# object/autoNumber…）。真实样本里出现过的：varchar / number / date / clob / dic。
+# 多给了 datetime / user / department —— 它们的 inputType 与字段层完全同名，
+# 加进来不会造出系统不认的值。
+COLUMN_LABELS: dict[str, str] = {
+    "varchar": "字符串",
+    "number": "数字",
+    "date": "日期",
+    "datetime": "日期时间",
+    "clob": "大文本",
+    "dic": "选项",
+    "user": "用户",
+    "department": "部门",
+}
+
+_COLUMN_ALIASES: dict[str, str] = {
+    "文本": "varchar", "单行文本": "varchar", "string": "varchar",
+    "多行文本": "clob", "长文本": "clob", "text": "clob",
+    "整数": "number", "小数": "number", "numeric": "number",
+    "选项值": "dic", "字典": "dic", "数据字典": "dic",
+    "人员": "user", "组织": "department", "部门选择": "department",
+}
+
+
+def column_choices() -> list[str]:
+    """给 Excel 下拉用的子列类型选项（和字段层一样带括号写代码）。"""
+    order = ["varchar", "number", "date", "datetime", "clob", "dic", "user", "department"]
+    return [f"{COLUMN_LABELS[c]}（{c}）" for c in order]
+
+
+def resolve_column_type(value: str) -> str:
+    """把「字符串（varchar）」「数字」「number」归一成 inputType。"""
+    text = str(value or "").strip()
+    if not text:
+        return "varchar"
+    if "（" in text and text.endswith("）"):
+        text = text.split("（")[-1][:-1].strip()
+    if text in COLUMN_LABELS:
+        return text
+    for code, label in COLUMN_LABELS.items():
+        if text == label:
+            return code
+    return _COLUMN_ALIASES.get(text, text)
+
+
+
 def all_types() -> dict[str, dict]:
     return _load().get("types", {})
 

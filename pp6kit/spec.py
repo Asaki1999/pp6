@@ -11,6 +11,9 @@ from . import fieldtypes as _ft
 S_SETTINGS = "0_项目设置"
 S_BO = "1_业务对象"
 S_FIELD = "2_字段"
+# 表格字段（数据类型=表格）的子列。紧挨着 2_字段，编号插在中间不占号段，
+# 老工作簿（没有这张表）照旧能读——reader 是按表名精确取表的。
+S_TABLE_COL = "2.1_表格列"
 S_FORM = "3_表单"
 S_FORMFIELD = "4_表单控件"
 S_LIST = "5_列表"
@@ -25,8 +28,8 @@ S_WF_NODE = "10_流程节点"
 S_WF_EDGE = "11_流程流转"
 S_HELP = "说明"
 
-SHEET_ORDER = [S_HELP, S_SETTINGS, S_BO, S_FIELD, S_FORM, S_FORMFIELD, S_LIST,
-               S_DATASET, S_SCRIPT, S_HIDE, S_WF, S_WF_NODE, S_WF_EDGE]
+SHEET_ORDER = [S_HELP, S_SETTINGS, S_BO, S_FIELD, S_TABLE_COL, S_FORM, S_FORMFIELD,
+               S_LIST, S_DATASET, S_SCRIPT, S_HIDE, S_WF, S_WF_NODE, S_WF_EDGE]
 
 
 @dataclass
@@ -113,7 +116,8 @@ COLUMNS: dict[str, list[Col]] = {
         Col("物理列名", "field_name", 20, note="下划线分隔+末尾下划线，如 sys_data_；留空自动生成。不能用数据库关键字（order/desc/key 等）"),
         Col("字段名称", "name", 16, True, note="界面展示名"),
         Col("数据类型", "type_new", 22, True, choices=_ft.choices(),
-            note="从下拉里选。选「选项」时，右边「选项值」列填候选值"),
+            note="从下拉里选。选「选项」时，右边「选项值」列填候选值；选「表格」时，"
+                 "到「2.1_表格列」里定义这张表格有哪些列"),
         Col("关联对象/字典", "object_type", 22,
             note="类型=对象 → 填对象编码（project）、中文名（项目）、或对象表名（pp_project）都认，"
                  "出包前会按系统里真实的业务对象自动对照成编码；留空则按字段名推断（「关联项目」→ project）。"
@@ -131,6 +135,30 @@ COLUMNS: dict[str, list[Col]] = {
         Col("默认值", "default_value", 12, note=""),
         Col("扩展参数", "options", 30, note='JSON，如 {"isMultiple":true}'),
         Col("字段说明", "desc", 26, note=""),
+    ],
+    # ---- 表格字段的子列 ---------------------------------------------------
+    # 依据：真实生产包里表格字段的 options.columns（project_create 的
+    # planExcel / budgetExcel / riskExcel，2026-11-15 逐键核对）。
+    # 一行 = 表格里的一列，按「对象编码 + 字段编码」归到 2_字段 里那张表格上。
+    S_TABLE_COL: [
+        Col("对象编码", "bo_code", 18, True, note="对应 1_业务对象 的编码"),
+        Col("字段编码", "field_code", 18, True,
+            note="2_字段 里「数据类型=表格」的那个字段编码，如 planExcel"),
+        Col("序号", "sn", 8, note="列顺序，留空按行序"),
+        Col("列名", "name", 18, True, note="表格列头，如 阶段 / 计划开始时间 / 金额（万元）"),
+        Col("列类型", "input_type", 20, True, choices=_ft.column_choices(),
+            note="选「选项」时右边「选项值」填候选值；选「数字」可填「精度」"),
+        Col("选项值", "options_text", 26,
+            note="仅「选项」列要填。一个选项一行（Alt+Enter 换行），或逗号分隔", wrap=True),
+        Col("关联字典", "dict_ref", 18,
+            note="可选。引用系统里已有的共享字典时填它的 typeKey（如 risk_rating），"
+                 "填了就不用再写「选项值」；留空=自定义选项"),
+        Col("宽度%", "width_percent", 10,
+            note="列宽百分比，真实包里常见 10 / 15 / 20。留空=系统自适应"),
+        Col("对齐", "align", 10, choices=["左", "中", "右"], note="留空按系统默认"),
+        Col("必填", "required", 8, choices=["是", "否"]),
+        Col("精度", "precision", 8, note="仅数字列：小数位（0=整数）"),
+        Col("多选", "multiple", 8, choices=["是", "否"], note="仅选项 / 用户 / 部门列"),
     ],
     S_FORM: [
         Col("表单key", "key", 24, True, note="小写+下划线，如 create_project"),
@@ -153,8 +181,9 @@ COLUMNS: dict[str, list[Col]] = {
         Col("控件类型", "field_type", 16, True,
             choices=["text", "select", "dictionary", "dropSelector", "dropSelectOrg", "linkdata",
                      "editor", "autoNumber", "attachment", "hidden", "number", "date",
-                     "dataTemplate"],
+                     "tableField", "dataTemplate"],
             note="dictionary=数据字典树控件；要级联请填「级联父字段」，会自动出成下拉+字典形态；"
+                 "tableField=表格字段（子表）控件，一般不用手填——字段类型选「表格」会自动出；"
                  "dataTemplate=明细表，在「取值来源」填 5_列表 的列表key，会把该列表嵌进表单"),
         Col("取值来源", "value_source", 22, note="select/linkdata 填数据集或值来源 key"),
         Col("占位提示", "placeholder", 14),
@@ -418,6 +447,22 @@ HELP_TEXT = [
     ("结果页顶部的「关联项目」入口可直接跳到对象开关：它写着还有几个对象没关联，", ""),
     ("    点「去设置」会切到「业务对象」页签并把第一个没勾的开关高亮一下；流程模式概要里也有同款开关。", ""),
     ("", ""),
+    ("7.2 表格字段（数据类型=表格）怎么填", "h"),
+    ("「2_字段」里数据类型选「表格」，等于在对象上加一个**子表**（表格里多行、每行几列），", ""),
+    ("然后到「2.1_表格列」一行一列地写这张表格有哪些列：", ""),
+    ("    对象编码 | 字段编码 | 序号 | 列名 | 列类型 | 选项值 | 关联字典 | 宽度% | 对齐 | 必填 | 精度 | 多选", ""),
+    ("    项目立项 | planExcel | 1 | 阶段 | 字符串（varchar） | | | 10 | 中 | 否 | | ", ""),
+    ("    项目立项 | planExcel | 2 | 计划开始时间 | 日期（date） | | | 10 | 中 | 否 | | ", ""),
+    ("    项目立项 | planExcel | 3 | 是否里程碑 | 选项（dic） | 是\n否 | | 10 | 中 | 否 | | 否", ""),
+    ("「字段编码」要和「2_字段」里那张表格的字段编码逐字一致，否则列会挂空（check 会报）。", ""),
+    ("列类型：字符串 / 数字 / 日期 / 日期时间 / 大文本 / 选项 / 用户 / 部门。", ""),
+    ("「选项值」只在列类型=选项时要填，一个选项一行；也可以填「关联字典」引用系统里已有的共享字典", ""),
+    ("    （如风险等级 risk_rating），填了就不用重复写候选值。", ""),
+    ("表格字段在表单上会自动出成**表格控件**（tableField），整块独占一行，跟系统里原生的一样；", ""),
+    ("    同一张表单里它单独成一个分区，不和别的字段挤在一起。", ""),
+    ("表格字段的列不建物理列，数据按 JSON 存在一个 clob 字段里（这点和「大文本」相同）。", ""),
+    ("想让子表里某列只读/隐藏，导入后到表单设计器里点该控件的列配置即可，Excel 里不用管。", ""),
+    ("", ""),
     ("8. 级联下拉 与 条件隐藏", "h"),
     ("级联：在「2_字段」的「级联父字段」填本对象里另一个字段的编码即可，例如", ""),
     ("    品种分类 填 productCategory、品种类别 填 classificationId。父字段可以是「选项」也可以是「关联对象」。", ""),
@@ -446,6 +491,7 @@ HELP_TEXT = [
     ("    生成器会自动给对象补一个 processState（流程状态）字段，短码两边算出来是一致的。", ""),
     ("", ""),
     ("9. 未覆盖的能力", "h"),
-    ("数据权限、按钮脚本、条件处理人（按项目类型分流那种）、明细表内嵌子表单暂不在本工具范围内，", ""),
+    ("数据权限、按钮脚本、条件处理人（按项目类型分流那种）暂不在本工具范围内，", ""),
     ("这类内容建议在系统界面里配置，或先 inspect 一份已有导出包再手工微调 XML。", ""),
+    ("表格字段（子表）已支持：字段类型选「表格」+「2.1_表格列」定义列，见 7.2。", ""),
 ]

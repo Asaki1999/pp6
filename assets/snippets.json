@@ -25,7 +25,8 @@
   "datePicker": "{\"mobile\": true, \"default_value_type\": \"fixed\", \"datefmt\": \"yyyy-MM-dd\", \"placeholder\": \"请选择\", \"required\": \"false\", \"datefmt_type\": \"date\"}",
   "textarea": "{\"mobile\": true, \"default_value_type\": \"fixed\", \"placeholder\": \"请输入\", \"required\": \"false\"}",
   "dataTemplate": "{\"clearable\": true, \"controls\": true, \"display\": true, \"mobile\": true, \"selection\": true, \"hide_label\": true, \"hide_border\": true, \"hide_border_bottom\": true, \"heightMode\": \"fixed\", \"heightUnit\": \"px\", \"mappingFields\": [], \"casadeFields\": [], \"isAlldata\": false, \"notInputCondition\": \"conditionIsNone\", \"autoCollapse\": true, \"top_margin\": 10, \"bottom_margin\": 10, \"is_margin\": false, \"bind_template_key\": \"\", \"name\": \"\"}",
-  "dictionary": "{\"dbFieldType\": \"stringType\", \"default_value_type\": \"fixed\", \"default_value\": \"\", \"placeholder\": \"请选择\", \"multiple\": false, \"select_mode\": \"leaf\", \"display_mode\": \"path\", \"split\": \"/\", \"required\": \"false\", \"hide_rights\": \"false\", \"read_rights\": \"false\", \"hide_label\": false, \"is_width\": false, \"width\": 100, \"width_unit\": \"%\", \"is_label_width\": false, \"label_width\": 100, \"label_width_unit\": \"px\", \"clearable\": true, \"mobile\": true, \"display\": true, \"fullscreen\": false, \"marginTop\": \"\", \"height\": \"\", \"controls\": true, \"selection\": true, \"dictionary\": \"\"}"
+  "dictionary": "{\"dbFieldType\": \"stringType\", \"default_value_type\": \"fixed\", \"default_value\": \"\", \"placeholder\": \"请选择\", \"multiple\": false, \"select_mode\": \"leaf\", \"display_mode\": \"path\", \"split\": \"/\", \"required\": \"false\", \"hide_rights\": \"false\", \"read_rights\": \"false\", \"hide_label\": false, \"is_width\": false, \"width\": 100, \"width_unit\": \"%\", \"is_label_width\": false, \"label_width\": 100, \"label_width_unit\": \"px\", \"clearable\": true, \"mobile\": true, \"display\": true, \"fullscreen\": false, \"marginTop\": \"\", \"height\": \"\", \"controls\": true, \"selection\": true, \"dictionary\": \"\"}",
+  "tableField": "{\"controls\": true, \"read_rights\": \"false\", \"default_value_type\": \"fixed\", \"autoCollapse\": true, \"required\": \"false\", \"is_width\": false, \"hide_label\": true, \"canDrag\": false, \"placeholder\": \"请输入\", \"allowConfigRowRight\": true, \"multiSummaryEnabled\": false, \"height\": \"\", \"clearable\": true, \"multiSummaryColumns\": [], \"display\": true, \"mobile\": true, \"default_value\": \"\", \"label_width\": 100, \"is_label_width\": false, \"label_width_unit\": \"px\", \"fullscreen\": false, \"selection\": true, \"dbFieldType\": \"clob\", \"width\": 100, \"width_unit\": \"%\", \"disabled_rights\": \"false\", \"operation\": {\"addEnabled\": true, \"deleteEnabled\": true, \"dragEnabled\": true}, \"hide_rights\": \"false\", \"marginTop\": \"\"}"
  },
  "grid": {
   "root": "{\"kit_key\":\"new\",\"clearable\":true,\"controls\":true,\"columns\":[{\"name\":null,\"label\":null,\"fields\":[\"1554539219555188737\",\"1554539219555188739\",\"1554539219555188742\",\"1554539219555188745\",\"1554539219555188748\",\"1554539219555188751\"],\"span\":24}],\"mobile\":true,\"type\":\"flex\",\"align\":\"top\",\"is_kit\":true,\"kit_id\":\"1421090633937850368\",\"gutter\":0,\"selection\":true,\"justify\":\"start\",\"responsive\":false,\"pkKey\":\"\"}",
@@ -179,6 +180,7 @@
    "processHandler",
    "processNode",
    "select",
+   "tableField",
    "tablelayout",
    "tabs",
    "text",

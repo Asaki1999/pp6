@@ -9,7 +9,18 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from .model import Bo, BoField, DataSet, Form, FormField, HideRule, ListDef, Project
+from .model import (
+    TABLE_COLUMN_TYPES,
+    Bo,
+    BoField,
+    DataSet,
+    Form,
+    FormField,
+    HideRule,
+    ListDef,
+    Project,
+    TableColumn,
+)
 
 _SYSTEM_CODES = {"id", "tenantId", "ip", "deleted", "createBy", "createTime",
                  "updateTime", "version", "updateBy"}
@@ -127,6 +138,44 @@ def _parse_bo(root) -> Bo | None:
         # 否则反解→再出包会把 productClass 降级成 5 键形态（2026-11-12 实测
         # 18/19 全过、唯独它掉档）。这里不再删这几个键。
         type_new = attr.attrib.get("dataTypeNew", "varchar")
+        # 表格字段的子列：从 options.columns 提出来，落到 TableColumn，
+        # 这样反解出来的 Excel 会在「2.1_表格列」里一行一列写清楚，
+        # 而不是把一整块 JSON 塞进「扩展参数」让用户自己去改。
+        # 列 id 原样保留（exist_id）——再出包时列 id 变了，系统就当新列，
+        # 已有子表数据全丢。
+        table_columns: list[TableColumn] = []
+        if type_new == "table":
+            raw_cols = opts.pop("columns", None)
+            for i, c in enumerate(raw_cols if isinstance(raw_cols, list) else [], start=1):
+                if not isinstance(c, dict):
+                    continue
+                cname = str(c.get("name") or "").strip()
+                if not cname:
+                    continue
+                ctype = str(c.get("inputType") or "varchar").strip()
+                if ctype not in TABLE_COLUMN_TYPES:
+                    ctype = "varchar"
+                selected = c.get("selectOptions") or []
+                table_columns.append(TableColumn(
+                    name=cname,
+                    input_type=ctype,
+                    choices=[str(o.get("label") or o.get("value") or "").strip()
+                             for o in selected
+                             if isinstance(o, dict) and (o.get("label") or o.get("value"))],
+                    # 引用共享字典时 optionSource=DIC_TYPE + objectType=typeKey
+                    dict_ref=(str(c.get("objectType") or "")
+                              if str(c.get("optionSource") or "") == "DIC_TYPE" else ""),
+                    width_percent=(float(c["widthPercent"])
+                                   if isinstance(c.get("widthPercent"), (int, float)) else None),
+                    align=str(c.get("align") or ""),
+                    required=bool(c.get("required")),
+                    precision=(int(c["precision"])
+                               if isinstance(c.get("precision"), int) else None),
+                    multiple=bool(c.get("multiple")),
+                    name_en=str(c.get("nameEn") or ""),
+                    exist_id=str(c.get("id") or ""),
+                    sn=i,
+                ))
         object_type = attr.attrib.get("objectType", "")
         dict_ref = ""
         dict_name = ""
@@ -165,6 +214,7 @@ def _parse_bo(root) -> Bo | None:
             # 全局字典的候选值要落进 choices：Excel「选项值」列只认中文名，
             # 不填的话确认版 Excel 里这一格是空的，下次出包字典就没值了
             choices=[i["name"] for i in dict_items if i.get("name")] if dict_ref else [],
+            table_columns=table_columns,
         ))
 
     # 父子/平行关系：只取「本对象是子对象」的那条（src == 本对象），

@@ -20,7 +20,7 @@ from urllib.parse import quote
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import ai_bo, ai_form, ai_list, ai_sheet, ai_wf, objects
+from . import ai_bo, ai_form, ai_list, ai_sheet, ai_wf, fieldtypes, objects
 from . import patch as bo_patch
 from .builder import build, ensure_default_workflow, ensure_project_links, package_name
 from .model import (
@@ -157,7 +157,7 @@ def _field_payload(bo) -> list[dict]:
     out = []
     for f in sorted(bo.fields, key=lambda x: x.sn):
         p = f.resolved()
-        out.append({
+        item = {
             "code": f.code,
             "name": f.name,
             "type": f.type_new,
@@ -166,7 +166,21 @@ def _field_payload(bo) -> list[dict]:
             "precision": p["precision"],
             "index": p["isindex"] == "Y",
             "objectType": f.object_type,
-        })
+        }
+        # 表格字段（子表）：把列一并给出去，预览里能显示「N 列」并逐列核对，
+        # 不然用户只能等导入后才发现列名写错了。
+        if f.type_new == "table":
+            item["columns"] = [
+                {"name": c.name,
+                 "type": c.input_type,
+                 "typeLabel": fieldtypes.COLUMN_LABELS.get(c.input_type, c.input_type),
+                 "widthPercent": c.width_percent,
+                 "precision": c.precision,
+                 "required": bool(c.required),
+                 "choices": list(c.choices or [])}
+                for c in (f.table_columns or [])
+            ]
+        out.append(item)
     return out
 
 
@@ -1388,6 +1402,9 @@ def ai_apply_bo(payload: dict, relations_header: str | None = None) -> tuple[byt
             # 字段级级联（写进 attribute options）。表单控件层没单独填时，
             # 生成阶段会从这里继承，所以界面/AI 只需要说一次。
             cascade_parent=str(f.get("cascadeParent") or "").strip(),
+            # 表格字段的子列：AI 给的 columns 原样带进模型，下载到的 Excel
+            # 才会在「2.1_表格列」里把列一行行写出来（否则用户只看到一张空子表）
+            table_columns=ai_bo._clean_columns(f.get("columns")),
             sn=i,
         ))
     proj.bos.append(bo)
