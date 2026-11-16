@@ -32,15 +32,31 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="pp6kit-app")
     ap.add_argument("--port", type=int, default=8770)
     ap.add_argument("--headless", action="store_true", help="只起服务不开窗口（自检用）")
+    ap.add_argument("--window", action="store_true",
+                    help="用系统 WebView 窗口打开（Windows 需显式指定）")
     ap.add_argument("--browser", action="store_true", help="不用应用窗口，直接在浏览器打开")
     args = ap.parse_args(argv)
 
     applog.setup()
     log = applog.get("pp6kit.app")
 
+    # 模式先定，后面每一步都按它走。
+    # Windows 默认浏览器：WebView2 + pythonnet 这条链在冻结包里极易卡死在主线程，
+    # 用户看到的就是「未响应」；而界面本来就是本地网页，浏览器打开功能完全一致。
+    if args.headless:
+        mode = "headless"
+    elif args.browser:
+        mode = "browser"
+    elif args.window:
+        mode = "window"
+    elif os.name == "nt":
+        mode = "browser"
+    else:
+        mode = "window"
+
     log.info("=" * 64)
-    log.info("%s 启动，参数 %s", APP_NAME, sys.argv[1:])
-    applog.dump_env()
+    log.info("%s 启动，参数 %s，模式 %s", APP_NAME, sys.argv[1:], mode)
+    applog.dump_env(probe_gui=(mode == "window"))
 
     # 这两个模块会连带导入 ai_* 全家族（含 sqlglot 等重依赖），
     # 放在日志就位之后，导入失败也能留下痕迹。
@@ -57,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     log.info("本地服务就绪 -> %s（启动后 %.2f 秒）", url, applog.elapsed())
 
-    if args.headless:
+    if mode == "headless":
         print(url, flush=True)
         log.info("headless 模式：只提供 HTTP 服务，不创建窗口")
         try:
@@ -69,8 +85,12 @@ def main(argv: list[str] | None = None) -> int:
             httpd.shutdown()
         return 0
 
-    if args.browser:
-        log.info("按参数要求跳过应用窗口，直接使用浏览器")
+    if mode == "browser":
+        if os.name == "nt" and not args.browser:
+            log.info("Windows 默认使用浏览器模式：避开 WebView2/pythonnet 在冻结包中"
+                     "初始化卡死的问题（可用 --window 强制应用窗口）")
+        else:
+            log.info("按参数要求跳过应用窗口，直接使用浏览器")
         return _run_in_browser(url, httpd)
 
     try:
@@ -234,11 +254,20 @@ def _selftest(window) -> None:
 def _run_in_browser(url: str, httpd) -> int:
     log = applog.get("pp6kit.app")
     log.info("浏览器模式已启动: %s", url)
-    print(f"{APP_NAME} 已启动: {url}")
+    print(f"{APP_NAME} 已启动: {url}", flush=True)
+    opened = False
     try:
-        webbrowser.open(url)
+        opened = webbrowser.open(url)
     except Exception:
-        log.warning("调用默认浏览器失败，请手动打开 %s", url, exc_info=True)
+        log.warning("调用默认浏览器失败", exc_info=True)
+
+    if not opened:
+        # 双击 exe 的场景没有控制台，浏览器没弹出来就等于「点了没反应」
+        log.error("未能自动打开浏览器，请手动访问 %s", url)
+        applog.alert("请手动打开浏览器",
+                     f"程序已启动，但没能自动打开浏览器。\n\n"
+                     f"请手动访问：\n{url}\n\n"
+                     f"日志：{applog.log_path()}")
     try:
         while True:
             time.sleep(3600)

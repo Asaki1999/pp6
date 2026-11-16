@@ -73,6 +73,52 @@ jobs:
           if (-not $ok) { Write-Error "冒烟测试失败：exe 未能提供 HTTP 200"; exit 1 }
           Write-Host "冒烟测试通过：exe 启动后 /api/template 返回 200"
 
+      # 上面的 --headless 只验证了服务能起，绕过了 GUI —— 而用户双击走的正是 GUI 路径。
+      # 这一步专门测默认启动路径（Windows 上即浏览器模式），断言它真能走到「浏览器模式已启动」。
+      - name: 冒烟测试（Windows 默认启动路径）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = "dist/PP6ImportBuilder/PP6ImportBuilder.exe"
+          $log = Join-Path $env:USERPROFILE ".pp6kit\logs\app.log"
+          Remove-Item $log -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath $exe -ArgumentList "--port","8898" -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 20; $i++) {
+            Start-Sleep -Seconds 2
+            if ($p.HasExited) { Write-Host "进程已退出，退出码 $($p.ExitCode)"; break }
+            if ((Test-Path $log) -and (Select-String -Path $log -Pattern "浏览器模式已启动" -Quiet)) {
+              $ok = $true; break
+            }
+          }
+          Write-Host "=== 默认启动路径日志 ==="
+          if (Test-Path $log) { Get-Content $log -Tail 40 } else { Write-Host "(日志未生成)" }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          if (-not $ok) { Write-Error "默认启动路径失败：40 秒内未进入浏览器模式"; exit 1 }
+          Write-Host "默认启动路径通过：双击后的实际路径可用"
+
+      # 应用窗口（--window）走 WebView2 + pythonnet，是历史上「未响应」的嫌疑段。
+      # 这里只收集诊断信息、不阻断发布：runner 是 session 0，无交互桌面，
+      # 窗口相关判定在这里不可靠，不能拿它卡住发布。
+      - name: 诊断（Windows 应用窗口，不阻断）
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $exe = "dist/PP6ImportBuilder/PP6ImportBuilder.exe"
+          $log = Join-Path $env:USERPROFILE ".pp6kit\logs\app.log"
+          $p = Start-Process -FilePath $exe -ArgumentList "--window","--port","8897" -PassThru
+          for ($i = 0; $i -lt 20; $i++) {
+            Start-Sleep -Seconds 2
+            if ($p.HasExited) { break }
+          }
+          $proc = Get-Process -Id $p.Id -ErrorAction SilentlyContinue
+          if ($proc) { Write-Host "进程存活，Responding=$($proc.Responding)" }
+          else { Write-Host "进程已退出，退出码 $($p.ExitCode)" }
+          if (Test-Path $log) { Get-Content $log -Tail 40 } else { Write-Host "(日志未生成)" }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+
+
       # 用 PowerShell 压缩会丢符号链接与执行位，但 Windows 产物是 onedir 目录树，
       # 没有符号链接，Compress-Archive 足够；macOS 那份必须用 ditto。
       # 说明文件用 ASCII 文件名：中文名在 Windows runner 上受控制台编码影响，易出意外。

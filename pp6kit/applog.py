@@ -145,8 +145,13 @@ def fatal(message: str, exc: bool = True) -> None:
 alert = _alert
 
 
-def dump_env() -> None:
-    """记录一次运行环境。排查「只有某台机器出问题」时，这段几乎必看。"""
+def dump_env(probe_gui: bool = False) -> None:
+    """记录一次运行环境。排查「只有某台机器出问题」时，这段几乎必看。
+
+    `probe_gui=False` 时**绝不 import webview / clr**：这两个包在 Windows 冻结包里
+    会拉起 pythonnet 与 .NET 运行时，本身就要几秒，失败时还可能卡住主线程。
+    环境信息不该成为启动的负担——要用窗口时才探（`probe_gui=True`）。
+    """
     try:
         import pp6kit
         ver = getattr(pp6kit, "__version__", "?")
@@ -163,15 +168,18 @@ def dump_env() -> None:
         f"当前目录 {os.getcwd()}",
         f"配置文件 {Path.home() / '.pp6kit'}",
     ]
+
+    # 只查是否存在，不真的导入——find_spec 不执行模块代码
     try:
-        import webview
-        lines.append(f"pywebview {getattr(webview, '__version__', '?')}")
+        import importlib.util
+        lines.append("pywebview " + ("已安装" if importlib.util.find_spec("webview") else "未安装"))
     except Exception as exc:
-        lines.append(f"pywebview 不可用：{exc}")
+        lines.append(f"pywebview 无法判定：{exc}")
 
     if os.name == "nt":
         lines.append(f"WebView2 运行时：{_webview2_desc()}")
-        lines.append(f".NET / pythonnet：{_dotnet_desc()}")
+        if probe_gui:
+            lines.append(f".NET / pythonnet：{_dotnet_desc()}")
 
     _log.info("运行环境\n" + "\n".join(lines))
 
