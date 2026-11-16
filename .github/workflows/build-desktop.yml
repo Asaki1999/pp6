@@ -6,14 +6,12 @@ name: build-desktop
 on:
   workflow_dispatch:
   push:
+    # 04:00 的 WorkBuddy 定时任务只有检测到本地改动才会 push；
+    # 没有改动就没有 push，也就不会空转打包。
+    branches:
+      - main
     tags:
       - "v*"
-  # GitHub cron 用 UTC；20:10 UTC = 北京时间次日 04:10。
-  # 04:00 的 WorkBuddy 定时任务先把本机未提交改动 push 到 main，
-  # 留 10 分钟缓冲后再由这里构建，确保包里包含刚提交的改动。
-  # 产物只上传 Artifacts，不发 Release。
-  schedule:
-    - cron: "10 20 * * *"
 
 permissions:
   contents: write      # 发布 Release 需要写权限
