@@ -36,7 +36,8 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          # 与本机已验证的打包环境一致（本机 .venv: Python 3.13.12）
+          python-version: "3.13"
 
       - name: 安装依赖
         run: |
@@ -45,6 +46,20 @@ jobs:
 
       - name: 打包
         run: pyinstaller build/pp6.spec --noconfirm --distpath dist --workpath build/work
+
+      # 打包"成功"但产物残缺是历史坑：Windows 少了 _internal 双击就报缺 dll。
+      # 在做冒烟测试前先把结构钉死，失败就早停，别上传空壳 Artifact。
+      - name: 校验产物结构
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            test -f "dist/PP6ImportBuilder/PP6ImportBuilder.exe"
+            test -d "dist/PP6ImportBuilder/_internal"
+            echo "Windows 产物结构正常：exe + _internal 齐全"
+          else
+            test -f "dist/PP6 Studio.app/Contents/MacOS/PP6ImportBuilder"
+            echo "macOS 产物结构正常：.app 内可执行文件存在"
+          fi
 
       - name: 冒烟测试（macOS）
         if: runner.os == 'macOS'
