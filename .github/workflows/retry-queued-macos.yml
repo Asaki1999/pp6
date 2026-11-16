@@ -1,0 +1,46 @@
+name: retry-queued-macos
+
+# 背景：GitHub 免费 macOS runner 在高峰期排队约 15 分钟会被平台取消，
+# 此时 job 的 steps 为空、runner_id=0 —— 写在 step 里的 retry 根本没机会执行。
+# 因此用 workflow_run 做看守：只在「job 一步都没跑就失败」时重跑，
+# 真正的构建报错（steps 非空）不重跑，避免掩盖代码问题。
+# 用 run_attempt 限制最多额外重试 2 次，防止无限循环。
+on:
+  workflow_run:
+    workflows: ["build-desktop"]
+    types: [completed]
+
+permissions:
+  actions: write
+
+jobs:
+  retry:
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.run_attempt <= 2
+    runs-on: ubuntu-latest
+    steps:
+      - name: 重跑未启动即失败的 job
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const runId = context.payload.workflow_run.id;
+            const attempt = context.payload.workflow_run.run_attempt;
+            const { data } = await github.rest.actions.listJobsForWorkflowRun({
+              owner, repo, run_id: runId, per_page: 100
+            });
+            const jobIds = data.jobs
+              .filter(j =>
+                ['cancelled', 'failure', 'timed_out'].includes(j.conclusion) &&
+                (!j.steps || j.steps.length === 0)
+              )
+              .map(j => j.id);
+            if (jobIds.length === 0) {
+              core.info('没有「未启动即失败」的 job，跳过（可能是真实构建错误）');
+              return;
+            }
+            core.info(`第 ${attempt} 次尝试：重跑 job ${jobIds.join(', ')}`);
+            await github.rest.actions.reRunJobsForWorkflowRun({
+              owner, repo, run_id: runId, job_ids: jobIds
+            });
