@@ -11,6 +11,7 @@ import io
 import json
 import re
 import shutil
+import socket
 import threading
 import traceback
 import webbrowser
@@ -2332,27 +2333,60 @@ class Handler(BaseHTTPRequestHandler):
             return {"ok": False, "error": str(exc)}
 
 
-def make_server(port: int = 8770) -> tuple[ThreadingHTTPServer, int]:
-    """在 port..port+19 里找可用端口，返回 (server, 实际端口)。"""
+def lan_addresses() -> list[str]:
+    """本机局域网 IPv4，供手机/同事在同一 WiFi 下访问。
+
+    先按主机名解析（能拿到多网卡地址），解析不到再用 UDP connect 探出口网卡——
+    后者不发包，只是让内核选出默认路由对应的地址。
+    """
+    found: list[str] = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127.") and ip not in found:
+                found.append(ip)
+    except OSError:
+        pass
+    if not found:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                probe.connect(("8.8.8.8", 80))
+                found.append(probe.getsockname()[0])
+        except OSError:
+            pass
+    return found
+
+
+def make_server(port: int = 8770, host: str = "127.0.0.1") -> tuple[ThreadingHTTPServer, int]:
+    """在 port..port+19 里找可用端口，返回 (server, 实际端口)。
+
+    host 默认只绑回环：桌面壳与本地浏览器够用，也不给同网段留入口。
+    要让手机访问须显式传 0.0.0.0（见 `pp6 ui --lan`）。
+    """
     for candidate in range(port, port + 20):
         try:
-            return ThreadingHTTPServer(("127.0.0.1", candidate), Handler), candidate
+            return ThreadingHTTPServer((host, candidate), Handler), candidate
         except OSError:
             continue
     raise RuntimeError(f"端口 {port}-{port + 19} 都被占用，请用 --port 指定其它端口")
 
 
-def start_background(port: int = 8770) -> tuple[ThreadingHTTPServer, str]:
+def start_background(port: int = 8770, host: str = "127.0.0.1") -> tuple[ThreadingHTTPServer, str]:
     """桌面壳用：后台线程起服务，返回 (server, url)。"""
-    httpd, used = make_server(port)
+    httpd, used = make_server(port, host)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd, f"http://127.0.0.1:{used}/"
 
 
-def serve(port: int = 8770, open_browser: bool = True) -> None:
-    httpd, used = make_server(port)
+def serve(port: int = 8770, open_browser: bool = True, host: str = "127.0.0.1") -> None:
+    httpd, used = make_server(port, host)
     url = f"http://127.0.0.1:{used}/"
     print(f"  pp6kit 已启动 -> {url}")
+    if host not in ("127.0.0.1", "localhost"):
+        print("  手机/同事访问（须同一 WiFi）：")
+        for ip in lan_addresses():
+            print(f"    http://{ip}:{used}/")
+        print("  ⚠ 无口令保护：同网段设备都能打开并查库，用完按 Ctrl+C 关掉")
     print("  按 Ctrl+C 停止")
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()

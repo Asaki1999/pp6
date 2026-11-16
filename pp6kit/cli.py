@@ -186,7 +186,8 @@ def cmd_inspect(args) -> int:
 def cmd_ui(args) -> int:
     from .webui import serve
 
-    serve(args.port, open_browser=not args.no_browser)
+    host = "0.0.0.0" if getattr(args, "lan", False) else args.host
+    serve(args.port, open_browser=not args.no_browser, host=host)
     return 0
 
 
@@ -287,6 +288,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("ui", help="启动本地可视化界面")
     p.add_argument("--port", type=int, default=8770)
     p.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    p.add_argument("--host", default="127.0.0.1", help="监听地址；默认仅本机")
+    p.add_argument("--lan", action="store_true", help="允许同一 WiFi 下的手机/同事访问（等价 --host 0.0.0.0）")
     p.set_defaults(func=lambda a: cmd_ui(a))
 
     p = sub.add_parser("audit", help="审计规则引擎的盲区（需 AI 兜底的问法）")
