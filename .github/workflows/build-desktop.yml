@@ -8,6 +8,10 @@ on:
   push:
     tags:
       - "v*"
+  # GitHub cron 用 UTC；20:00 UTC = 北京时间次日 04:00
+  # 定时跑在默认分支 main 的最新提交上，产物只上传 Artifacts，不发 Release。
+  schedule:
+    - cron: "0 20 * * *"
 
 permissions:
   contents: write      # 发布 Release 需要写权限
