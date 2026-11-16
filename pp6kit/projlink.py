@@ -767,7 +767,9 @@ def save_snapshot_upload(data: bytes) -> dict:
 
     snap = snapshot_from_zip(data, source="package_upload")
     if not snap.fields:
-        raise ValueError("这份 zip 里找不到项目对象（bo/*.xml 中 code=project）")
+        raise ValueError(
+            "这份 zip 里找不到项目对象（bo/*.xml 里 code=project 或物理表 pp_project）。"
+            "请上传「业务对象 › 项目」导出的包；项目立项（project_create）不能当项目字段池")
     token = hashlib.sha1(data).hexdigest()[:20]
     upload_dir().mkdir(parents=True, exist_ok=True)
     save_snapshot(snap, upload_dir() / f"{token}.json")
@@ -826,11 +828,28 @@ def snapshot_from_zip(path_or_bytes, source: str = "package_snapshot") -> Snapsh
         proj, notes = inspect_path(src)
     bo = proj.bo(PROJECT_CODE)
     if bo is None:
-        # 有的包只导出单个对象、编码被改名，取字段最多的那个
-        bo = max(proj.bos, key=lambda b: len(b.fields), default=None)
+        # 编码被改过：按物理表名认（项目对象永远是 pp_project）。
+        bo = next((b for b in proj.bos if (b.tbl_name or "").lower() == PROJECT_TBL), None)
+    if bo is None and len(proj.bos) == 1:
+        # 单对象包：只有这一个对象，基本可断定是用户要的项目包。
+        # 但「项目立项（project_create）」也是单对象包，它的表是 pp_project_create，
+        # 不能当项目字段池用——名字里带「立项」的直接排除。
+        only = proj.bos[0]
+        if "立项" not in (only.name or "") and "project_create" not in (only.code or ""):
+            bo = only
     if bo is None:
-        return Snapshot(source="unavailable",
-                        warnings=["项目包里没有业务对象 XML，无法解析字段"])
+        # 以前这里取「字段最多」的对象，结果一份项目立项包会被当成项目对象，
+        # 拿 88 个立项字段去对齐——比不可用更糟。宁可报错让用户换包。
+        return Snapshot(
+            source="unavailable",
+            warnings=["这份 zip 里没有「项目」对象（bo/*.xml 里 code=project "
+                      "或物理表 pp_project），无法当作项目字段池"])
+    if (bo.tbl_name or "").lower() != PROJECT_TBL and bo.code != PROJECT_CODE:
+        return Snapshot(
+            source="unavailable",
+            warnings=[f"这份 zip 里最像项目的是「{bo.name or bo.code}」"
+                      f"（{bo.tbl_name or '无表名'}），不是项目对象 pp_project；"
+                      f"请上传「业务对象 › 项目」导出的包"])
     fields = [_field_from_bo_field(f, i) for i, f in enumerate(bo.fields, start=1)]
     business = [f for f in fields
                 if f.code not in SYSTEM_CODES and f.code not in _EXTRA_NON_BUSINESS]
@@ -1743,7 +1762,9 @@ def analyze(project, snap: Snapshot | None = None,
     2026-11-15 口径：只有直接对应（E0 同族唯一）自动覆盖；其余进 ``pending``，
     等用户在弹窗里逐条勾。``pendingCount`` = 需要用户看一眼的条数。
     """
-    snap = snap if snap is not None else load_snapshot()
+    # 快照 token：用户上传项目包后，preview（analyze）和 build（apply）必须用同一份，
+    # 否则页面上看到的是「随包快照」的对齐结果，出包却按上传包改字段——两边对不上。
+    snap = snap if snap is not None else load_snapshot((decisions or {}).get("snapshot") or None)
     pool = snap.pool()
     items: list[dict] = []
     diffs: list[dict] = []

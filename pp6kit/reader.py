@@ -280,6 +280,9 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
     auto_notes: list[str] = []      # 自动生成的编码提示（不是错误，是告知）
     wb = load_workbook(path, data_only=True)
     proj = Project()
+    # 记下原始页签名：「标准模板但没填」与「根本不是模板」都是 0 个对象，
+    # 界面要靠它决定是提示去填 1_业务对象，还是把文件交给 AI 识别。
+    proj.sheet_names = list(wb.sheetnames)
 
     # ---- 项目设置
     if spec.S_SETTINGS in wb.sheetnames:
@@ -538,7 +541,7 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
                     width=_int(get("width"), 90),
                     kind=kind,
                     label_width=_int(get("label_width"), 0),
-                    auto_hidden=True if get("auto_hidden") is None else truthy(get("auto_hidden")),
+                    auto_hidden=False if get("auto_hidden") is None else truthy(get("auto_hidden")),
                 )
             )
 

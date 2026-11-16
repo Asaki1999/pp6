@@ -23,6 +23,7 @@ import json
 from .ids import new_id, short_id
 from .model import (
     EMPTY_OPERATORS,
+    FORM_CREATE,
     FORM_DETAIL,
     HIDE_OPERATORS,
     LABEL_BY_OP,
@@ -266,6 +267,29 @@ def _inherit_table_columns(form: Form, bo: Bo | None, notices: list[str]) -> Non
                 f"控件 {ff.name}: 对象里没有对应字段或字段不是「表格」，"
                 f"tableField 已退回单行文本")
             ff.field_type = "text"
+
+    # 3. 4_表单控件 里漏写了表格字段：文档写的是「字段类型选『表格』会自动出」，
+    # 但之前只对齐已有控件，没写控件行时表单上压根没有这张子表——
+    # 用户看到的就是「表格类型没导入进去」（2026-11-16 反馈）。
+    # 只补新建/详情这类全量表单；条件专用/导入专用只放用户挑的控件，不插队。
+    if form.kind in (FORM_CREATE, FORM_DETAIL, "detail_expand"):
+        have = {ff.name for ff in form.fields}
+        for bf in sorted(bo.fields, key=lambda x: x.sn):
+            if bf.type_new != "table" or bf.code in have:
+                continue
+            form.fields.append(FormField(
+                form_key=form.key,
+                name=bf.code,
+                label=bf.name,
+                field_type="tableField",
+                table_columns=list(bf.table_columns or []),
+                readonly=form.kind != FORM_CREATE,
+                full_row=True,
+                group="",
+            ))
+            notices.append(
+                f"表单 {form.key}: 表格字段 {bf.code} 没在「4_表单控件」里，"
+                f"已自动补 tableField（不需要就去那行删掉）")
 
 
 def _is_cascade_control(field: FormField, parents: set[str] | None = None) -> bool:
@@ -739,6 +763,13 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
     # 骨架来自某个具体表单，其中的自定义脚本/校验规则指向它的字段，必须剔除
     for risky in ("script", "formRules", "verifys"):
         ext.pop(risky, None)
+    # 骨架里的 moreBtn 是「悬浮更多按钮」——原生**详情表单**才用它
+    # （顶部按钮收进一颗悬浮按钮里，悬停才展开）。新建表单的原生导出包
+    # 都没有这个键，只有 buttons 那一组底部按钮。
+    # 我们在下面保留了完整 buttons，再留着 moreBtn 就会在右下角多出一块
+    # 空白热区，鼠标移上去展开「取消 / 保存并继续 / 保存」，和底部按钮重复
+    # （2026-11-16 用户在 8112 测试-sjz 新建页看到的现象）。
+    ext.pop("moreBtn", None)
 
     # 条件隐藏：extendAttr.formRules。没规则就写空数组（跟线上一致），
     # 有规则才打开 clearOnHide 开关。
@@ -834,10 +865,14 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
 
     # 隐藏字段挂在根上（与线上一致：id / version 不在任何分区里）
     hidden_names = []
+    flow_form = bool(bo and bo.flow_driven)
+    # 普通对象：默认一个隐藏控件都不塞（2026-11-16 用户要求，设计器里太碍眼）。
+    # 流程对象：保留 id/version + 5 个流程字段——流程任务打开表单要拿主键，
+    # 提交时流程状态也要有落点，这套是功能所需，不能省。
+    # 普通表单确实要 id/version 时，在 3_表单 把「补隐藏字段」填「是」。
+    need_hidden = form.auto_hidden or flow_form
     for which, label in _HIDDEN_FIELDS:
-        # id/version 受 auto_hidden 控制；流程字段即使表单关了自动隐藏也要补，
-        # 否则流程反写没有落点。
-        if not form.auto_hidden and which not in _PROCESS_CODES:
+        if not need_hidden:
             continue
         if any(f.name == which for f in form.fields):
             continue

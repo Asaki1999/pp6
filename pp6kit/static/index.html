@@ -293,7 +293,7 @@
           <input type="file" id="fileInput" accept=".xlsx,.xlsm,.pdf,.docx" hidden>
           <span>选择文件</span>
         </label>
-        <span class="sub" id="reimportHint">标准 Excel 直接解析；PDF / Word 会提取文字，确认后再生成。有相近字段会先弹窗确认</span>
+        <span class="sub" id="reimportHint">标准 Excel 直接解析；自家表格、PDF / Word 交给 AI 识别（PDF / Word 提取文字后确认再生成）。有相近字段会先弹窗确认</span>
         <button class="link" id="btnDemo">载入示例看效果</button>
       </div>
     </section>
@@ -689,6 +689,30 @@
 
 <!-- 第 1 步（业务对象关联项目）已经不在这里了：它改成初始页上的 #plPreImportBar
      三档控件，导入前就定好，导入后不再弹窗问一遍。 -->
+
+<!-- 没连数据库时，「关联项目」需要一个字段池：让用户导入一份项目对象 zip。
+     上传后 service 端存成快照，后续 parse/build 都带 token 用它。 -->
+<div class="pl-mask" id="psMask" hidden>
+  <div class="pl-modal" role="dialog" aria-modal="true" aria-labelledby="psTitle">
+    <div class="pl-modal-head">
+      <div>
+        <h3 id="psTitle">未检测到已连接的数据库</h3>
+        <div class="sub">关联项目需要「项目」对象的字段定义</div>
+      </div>
+      <button class="pl-modal-close" id="psClose" title="关闭（Esc）">×</button>
+    </div>
+    <div class="pl-modal-body">
+      <p class="ps-lead">当前 App 没有配置数据库连接，读不到系统里「项目」对象的字段。</p>
+      <p class="ps-lead">请导入一份<strong>项目 zip</strong>（包里 <code>bo/*.xml</code> 有 <code>code="project"</code> 的同步包；项目对象、项目列表/表单导出的包都可以）。导入后用它和你的 Excel 对比，找出同名与相似字段。</p>
+      <div class="pl-modal-meta muted" id="psStatus"></div>
+      <input type="file" id="psFile" accept=".zip" hidden>
+    </div>
+    <div class="pl-modal-foot">
+      <button class="btn ghost" id="psCancel">暂不关联</button>
+      <button class="btn primary" id="psPick">选择项目 zip</button>
+    </div>
+  </div>
+</div>
 
 <!-- 「相近字段确认」弹窗：勾了「关联项目」的对象里，只有**直接对应**（同名同族）
      的字段自动覆盖；语义相近 / 可能相关 / 需确认的，逐条列出来由用户勾。

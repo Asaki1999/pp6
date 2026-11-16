@@ -1165,6 +1165,71 @@ select.ai-in { cursor: pointer; }
 .ai-edit tr.bad td:first-child { box-shadow: inset 3px 0 0 #e8a33d; }
 .ai-obj { max-width: 220px; }
 
+/* 选项值：下拉查看 + 逐个删除 */
+.ai-choice-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ai-choice-btn:hover { border-color: var(--accent); color: var(--accent); }
+.ai-choice-btn .ai-caret { color: var(--faint); font-size: 10px; line-height: 1; }
+.ai-choice-pop {
+  position: fixed;
+  z-index: 1200;
+  width: 288px;
+  max-height: 360px;
+  padding: 10px 12px 9px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-3);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ai-choice-pop[hidden] { display: none; }
+.ai-choice-head { font-size: 12px; font-weight: 600; color: var(--text); }
+.ai-choice-tags {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  max-height: 190px; overflow: auto;
+}
+.ai-choice-tag {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 2px 3px 2px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text);
+}
+.ai-choice-tag button {
+  border: 0; background: transparent; cursor: pointer;
+  color: var(--faint); font-size: 14px; line-height: 1;
+  padding: 0 3px; border-radius: 999px;
+}
+.ai-choice-tag button:hover { color: var(--danger); background: var(--danger-soft); }
+.ai-choice-add {
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text);
+  background: #fff;
+}
+.ai-choice-add:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.ai-choice-hint, .ai-choice-empty { font-size: 11px; color: var(--faint); }
+.ai-choice-hint { line-height: 1.4; }
+
 /* 表单预览 */
 .ai-form-head {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -1218,6 +1283,45 @@ select.ai-in { cursor: pointer; }
 .ai-kv > span { color: var(--muted); flex: 0 0 60px; }
 .ai-kv > b { font-weight: 400; display: flex; flex-wrap: wrap; gap: 5px; }
 .ai-note-line { font-size: 12px; color: var(--muted); padding-left: 72px; }
+
+/* 显示列勾选：字段多时两列、可滚动，别把整张卡片撑长 */
+.ai-col-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 2px 0 0 72px;
+  font-size: 12px;
+}
+.ai-col-actions { display: flex; gap: 10px; flex: none; }
+.ai-col-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 4px 10px;
+  padding-left: 72px;
+  max-height: 220px;
+  overflow: auto;
+}
+.ai-col-item {
+  display: flex; align-items: center; gap: 7px;
+  padding: 4px 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 12.5px;
+  cursor: pointer;
+  min-width: 0;
+}
+.ai-col-item:hover { background: var(--surface-2); border-color: var(--border); }
+.ai-col-item input { accent-color: var(--accent); margin: 0; flex: none; }
+.ai-col-item span {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ai-col-item code {
+  flex: 0 1 auto;
+  max-width: 46%;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* 一个文件里有多张表单时，顶上给个换表下拉 */
 .ai-sheetpick {
@@ -2309,6 +2413,23 @@ select.ai-in { cursor: pointer; }
   background: var(--surface-2);
 }
 body.pl-modal-open { overflow: hidden; }
+
+/* 「没连库 → 导入项目 zip」弹窗 */
+.ps-lead {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text-2);
+}
+.ps-lead code {
+  padding: 1px 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+#psStatus.bad { color: var(--danger); }
 
 .pl-modal-close {
   border: 0; background: transparent; font-size: 22px; line-height: 1;

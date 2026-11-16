@@ -2482,3 +2482,27 @@ def _():
     assert f["steps"] == [3], f
     assert f["renders"] == 1, f
     assert f["deferred"] is False, f
+
+
+@case("PL66", "projlink", "没连库时上传项目 zip：只认项目对象（pp_project），不拿立项包凑数", "P0",
+      ["上传包只导出 project、编码可能被改 → 按物理表 pp_project 认",
+       "项目立项（project_create / pp_project_create）不能被当成项目字段池",
+       "以前取「字段最多」的对象，一份 88 字段的立项包会顶替 42 字段的项目对象",
+       "上传后可被 analyze 当快照用（snapshotSource=package_upload）"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    good = projlink.snapshot_from_zip((root / "PP6" / "业务对象" / "项目.zip").read_bytes(),
+                                      source="package_upload")
+    assert good.fields, good.warnings
+    assert good.project.get("code") == "project"
+    assert good.project.get("tbl") == "pp_project"
+    assert len(good.fields) >= 30
+
+    bad = projlink.snapshot_from_zip(
+        (root / "PP6" / "流程" / "config-sync-20261113150255.zip").read_bytes(),
+        source="package_upload")
+    assert not bad.fields, "立项包（project_create）被当成项目字段池了"
+    assert bad.source == "unavailable"
+    assert any("pp_project" in w for w in bad.warnings), bad.warnings

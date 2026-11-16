@@ -172,7 +172,8 @@ COLUMNS: dict[str, list[Col]] = {
         Col("面板宽度%", "width", 12, note="出包统一 90%，此列仅作记录"),
         Col("标签宽度px", "label_width", 12, note="新建 106 / 条件专用 160，留空按类型默认"),
         Col("补隐藏字段", "auto_hidden", 12, choices=["是", "否"],
-            note="自动补 id/version 隐藏控件，新建类表单建议保留"),
+            note="默认「否」：普通对象的表单上不塞 id/version 隐藏控件。"
+                 "填「是」才补；流程对象始终保留整套（id/version + 5 个流程字段，流程反写要用）"),
     ],
     S_FORMFIELD: [
         Col("表单key", "form_key", 24, True),

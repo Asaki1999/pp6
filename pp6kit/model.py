@@ -600,7 +600,12 @@ class BoField:
             "fieldName": self.resolved_field_name(),
             "name": self.name or self.code,
             "desc": self.desc or self.name or self.code,
-            "type": "base",
+            # 表格字段不落物理列，原生包里 type 一律是空串（不是 base）。
+            # 实测两份生产包：table 全部 type=""，普通字段才是 base。
+            # 写成 base 时系统按普通列处理，表格会被当成大文本导入，
+            # 子表和 tableField 控件都挂不上（2026-11-16 用户反馈
+            # 「生成的 zip 包表格类型没导入进去」）。
+            "type": "" if type_new == "table" else "base",
             "datatype": datatype,
             "dataTypeNew": type_new,
             "objectType": object_type,
@@ -735,7 +740,11 @@ class Form:
     # 用户是否显式指定了宽度（Excel 里填了「弹窗宽度」列才为真）
     width_explicit: bool = False
     label_width: int = 0
-    auto_hidden: bool = True
+    # 是否在表单上补 id/version 隐藏控件。**默认不补**（2026-11-16 用户要求：
+    # 生成器塞上去的隐藏字段在表单设计器里碍眼，默认不要）。
+    # 需要时在 3_表单 的「补隐藏字段」填「是」；流程对象始终保留整套
+    # （id/version + 5 个流程字段），流程任务提交要用，见 gen_form.render。
+    auto_hidden: bool = False
     fields: list[FormField] = field(default_factory=list)
     # 条件隐藏规则。同一控件可以有多条（系统里是并列的独立规则，
     # 满足任一即隐藏，等价于 OR），所以这里是列表而不是挂在字段上。
@@ -939,6 +948,9 @@ class Project:
     out_dir: str = "out"
     # 读取时自动补齐的明细（编码按名称生成、关联对象对到真实编码），供界面提示用
     auto_notes: list[str] = field(default_factory=list)
+    # 读到的原始工作表名。用来区分「标准模板但一个字没填」和「压根不是模板」——
+    # 两者都是 0 个对象，前者该提示去 1_业务对象 填，后者该交给 AI 识别。
+    sheet_names: list[str] = field(default_factory=list)
 
     def bo(self, code: str) -> Bo | None:
         for b in self.bos:

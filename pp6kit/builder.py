@@ -12,7 +12,9 @@ from . import blueprint, gen_bo, gen_form, gen_tpl, gen_workflow, modules as mod
 from .gen_form import Snippets
 from .ids import new_id
 from .model import (
+    FORM_CREATE,
     FORM_DETAIL,
+    FORM_IMPORT,
     PROCESS_FIELDS,
     WF_STATE_OPTIONS,
     Bo,
@@ -831,6 +833,28 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
     for form in project.forms:
         form_of_bo.setdefault(form.bo_code, form.key)
 
+    # 列表工具栏的「新建」按钮：打开新建类表单（详情表单只读，挂上去点开填不了），
+    # 文案直接用那张表单的名字。不能沿用骨架里的「新建项目」——样例是项目列表，
+    # 照抄会让所有列表的按钮都叫「新建项目」。
+    list_create_form: dict[str, Form] = {}
+    list_import_form: dict[str, Form] = {}
+    for form in project.forms:
+        if form.kind == FORM_CREATE:
+            list_create_form.setdefault(form.bo_code, form)
+        elif form.kind == FORM_IMPORT:
+            list_import_form.setdefault(form.bo_code, form)
+    # 只影响列表按钮的去向；form_of_bo 仍是「第一个表单」，别动待办入口的行为
+    list_form_of_bo: dict[str, str] = dict(form_of_bo)
+    for code, form in list_create_form.items():
+        list_form_of_bo[code] = form.key
+
+    def _new_button_label(bo: Bo) -> str:
+        f = list_create_form.get(bo.code)
+        name = (f.name or "").strip() if f else ""
+        if not name:
+            return f"新建{bo.name}"
+        return name if name.startswith("新建") else f"新建{name}"
+
     # ---- 详情表单：每个有表单的对象都补一张「所有字段只读」的详情表单。
     # 用户 2026-11-15 明确要求：普通模式 / 流程模式都生成「新建 + 详情」，
     # 不同场景用不同表单。之前只在列表开了「级联详情字段」时补，AI 生成的对象
@@ -903,13 +927,19 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
                                       len(xml.encode("utf-8")), "form", xml))
 
     # ---- 列表
+    all_form_keys = {f.key for f in project.forms}
     for lst in project.lists if plan.has("list") else []:
         bo = project.bo(lst.bo_code)
         if bo is None:
             res.notices.append(f"列表 {lst.key}: 对象 {lst.bo_code} 不存在，已跳过")
             continue
-        xml, notices = gen_tpl.render_list(lst, bo, form_of_bo.get(bo.code, ""), snippets, tenant,
-                                           detail_form_key=detail_of_bo.get(bo.code, ""))
+        imp = list_import_form.get(bo.code)
+        xml, notices = gen_tpl.render_list(
+            lst, bo, list_form_of_bo.get(bo.code, ""), snippets, tenant,
+            detail_form_key=detail_of_bo.get(bo.code, ""),
+            new_button_label=_new_button_label(bo),
+            form_keys=all_form_keys,
+            import_form_key=imp.key if imp else "")
         res.notices.extend(notices)
         zp, entry = _write_zip(out / "data_template", "data_template", f"{prefix}-{lst.key}.xml", xml)
         res.artifacts.append(Artifact("列表", lst.key, zp, entry,

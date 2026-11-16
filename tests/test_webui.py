@@ -465,3 +465,125 @@ def _():
                    "entryChoice", "entryPanels", "entryAi", "entryExcel"):
         assert wanted in p.ids, f"#{wanted} 不是真实 DOM 元素（可能在注释里）"
     assert not any("btnFlowXml" in c for c in p.comments), "流程 XML 按钮还在注释里"
+
+
+@case("WEB26", "webui", "文件生成：不是标准模板的 Excel 自动转 AI 识别", "P0",
+      ["入口卡承诺「AI 识别字段后生成」，标准模板才直接解析",
+       "自家 Excel 以前解析成 0 个对象停在结果页，看着像「不支持 AI 分析文件」",
+       "AI 回填的 Excel（fromAi）和流程页 quiet 上传不能被这条兜底劫持",
+       "扫描版 PDF 提取 0 字要明确报错，不能把空文本填进输入框"])
+def _():
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[1]
+          / "pp6kit" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "function looksLikeTemplate(" in js, "缺少「是不是标准模板」的判定"
+    start = js.index("async function handleFile(")
+    body = js[start:js.index("async function loadDemo(")]
+    assert "!looksLikeTemplate(data)" in body, "handleFile 没判断解析结果是不是模板"
+    assert "await analyzeSheet(file)" in body, "不是模板时没把文件交给 AI 识别"
+    assert "!fromAi && !quiet" in body, "AI 回填 / 流程页上传不该走这条兜底"
+    assert "这份文档没有可提取的文字" in js, "扫描版 PDF 提取 0 字还当成功"
+
+
+@case("WEB27", "webui", "解析结果带 looksTemplate：空模板 vs 陌生表格分得开", "P1",
+      ["空的标准模板也是模板：该提示去 1_业务对象 填，不能丢给 AI",
+       "陌生表格（没有标准页签）才交给 AI 识别",
+       "两个都是 0 个对象，只能靠页签名区分"])
+def _():
+    import io
+
+    from openpyxl import Workbook
+
+    from pp6kit import webui
+    from pp6kit.model import Project
+    from pp6kit.template import build_workbook
+
+    buf = io.BytesIO()
+    build_workbook(Project()).save(buf)
+    empty = webui.parse_excel(buf.getvalue())
+    assert empty["looksTemplate"] is True, "空白标准模板被当成陌生文件"
+    assert not empty["objects"], "空白模板不该解析出对象"
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "采购申请"
+    ws.append(["申请单号", "申请人", "金额"])
+    ws.append(["CG-001", "张三", 12000])
+    buf = io.BytesIO()
+    wb.save(buf)
+    plain = webui.parse_excel(buf.getvalue())
+    assert plain["looksTemplate"] is False, "陌生表格被当成标准模板"
+    assert not plain["objects"]
+
+
+@case("WEB28", "webui", "业务对象预览的选项值：下拉查看 + 逐个删除", "P1",
+      ["选项值以前是一行逗号分隔文本，选项一多没法看、也不好删中间一个",
+       "改成「N 个选项」按钮 + 浮层，浮层挂 body，避开 .tbl-wrap 的 overflow 裁切",
+       "每个值带 × 删除，回车可继续添加；删完计数同步，导出 Excel 用的是改后的 choices"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    js = (root / "pp6kit" / "static" / "app.js").read_text(encoding="utf-8")
+    css = (root / "pp6kit" / "static" / "style.css").read_text(encoding="utf-8")
+
+    assert 'data-ctoggle="${i}"' in js, "选项列没换成下拉按钮"
+    assert "ai-choice-btn" in js and ".ai-choice-btn" in css
+    assert 'document.body.appendChild(pop)' in js, \
+        "浮层必须挂 body，放单元格里会被 .tbl-wrap 的 overflow 裁掉"
+    assert 'data-cdel="${j}"' in js and "f.choices.splice(j, 1)" in js, \
+        "选项值没有删除入口"
+    assert "renderAiChoicePop()" in js and "updateAiChoiceCount" in js, \
+        "删/加之后没刷新标签和计数"
+    assert "closeAiChoicePop()" in js, "点外面/滚动/Esc 没关闭浮层"
+    assert "选项值，逗号分隔" not in js, "旧的逗号分隔输入还在"
+    assert ".ai-choice-pop" in css and ".ai-choice-tag" in css
+
+
+@case("WEB29", "webui", "未连库时选「关联项目」：弹窗导入项目 zip，token 随决策头发回", "P0",
+      ["没配数据库时读不到 pp_project 字段，关联项目等于空转",
+       "弹窗要能选 zip、上传到 /api/project-snapshot，拿到 token",
+       "token 要进 X-Project-Link.snapshot，parse/build 用同一份快照",
+       "用户取消要回退开关，不能留下勾着但没快照的状态"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    js = (root / "pp6kit" / "static" / "app.js").read_text(encoding="utf-8")
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+
+    for mark in ('id="psMask"', 'id="psFile"', 'id="psPick"', 'id="psCancel"'):
+        assert mark in html, f"弹窗缺 {mark}"
+    assert "未检测到已连接的数据库" in html
+    assert "function ensureProjectSnapshot(" in js
+    assert "function askProjectZip(" in js
+    assert '"/api/project-snapshot"' in js
+    # 决策头必须带 snapshot token
+    assert "payload.snapshot = state.plSnapshotToken" in js
+    # 两个入口都要先走 ensure：导入前两档 + 对象卡片开关
+    assert "value === \"on\" && !(await ensureProjectSnapshot())" in js
+    assert "checked && !(await ensureProjectSnapshot())" in js
+    # 取消要回退勾选
+    assert "syncPlPreInputs();" in js
+
+
+@case("WEB30", "webui", "列表预览的显示列可自己勾选（不再全量写死）", "P0",
+      ["列表视图页签给每个对象字段一个复选框，勾选写回 state.aiData.list.columns",
+       "至少保留 1 列；清空只留第一列，避免出包退回全字段",
+       "级联详情下拉跟着显示列走，删列时清掉失效的 detailField"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    js = (root / "pp6kit" / "static" / "app.js").read_text(encoding="utf-8")
+    css = (root / "pp6kit" / "static" / "style.css").read_text(encoding="utf-8")
+
+    assert 'id="aiListCols"' in js, "列表预览没有勾选容器"
+    assert 'data-col="${esc(f.code)}"' in js, "字段行缺复选框"
+    assert "function bindListColumnPicker(" in js
+    assert "bindListColumnPicker(d);" in js, "renderAiActions 没绑定勾选"
+    assert "列表至少要保留 1 列" in js, "没有拦住「清空到 0 列」"
+    assert "list.columns = fields.slice(0, 1)" in js, "清空按钮没兜底留第一列"
+    assert ".ai-col-grid" in css and ".ai-col-item" in css

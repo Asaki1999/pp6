@@ -95,6 +95,9 @@ def _():
     a = _bo_attr(bo, "planExcel")
     assert a["dataTypeNew"] == "table", a
     assert a["datatype"] == "clob", "表格列按 JSON 存 clob，不该是 varchar"
+    # 原生两份生产包里 table 字段的 type 一律是空串（普通字段才是 base）。
+    # 写成 base 系统会按普通列建物理列，表格被当成大文本导入。
+    assert a["type"] == "", f"表格字段不该建物理列，type 应为空：{a}"
     assert "length" not in a and "format" not in a, f"表格字段不该带长度/格式：{a}"
     opts = _opt(bo, "planExcel")
     # 键序/键集与 project_create 的 planExcel 完全一致
@@ -304,3 +307,31 @@ def _():
     assert cols[1].precision == 0 and cols[2].precision == 2
     assert cols[4].choices == ["是", "否"]
     _body, _name = webui.build_zip(buf.getvalue())
+
+
+@case("TBF15", "tablefield", "4_表单控件 漏写表格字段时，新建/详情表单自动补 tableField", "P0",
+      ["文档承诺「字段类型选表格会自动出」，之前只对齐已写的控件行",
+       "漏写控件行时表单上看不到这张子表，用户会以为表格没导进去",
+       "条件专用表单不插队——它只放用户挑的控件"])
+def _():
+    def _forms(z):
+        return {n: t for n, t in texts(z).items() if n.startswith("form/")}
+
+    # 新建表单：控件表只写了 name，planExcel 应该自动补出来
+    create_forms = _forms(_zip(_sheets(formfields=[
+        {"表单key": f"create_{BO}", "字段编码": "name",
+         "显示标签": "项目名称", "控件类型": "text"},
+    ])))
+    create_key = next(k for k in create_forms if f"create_{BO}" in k)
+    _a, fo = _table_widget(create_forms[create_key], "planExcel")
+    assert [c["label"] for c in fo["columns"]] == ["阶段", "计划开始时间", "金额", "是否里程碑"]
+
+    # 条件专用表单：同样只写 name，不该被塞进表格控件
+    cond_forms = _forms(_zip(_sheets(formkind="条件专用表单", formfields=[
+        {"表单key": f"create_{BO}", "字段编码": "name",
+         "显示标签": "项目名称", "控件类型": "text"},
+    ])))
+    # 只检查条件专用那张；自动补的详情表单本来就应该有全部字段
+    cond_key = next(k for k in cond_forms if f"create_{BO}" in k)
+    assert "tableField" not in cond_forms[cond_key], \
+        "条件专用表单不该自动插表格控件"

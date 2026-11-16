@@ -410,3 +410,264 @@ def _():
     fn_btn = out["function_buttons"][0]
     assert fn_btn["permission_object_type"] == bo.code
     assert "permission_key" not in fn_btn, "功能按钮又被塞回了 permission_key"
+
+
+@case("BLD22", "builder", "列表「新建」按钮的文案跟着对象走，不沿用样例的「新建项目」", "P0",
+      ["骨架来自项目列表，照抄会让合同/采购/会议的列表都挂着「新建项目」",
+       "按钮文案 = 新建表单的名字（新建采购申请）",
+       "grid / board / gantt / chart 四个视图都要改，缺一个就露馅"])
+def _():
+    import json
+    import xml.etree.ElementTree as ET
+
+    body, _ = build({
+        S.S_BO: [{"对象名称": "采购申请", "对象编码": "purchase",
+                  "物理表名": "pp_purchase"}],
+        S.S_FIELD: [
+            field("purchase", "名称", "字符串"),
+            field("purchase", "状态", "选项", 选项值="待审批,已通过,已驳回"),
+            field("purchase", "开始日期", "日期"),
+            field("purchase", "截止日期", "日期"),
+        ],
+        S.S_FORM: [{"表单key": "create_purchase", "表单名称": "新建采购申请",
+                    "对象编码": "purchase", "表单类型": "新建表单"}],
+        S.S_FORMFIELD: [
+            {"表单key": "create_purchase", "字段编码": "mingCheng",
+             "显示标签": "名称", "控件类型": "text"},
+        ],
+        S.S_LIST: [{"列表key": "purchase_list", "列表名称": "采购申请列表",
+                    "对象编码": "purchase", "视图类型": "grid,board,gantt,chart"}],
+    })
+
+    labels: list[str] = []
+    for name, text in texts(body).items():
+        if not name.startswith("data_template/"):
+            continue
+        for node in ET.fromstring(text).iter():
+            raw = node.get("functionButtons")
+            if not raw:
+                continue
+            for btn in json.loads(raw).get("toolbar_buttons", []):
+                if btn.get("button_type") == "custom":
+                    labels.append(btn.get("label") or "")
+
+    assert labels, "列表里一个工具栏「新建」按钮都没生成"
+    assert set(labels) == {"新建采购申请"}, \
+        f"「新建」按钮文案没跟着对象走，实际：{sorted(set(labels))}"
+    assert "新建项目" not in "".join(texts(body).values()), \
+        "产物里还残留着样例的项目文案"
+
+
+@case("BLD23", "builder", "列表「更多」菜单与扩展列不再照抄项目样例", "P0",
+      ["扩展列（项目类型/阶段/经理/部门）指向 pp_project，必须去掉",
+       "参数配置指向 project_config_dev1、导入指向 project_import_validation_form，包里没有就该消失",
+       "导出列 = 当前显示列，不是样例的 12 个项目字段",
+       "edit_buttons 的繁体「關閉」统一成「关闭」"])
+def _():
+    import json
+    import xml.etree.ElementTree as ET
+
+    body, _ = build({
+        S.S_BO: [{"对象名称": "采购申请", "对象编码": "purchase",
+                  "物理表名": "pp_purchase"}],
+        S.S_FIELD: [
+            field("purchase", "名称", "字符串"),
+            field("purchase", "状态", "选项", 选项值="待审批,已通过"),
+            field("purchase", "开始日期", "日期"),
+            field("purchase", "截止日期", "日期"),
+        ],
+        S.S_FORM: [{"表单key": "create_purchase", "表单名称": "新建采购申请",
+                    "对象编码": "purchase", "表单类型": "新建表单"}],
+        S.S_FORMFIELD: [
+            {"表单key": "create_purchase", "字段编码": "mingCheng",
+             "显示标签": "名称", "控件类型": "text"},
+        ],
+        S.S_LIST: [{"列表key": "purchase_list", "列表名称": "采购申请列表",
+                    "对象编码": "purchase", "视图类型": "grid,board,gantt,chart"}],
+    })
+
+    all_xml = "".join(texts(body).values())
+    for junk in ("pp_project", "專案", "project_config_dev1",
+                 "project_import_validation_form", "项目类型", "项目经理"):
+        assert junk not in all_xml, f"产物里还残留样例的 {junk}"
+
+    tpl_nodes = [n for name, text in texts(body).items()
+                 if name.startswith("data_template/")
+                 for n in ET.fromstring(text).iter("dataTemplateTpl")]
+    assert tpl_nodes, "包里没有列表模板"
+
+    saw_export = saw_more = False
+    for node in tpl_nodes:
+        assert not node.get("extColumns"), "扩展列还留着（指向别人的表）"
+        attrs = json.loads(node.get("attrs") or "{}")
+        assert "tooltip_field" not in attrs, "甘特悬浮提示还挂着项目字段"
+        cfg = json.loads(node.get("functionButtons") or "{}")
+        assert "關閉" not in [b.get("label") for b in cfg.get("edit_buttons", [])], \
+            "编辑态按钮还是繁体「關閉」"
+        for btn in cfg.get("toolbar_buttons", []):
+            if btn.get("button_type") != "more":
+                continue
+            saw_more = True
+            menus = btn.get("menus", [])
+            assert menus, "「更多」一项菜单都不剩了，按钮本身也该收掉"
+            kinds = {m.get("button_type") for m in menus}
+            labels = {m.get("label") for m in menus}
+            assert "参数配置" not in labels, "「参数配置」还指向样例的配置表单"
+            assert "import" not in kinds, "包里没有导入专用表单，导入菜单不该留"
+            for m in menus:
+                if m.get("button_type") == "export":
+                    saw_export = True
+                    fields = (m.get("exportColumns") or {}).get("fields") or []
+                    names = {f.get("objName") for f in fields}
+                    assert names <= {"pp_purchase"}, f"导出列指向别的表：{names}"
+                    assert fields, "导出列被清空了"
+
+    assert saw_more and saw_export, "更多菜单/导出按钮没生成"
+
+
+@case("BLD24", "builder", "有导入专用表单时，「导入」菜单接到本对象上", "P1",
+      ["importFormKey 指向本包的导入专用表单",
+       "导入模板文件名跟对象名走",
+       "去重字段用系统必备的 name（样例是 code，新对象不一定有）"])
+def _():
+    import json
+    import xml.etree.ElementTree as ET
+
+    body, _ = build({
+        S.S_BO: [{"对象名称": "采购申请", "对象编码": "purchase",
+                  "物理表名": "pp_purchase"}],
+        S.S_FIELD: [field("purchase", "名称", "字符串")],
+        S.S_FORM: [
+            {"表单key": "create_purchase", "表单名称": "新建采购申请",
+             "对象编码": "purchase", "表单类型": "新建表单"},
+            {"表单key": "import_purchase", "表单名称": "导入专用_采购申请",
+             "对象编码": "purchase", "表单类型": "导入专用表单"},
+        ],
+        S.S_FORMFIELD: [
+            {"表单key": "create_purchase", "字段编码": "mingCheng",
+             "显示标签": "名称", "控件类型": "text"},
+            {"表单key": "import_purchase", "字段编码": "mingCheng",
+             "显示标签": "名称", "控件类型": "text"},
+        ],
+        S.S_LIST: [{"列表key": "purchase_list", "列表名称": "采购申请列表",
+                    "对象编码": "purchase", "视图类型": "grid"}],
+    })
+
+    imp = None
+    for name, text in texts(body).items():
+        if not name.startswith("data_template/"):
+            continue
+        for node in ET.fromstring(text).iter("dataTemplateTpl"):
+            for btn in json.loads(node.get("functionButtons") or "{}").get("toolbar_buttons", []):
+                for menu in btn.get("menus", []) or []:
+                    if menu.get("button_type") == "import":
+                        imp = menu
+    assert imp is not None, "包里明明有导入专用表单，导入菜单却没了"
+    assert imp["importFormKey"] == "import_purchase", "导入校验表单没接到本对象"
+    assert imp["importExcelFileName"] == "导入采购申请模板"
+    assert imp["importUniqueFieldsName"] == "name", "去重字段还是样例的 code"
+    assert imp["permission_object_type"] == "purchase"
+
+
+@case("BLD25", "builder", "级联详情真的能点开：列级联补齐原生键，看板不再跳项目页", "P0",
+      ["原生可点击列带 enabledCascade / triggerEvent，缺了有的前端不渲染成链接",
+       "cascade_configuration 少了 inheritanceFormSetting / pkValue，导入后 casadeFields 会被清空",
+       "看板模板级 cascade_configuration 原样照抄项目看板的 /project/projectLayout/，点卡片跳到别人的项目页",
+       "表单的 moreBtn 是悬浮「更多」按钮，和底部按钮重复，原生新建表单没有它"])
+def _():
+    import json
+    import xml.etree.ElementTree as ET
+
+    body, _ = build({
+        S.S_BO: [{"对象名称": "采购申请", "对象编码": "purchase",
+                  "物理表名": "pp_purchase"}],
+        S.S_FIELD: [
+            field("purchase", "名称", "字符串"),
+            field("purchase", "状态", "选项", 选项值="待审批,已通过"),
+            field("purchase", "开始日期", "日期"),
+            field("purchase", "截止日期", "日期"),
+        ],
+        S.S_FORM: [{"表单key": "create_purchase", "表单名称": "新建采购申请",
+                    "对象编码": "purchase", "表单类型": "新建表单"}],
+        S.S_FORMFIELD: [
+            {"表单key": "create_purchase", "字段编码": "mingCheng",
+             "显示标签": "名称", "控件类型": "text"},
+        ],
+        S.S_LIST: [{"列表key": "purchase_list", "列表名称": "采购申请列表",
+                    "对象编码": "purchase", "视图类型": "grid,board",
+                    "级联详情字段": "name"}],
+    })
+
+    all_xml = "".join(texts(body).values())
+    assert "/project/projectLayout/" not in all_xml, \
+        "看板还挂着样例项目的页面地址"
+    assert '"moreBtn"' not in all_xml, "表单还留着悬浮「更多」按钮（和底部按钮重复）"
+
+    saw_col = saw_board = False
+    for name, text in texts(body).items():
+        if name.startswith("data_template/"):
+            for node in ET.fromstring(text).iter("dataTemplateTpl"):
+                attrs = json.loads(node.get("attrs") or "{}")
+                view = attrs.get("template_renderview_type")
+                casc = attrs.get("cascade_configuration") or {}
+                if view == "board":
+                    assert casc.get("type") == "form", "看板卡片没有绑详情表单"
+                    assert casc.get("formKey") == "purchase_details"
+                    assert casc.get("casadeFields"), "看板级联没带行主键映射"
+                    saw_board = True
+                for col in json.loads(node.get("displayColumns") or "[]"):
+                    cfg = col.get("cascade_configuration")
+                    if not cfg:
+                        continue
+                    saw_col = True
+                    assert col.get("enabledCascade") is True, \
+                        "级联列缺 enabledCascade，可能渲染不出可点的链接"
+                    assert col.get("triggerEvent") == "font"
+                    assert cfg["formKey"] == "purchase_details"
+                    assert cfg["inheritanceFormSetting"] is True, \
+                        "缺 inheritanceFormSetting，导入后 casadeFields 会被清空"
+                    assert cfg["pkValue"] == "id_"
+                    assert cfg["casadeFields"] == [
+                        {"key": "id", "value": "name_", "valueType": "bo"}]
+
+    assert saw_col and saw_board, "级联详情/看板配置没生成"
+
+
+@case("BLD26", "builder", "级联字段不在显示字段里时自动补一列，不让「选了却不生效」", "P1",
+      ["用户只填了「级联详情字段」、没把它写进「显示字段」，以前只记 notice 就跳过",
+       "级联必须有一列可点：自动补到第一列并带上 cascade_configuration",
+       "补出来的列不能丢 label/objName，否则列表显示空白表头"])
+def _():
+    import json
+    import xml.etree.ElementTree as ET
+
+    body, _ = build({
+        S.S_BO: [{"对象名称": "采购申请", "对象编码": "purchase",
+                  "物理表名": "pp_purchase"}],
+        S.S_FIELD: [
+            field("purchase", "名称", "字符串"),
+            field("purchase", "状态", "选项", 选项值="待审批,已通过"),
+            field("purchase", "开始日期", "日期"),
+            field("purchase", "截止日期", "日期"),
+        ],
+        S.S_FORM: [{"表单key": "create_purchase", "表单名称": "新建采购申请",
+                    "对象编码": "purchase", "表单类型": "新建表单"}],
+        S.S_FORMFIELD: [
+            {"表单key": "create_purchase", "字段编码": "mingCheng",
+             "显示标签": "名称", "控件类型": "text"},
+        ],
+        S.S_LIST: [{"列表key": "purchase_list", "列表名称": "采购申请列表",
+                    "对象编码": "purchase", "视图类型": "grid",
+                    "显示字段": "状态,开始日期", "级联详情字段": "name"}],
+    })
+
+    first = None
+    for name, text in texts(body).items():
+        if name.startswith("data_template/"):
+            node = next(ET.fromstring(text).iter("dataTemplateTpl"))
+            cols = json.loads(node.get("displayColumns") or "[]")
+            first = cols[0]
+    assert first is not None, "没有列表模板"
+    assert first["name"] == "name_", "级联列没补到第一列"
+    assert first["label"] == "名称" and first["objName"] == "pp_purchase"
+    assert (first.get("cascade_configuration") or {}).get("formKey") == "purchase_details"

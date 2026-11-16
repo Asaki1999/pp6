@@ -197,10 +197,22 @@ def _():
     assert "zhuangTai" in cond, cond
 
 
-@case("FRM10", "form", "补隐藏字段时自动加 id 与 version", "P1",
-      ["新建表单需要带主键和版本"])
+@case("FRM10", "form", "默认不补隐藏字段；填「补隐藏字段=是」才补 id/version", "P1",
+      ["2026-11-16 用户要求：生成器默认不要往表单上塞隐藏字段",
+       "普通对象默认一个 hidden 控件都没有",
+       "需要时（保存并继续/编辑）在 3_表单 填「是」，补 id 与 version"])
 def _():
+    # 默认：一个 hidden 都不该有
     x = form_only([ctrl("mingCheng")])
+    hidden = {attrs(t)["name"] for t in all_tags(x, "formField")
+              if attrs(t).get("fieldType") == "hidden"}
+    assert not hidden, f"默认表单不该有隐藏字段：{hidden}"
+
+    # 显式开启：id / version 回来
+    x = form_only([ctrl("mingCheng")],
+                  form={"表单key": "create_contract", "表单名称": "新建合同",
+                        "对象编码": "contract", "表单类型": "新建表单",
+                        "补隐藏字段": "是"})
     names = {attrs(t)["name"] for t in all_tags(x, "formField")}
     assert {"id", "version"} <= names, names
 

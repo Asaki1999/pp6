@@ -128,7 +128,7 @@ def _make(bo: Bo, kind: str, src: Form | None, group_src: Form | None = None) ->
         status=src.status if src else "deploy",
         width=src.width if src else 90,
         kind=kind,
-        auto_hidden=src.auto_hidden if src else True,
+        auto_hidden=src.auto_hidden if src else False,
     )
     if kind == FORM_CONDITION:
         form.fields = fields_from_bo(bo, FORM_CONDITION, key)

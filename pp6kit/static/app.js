@@ -125,6 +125,10 @@ const state = {
   // 只发勾上的（true）——没勾的就是「保留我方」，服务端不需要知道它们。
   // 换文件时清空（字段编码换了一批），拨开关重解析时保留。
   plAlign: {},
+  // 用户上传的项目 zip 快照 token（没连库时用它代替 pp_project 的字段池）。
+  // 每次 parse/build 都随 X-Project-Link.snapshot 发回服务端。
+  plSnapshotToken: "",
+  plSnapshotStatus: null,
 };
 
 /* 桌面壳（pywebview）会注入 window.pywebview.api，同时置 PP6_DESKTOP 供自检读取 */
@@ -207,6 +211,19 @@ async function postParse(buf, plHeader) {
   return data;
 }
 
+/* 解析结果算不算「标准模板」：一个对象/表单/列表都没有 = 用户自己的表格。
+ * 这张卡的承诺是「AI 识别字段后生成」，标准模板才直接解析；不是模板就该
+ * 交给 AI，而不是解析成 0 个对象停在结果页（用户会以为「不支持 AI 分析文件」）。
+ *
+ * 以服务端的 looksTemplate 为准（看页签名）：空模板也是模板，要提示去
+ * 1_业务对象 填一行，不能当成陌生文件丢给 AI。老服务端没有这个字段时按
+ * 解析出来的内容判断。 */
+function looksLikeTemplate(data) {
+  if (data && typeof data.looksTemplate === "boolean") return data.looksTemplate;
+  const s = (data && data.stats) || {};
+  return (s["业务对象"] || 0) + (s["表单"] || 0) + (s["列表"] || 0) > 0;
+}
+
 async function handleFile(file, { fromAi = false, quiet = false } = {}) {
   if (!file) return;
   const ext = (file.name.split(".").pop() || "").toLowerCase();
@@ -250,6 +267,22 @@ async function handleFile(file, { fromAi = false, quiet = false } = {}) {
         toast(`按「${modeLabel}」分析失败：${err.message}，已按 Excel 里的内容原样分析`, 7000);
       }
     }
+
+    // 不是标准模板（自家 Excel）→ 交给 AI 识别，别当模板解析成一页 0 个对象。
+    // 只在用户主动传文件的路径上兜底：AI 回填的 Excel（fromAi）和流程页的
+    // quiet 上传保持原行为。
+    if (!fromAi && !quiet && !looksLikeTemplate(data)) {
+      setLoading(false);
+      if (!window.PP6_AI_READY) {
+        toast("这不是标准 Excel 模板，需要 AI 识别；先到「设置」里填一个 Key", 9000);
+        if (typeof window.PP6_OPEN_AI === "function") window.PP6_OPEN_AI();
+        return;
+      }
+      toast(`「${file.name}」不是标准模板，已交给 AI 识别字段…`, 8000);
+      await analyzeSheet(file);
+      return;
+    }
+
     state.data = data;
     resetParseArtifacts();
     // 换了文件 → 项目对齐的弹窗可以再弹一次（决策仍按文件指纹缓存在本地）
@@ -375,9 +408,16 @@ function bindPlPre() {
   ];
   groups.forEach((g) => {
     $$(`input[name="${g.name}"]`).forEach((el) => {
-      el.onchange = () => {
+      el.onchange = async () => {
         if (!el.checked) return;
         const value = g.allowed.indexOf(el.value) >= 0 ? el.value : g.fallback;
+        // 选「关联项目」时先确认有没有项目字段池：没连库就弹「导入项目 zip」。
+        // 用户取消 → 保持原来那档，不要留下一个勾着但没法对齐的状态。
+        if (value === "on" && !(await ensureProjectSnapshot())) {
+          syncPlPreInputs();
+          toast("未导入项目包，已保持原来的关联项目设置");
+          return;
+        }
         if (g.patch) state.plPrePatch = value;
         else state.plPre = value;
         savePref(g.key, value);
@@ -654,6 +694,117 @@ function jumpToProjectLink() {
   setTimeout(() => box.classList.remove("pl-flash"), 1800);
 }
 
+/* ---------------- 项目字段快照：没连库时导入一份项目 zip ----------------
+ * 关联项目要对齐 pp_project 的字段池。有库用库，没库时：
+ *   ① 先看随包快照有没有；
+ *   ② 仍然提示用户导入一份项目 zip（随包快照可能是旧版本的，字段对不上）。
+ * 上传成功后 token 记在 state，parse/build 都会随 X-Project-Link.snapshot 发回。
+ */
+async function projectSnapshotStatus(force = false) {
+  if (state.plSnapshotStatus && !force) return state.plSnapshotStatus;
+  const res = await fetch("/api/project-snapshot", { cache: "no-store" });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok || d.ok === false) throw new Error(d.error || `读取项目快照失败 ${res.status}`);
+  state.plSnapshotStatus = d;
+  return d;
+}
+
+let psPending = null;
+
+function closeProjectZipModal(ok) {
+  const mask = $("#psMask");
+  if (mask) mask.hidden = true;
+  document.body.classList.remove("pl-modal-open");
+  const done = psPending;
+  psPending = null;
+  if (done) done(!!ok);
+}
+
+function askProjectZip(st) {
+  return new Promise((resolve) => {
+    const mask = $("#psMask");
+    if (!mask) { resolve(true); return; }   // 老页面没有这个弹窗：不拦主流程
+    psPending = resolve;
+    const status = $("#psStatus");
+    if (status) {
+      status.classList.remove("bad");
+      const bits = [];
+      if (st && st.sourceLabel) bits.push(`当前快照：${st.sourceLabel}`);
+      if (st && st.fieldCount) bits.push(`${st.fieldCount} 个字段`);
+      if (st && st.generatedAt) bits.push(String(st.generatedAt).slice(0, 10));
+      status.textContent = bits.length
+        ? bits.join(" · ")
+        : "当前没有可用的项目字段快照。";
+    }
+    mask.hidden = false;
+    document.body.classList.add("pl-modal-open");
+    const pick = $("#psPick");
+    if (pick) pick.focus();
+  });
+}
+
+async function ensureProjectSnapshot() {
+  if (state.plSnapshotToken) return true;
+  let st = null;
+  try {
+    st = await projectSnapshotStatus();
+  } catch (err) {
+    // 状态接口不可用（老服务端 / 断网 / 探针环境）：不拦主流程，
+    // 让后端按它自己的快照档位降级（随包或 unavailable）。
+    return true;
+  }
+  // 没有 dbConfigured 字段 = 不是这个接口的响应（探针/老版本），同样不拦
+  if (!st || typeof st.dbConfigured !== "boolean") return true;
+  // 连了库：直接用库里的（或已经刷新过的）快照，不打扰用户
+  if (st.dbConfigured) return true;
+  return await askProjectZip(st);
+}
+
+function bindProjectSnapshotModal() {
+  const mask = $("#psMask");
+  if (!mask) return;
+  const file = $("#psFile");
+  if ($("#psClose")) $("#psClose").onclick = () => closeProjectZipModal(false);
+  if ($("#psCancel")) $("#psCancel").onclick = () => closeProjectZipModal(false);
+  if ($("#psPick")) $("#psPick").onclick = () => file && file.click();
+  if (file) {
+    file.onchange = async () => {
+      const f = file.files && file.files[0];
+      file.value = "";
+      if (!f) return;
+      const btn = $("#psPick");
+      if (btn) { btn.disabled = true; btn.textContent = "正在读取…"; }
+      try {
+        const buf = await f.arrayBuffer();
+        const res = await fetch("/api/project-snapshot", {
+          method: "POST", body: buf,
+          headers: { "Content-Type": "application/octet-stream" },
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok || d.ok === false) throw new Error(d.error || `读取失败 ${res.status}`);
+        state.plSnapshotToken = d.token || "";
+        state.plSnapshotStatus = null;    // 下次重新问服务端
+        closeProjectZipModal(true);
+        toast(`已读取项目对象：${d.fieldCount || 0} 个字段，将用它对比字段`, 6000);
+      } catch (err) {
+        const status = $("#psStatus");
+        if (status) {
+          status.textContent = "读取失败：" + err.message;
+          status.classList.add("bad");
+        }
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "选择项目 zip"; }
+      }
+    };
+  }
+  mask.addEventListener("mousedown", (e) => {
+    if (e.target === mask) closeProjectZipModal(false);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !mask.hidden) closeProjectZipModal(false);
+  });
+}
+
 /* 统一的「关联项目」决策头：界面开关（linked）+ 确认弹窗里勾的字段（align）。
  *
  * 同步包 / 流程模式 zip / 确认版 Excel 入口，以及「拨开关后重新解析」，都用它。
@@ -688,9 +839,11 @@ function projLinkHeader() {
     if (Object.keys(picked).length) entry.align = picked;
     if (Object.keys(entry).length) objects[code] = entry;
   });
-  return Object.keys(objects).length
-    ? JSON.stringify({ version: 1, objects })
-    : null;
+  if (!Object.keys(objects).length) return null;
+  const payload = { version: 1, objects };
+  // 没连库时用的是用户上传的项目包快照；预览和出包都认这个 token
+  if (state.plSnapshotToken) payload.snapshot = state.plSnapshotToken;
+  return JSON.stringify(payload);
 }
 
 /* 弹窗里「按勾选覆盖」：把勾选结果并进 state.plAlign，然后带决策头重新解析。
@@ -753,6 +906,12 @@ async function toggleProjLink(code, checked, input) {
   if (!state.file) {
     if (input) input.checked = !checked;
     toast("示例数据请先上传 Excel，再在对象卡片上勾「关联项目」");
+    return;
+  }
+  // 没连库、也没传过项目包 → 先让用户导入一份，再继续重新解析
+  if (checked && !(await ensureProjectSnapshot())) {
+    if (input) input.checked = false;
+    toast("未导入项目包，关联项目没有打开");
     return;
   }
   const had = Object.prototype.hasOwnProperty.call(state.plLinked, code);
@@ -1447,6 +1606,7 @@ async function apiPost(path, payload) {
 function renderAiBo(d) {
   const bo = d.bo;
   state.aiData = d;                   // 编辑时直接改这份，导出用它
+  closeAiChoicePop();                 // 整表重渲染后旧浮层的行号就失效了
   // 字段层 14 种类型，叫法照系统「添加字段 › 字段类型」下拉
   const types = d.types && d.types.length ? d.types : [
     { code: "varchar", label: "字符串" }, { code: "number", label: "数字" },
@@ -1464,10 +1624,15 @@ function renderAiBo(d) {
       `<option value="${esc(t.code)}" ${t.code === f.type ? "selected" : ""}>${esc(t.label)}</option>`).join("");
     let rel;
     if (f.type === "dic") {
-      // 选项字段：这里填候选值，不是对象编码
-      // （字段层只有「选项」，没有「数据字典」——字典是表单控件的取数方式）
-      rel = `<input class="ai-in" data-k="objectType" value="${esc((f.choices || []).join(","))}"
-                 placeholder="选项值，逗号分隔" list="aiDicVals">`;
+      // 选项字段：候选值放下拉面板里看/删/加。
+      // 以前是一行逗号分隔的文本，选项一多就横着铺满、想删中间一个只能
+      // 靠数逗号（2026-11-16 用户要求改成下拉可查看、可删除）。
+      const n = (f.choices || []).length;
+      rel = `<button type="button" class="ai-choice-btn" data-ctoggle="${i}"
+                     title="查看 / 删除选项值">
+               <span data-ccount="${i}">${n ? `${n} 个选项` : "未设置选项"}</span>
+               <span class="ai-caret">▾</span>
+             </button>`;
     } else if (f.type === "object") {
       // 关联对象：必须是系统里真实存在的对象编码，给下拉而不是自由输入
       const cur = (f.objectType || "").trim();
@@ -1536,14 +1701,13 @@ function renderAiBo(d) {
       </div>
 
       <div class="ai-panel" data-ai-panel="obj">
-        <div class="ai-edit-tip">下表可以直接改：字段名、类型、长度、关联对象/选项值。「关联对象」是下拉，只能选对象库里已有的对象——手填中文名或自造编码，导入后是空下拉框。改完再下载 Excel。</div>
+        <div class="ai-edit-tip">下表可以直接改：字段名、类型、长度、关联对象/选项值。选项字段点「N 个选项」展开，可逐个删除或继续添加；「关联对象」是下拉，只能选对象库里已有的对象——手填中文名或自造编码，导入后是空下拉框。改完再下载 Excel。</div>
         <div class="tbl-wrap">
           <table class="ai-edit">
             <thead><tr><th>字段名称</th><th>编码</th><th>物理列名</th><th>类型</th><th>长度</th><th>关联 / 选项</th><th></th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
-        <datalist id="aiDicVals"></datalist>
       </div>
 
       ${d.form ? `<div class="ai-panel" data-ai-panel="form" hidden>${renderAiForm(d.form)}</div>` : ""}
@@ -1630,11 +1794,20 @@ function labelOf(form, name) {
 
 const OP_LABEL = { equal: "等于", not_equal: "不等于", is_empty: "为空", is_not_empty: "不为空" };
 
-/* 列表配置预览：视图 + 列 + 排序 */
+/* 列表配置预览：视图 + 列 + 排序。显示列可自己勾选（2026-11-16 用户要求）。 */
 function renderAiList(list) {
   const VIEW = { grid: "表格", board: "看板", gantt: "甘特", chart: "图表" };
   const views = list.views.map((v) => `<span class="chip accent">${VIEW[v] || v}</span>`).join(" ");
-  const cols = list.columns.map((c) => `<span class="chip">${esc(c.label)}</span>`).join(" ");
+  const fields = ((state.aiData && state.aiData.bo && state.aiData.bo.fields) || []);
+  const byCode = new Map(fields.map((f) => [f.code, f]));
+  // 对象里删掉的字段不再显示（也不写回列表），避免出包带一个不存在的列
+  const kept = (list.columns || []).filter((c) => byCode.has(c.code));
+  if (kept.length !== (list.columns || []).length) list.columns = kept;
+  const chosen = new Set(kept.map((c) => c.code));
+  const cols = kept.map((c) => `<span class="chip">${esc((byCode.get(c.code) || {}).name || c.label)}</span>`).join(" ");
+  const items = fields.map((f) =>
+    `<label class="ai-col-item"><input type="checkbox" data-col="${esc(f.code)}"${chosen.has(f.code) ? " checked" : ""}>
+       <span>${esc(f.name)}</span><code>${esc(f.code)}</code></label>`).join("");
   const extra = [];
   if (list.boardGroup) extra.push(`看板按「${esc(list.boardGroup)}」分列`);
   if (list.gantt) extra.push(`甘特 ${esc(list.gantt.start)} → ${esc(list.gantt.end)}`);
@@ -1642,19 +1815,86 @@ function renderAiList(list) {
   // 级联详情：下拉选一个显示列，点它打开详情表单（全字段只读）。
   // 选择直接写进 state.aiData.list.detailField，出包原样带回。
   const opts = ['<option value="">不开详情联动</option>']
-    .concat((list.columns || []).map(
-      (c) => `<option value="${esc(c.code)}"${list.detailField === c.code ? " selected" : ""}>${esc(c.label)}</option>`
+    .concat(kept.map(
+      (c) => `<option value="${esc(c.code)}"${list.detailField === c.code ? " selected" : ""}>${esc((byCode.get(c.code) || {}).name || c.label)}</option>`
     )).join("");
   return `
     <div class="ai-list-body">
       <div class="ai-kv"><span>视图</span><b>${views}</b></div>
-      <div class="ai-kv"><span>显示列</span><b>${cols}</b></div>
+      <div class="ai-kv"><span>显示列</span><b>${cols || '<span class="muted">还没选</span>'}</b></div>
+      <div class="ai-col-head">
+        <span class="muted">勾选要出现在列表里的字段（按对象字段顺序，至少 1 个）</span>
+        <span class="ai-col-actions">
+          <button type="button" class="link" id="aiColAll">全选</button>
+          <button type="button" class="link" id="aiColNone">清空</button>
+        </span>
+      </div>
+      <div class="ai-col-grid" id="aiListCols">${items || '<span class="muted">对象还没有字段</span>'}</div>
       <div class="ai-kv"><span>级联详情</span>
         <b><select id="aiDetailField" class="ai-input" style="max-width:220px">${opts}</select></b>
       </div>
       <div class="ai-note-line">· 开启后生成两个表单：新建表单（可编辑）+ 详情表单（全只读）；列表里点击所选列即全屏打开详情</div>
       ${extra.map((t) => `<div class="ai-note-line">· ${t}</div>`).join("")}
     </div>`;
+}
+
+/* 显示列勾选：直接改 state.aiData.list.columns（导出/出包都读它）。
+ * 只重渲染列表面板，不动其它页签；至少保留 1 列，避免出包退回「全字段」。 */
+function bindListColumnPicker(d) {
+  const box = $("#aiListCols");
+  if (!box || !state.aiData || !state.aiData.list) return;
+  const list = state.aiData.list;
+  const fields = ((d && d.bo && d.bo.fields) || []);
+  const apply = () => {
+    const panel = document.querySelector('[data-ai-panel="list"]');
+    if (!panel) return;
+    panel.innerHTML = renderAiList(list);
+    bindListColumnPicker(d);
+    bindDetailFieldPicker();
+  };
+
+  box.querySelectorAll("input[data-col]").forEach((el) => {
+    el.onchange = () => {
+      const code = el.dataset.col;
+      const f = fields.find((x) => x.code === code);
+      let cols = list.columns || [];
+      if (el.checked) {
+        if (!cols.some((c) => c.code === code)) {
+          cols = cols.concat([{ code, label: f ? f.name : code }]);
+        }
+      } else {
+        if (cols.length <= 1) {
+          el.checked = true;
+          toast("列表至少要保留 1 列");
+          return;
+        }
+        cols = cols.filter((c) => c.code !== code);
+        if (list.detailField === code) list.detailField = "";
+      }
+      list.columns = cols;
+      apply();
+    };
+  });
+
+  const all = $("#aiColAll");
+  if (all) {
+    all.onclick = () => {
+      if (!fields.length) return;
+      list.columns = fields.map((f) => ({ code: f.code, label: f.name }));
+      apply();
+      toast(`显示列已设为全部 ${fields.length} 个字段`);
+    };
+  }
+  const none = $("#aiColNone");
+  if (none) {
+    none.onclick = () => {
+      if (!fields.length) return;
+      list.columns = fields.slice(0, 1).map((f) => ({ code: f.code, label: f.name }));
+      if (!list.columns.some((c) => c.code === list.detailField)) list.detailField = "";
+      apply();
+      toast("已清空，只保留第 1 列（列表至少要有一列）", 5000);
+    };
+  }
 }
 
 // 级联详情下拉的选择写回 state（渲染完成后调用一次）
@@ -1697,9 +1937,127 @@ function renderAiActions(d) {
   });
 
   bindDetailFieldPicker();
+  bindListColumnPicker(d);
   bindAiEdit();
   renderAiRelations(d);
 }
+
+/* ---------------- 选项值下拉面板 ----------------
+ * 全表共用一个浮层，挂在 body 上：.tbl-wrap 有 max-height + overflow:auto，
+ * 直接放在单元格里会被裁掉。点击「N 个选项」定位到按钮下方，点外面/滚动/Esc 关闭。
+ */
+let aiChoiceIdx = -1;
+
+function aiChoicePopEl() {
+  let pop = document.getElementById("aiChoicePop");
+  if (pop) return pop;
+  pop = document.createElement("div");
+  pop.id = "aiChoicePop";
+  pop.className = "ai-choice-pop";
+  pop.hidden = true;
+  pop.innerHTML = `
+    <div class="ai-choice-head">选项值 <span class="muted" data-popcount></span></div>
+    <div class="ai-choice-tags" data-poptags></div>
+    <input class="ai-choice-add" data-popadd
+           placeholder="输入选项值，回车添加（可粘贴逗号分隔的多个）">
+    <div class="ai-choice-hint">点选项右边的 × 删除；改完直接下载 Excel 即可</div>`;
+  document.body.appendChild(pop);
+
+  // 删除：标签里的 ×
+  pop.addEventListener("click", (e) => {
+    const del = e.target.closest("[data-cdel]");
+    if (!del) return;
+    const f = state.aiData && state.aiData.bo && state.aiData.bo.fields[aiChoiceIdx];
+    if (!f) return;
+    const j = Number(del.dataset.cdel);
+    f.choices.splice(j, 1);
+    renderAiChoicePop();
+  });
+
+  // 添加：回车（支持逗号/换行批量粘贴）
+  const add = pop.querySelector("[data-popadd]");
+  add.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const f = state.aiData && state.aiData.bo && state.aiData.bo.fields[aiChoiceIdx];
+    if (!f) return;
+    const vals = add.value.split(/[,，;；|\n]/).map((s) => s.trim()).filter(Boolean);
+    if (!vals.length) return;
+    f.choices = f.choices || [];
+    vals.forEach((v) => { if (!f.choices.includes(v)) f.choices.push(v); });
+    add.value = "";
+    renderAiChoicePop();
+  });
+  return pop;
+}
+
+function renderAiChoicePop() {
+  const pop = aiChoicePopEl();
+  const f = state.aiData && state.aiData.bo && state.aiData.bo.fields[aiChoiceIdx];
+  if (!f) return;
+  f.choices = f.choices || [];
+  pop.querySelector("[data-popcount]").textContent =
+    f.choices.length ? `· ${f.choices.length} 个` : "· 还没有";
+  pop.querySelector("[data-poptags]").innerHTML = f.choices.length
+    ? f.choices.map((v, j) =>
+        `<span class="ai-choice-tag">${esc(v)}<button type="button" data-cdel="${j}"
+           title="删除「${esc(v)}」">×</button></span>`).join("")
+    : `<span class="ai-choice-empty">还没有选项值，在下面输入后回车</span>`;
+  updateAiChoiceCount(aiChoiceIdx);
+}
+
+function updateAiChoiceCount(i) {
+  const f = state.aiData && state.aiData.bo && state.aiData.bo.fields[i];
+  const el = document.querySelector(`[data-ccount="${i}"]`);
+  if (!f || !el) return;
+  el.textContent = (f.choices || []).length ? `${f.choices.length} 个选项` : "未设置选项";
+}
+
+function openAiChoicePop(i, anchor) {
+  const f = state.aiData && state.aiData.bo && state.aiData.bo.fields[i];
+  if (!f || !anchor) return;
+  aiChoiceIdx = i;
+  const pop = aiChoicePopEl();
+  renderAiChoicePop();
+  pop.hidden = false;
+
+  // 定位：优先按钮正下方，下面放不下就翻到上方
+  const r = anchor.getBoundingClientRect();
+  const pw = pop.offsetWidth || 280;
+  const ph = pop.offsetHeight || 200;
+  let left = Math.min(r.left, window.innerWidth - pw - 12);
+  left = Math.max(12, left);
+  let top = r.bottom + 6;
+  if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 6);
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+  const add = pop.querySelector("[data-popadd]");
+  if (add) add.focus();
+}
+
+function closeAiChoicePop() {
+  const pop = document.getElementById("aiChoicePop");
+  if (pop) pop.hidden = true;
+  aiChoiceIdx = -1;
+}
+
+// 点外面 / 滚动 / Esc 关闭；只绑一次
+document.addEventListener("mousedown", (e) => {
+  const pop = document.getElementById("aiChoicePop");
+  if (!pop || pop.hidden) return;
+  if (pop.contains(e.target) || e.target.closest("[data-ctoggle]")) return;
+  closeAiChoicePop();
+});
+window.addEventListener("scroll", (e) => {
+  const pop = document.getElementById("aiChoicePop");
+  if (!pop || pop.hidden) return;
+  // 面板内部（选项多时）滚动不该把面板关掉
+  if (pop.contains(e.target)) return;
+  closeAiChoicePop();
+}, true);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeAiChoicePop();
+});
 
 /* 预览表格的编辑：改什么直接写回 state.aiData.bo.fields，导出时就是改后的 */
 function bindAiEdit() {
@@ -1718,12 +2076,9 @@ function bindAiEdit() {
           const n = parseInt(el.value, 10);
           f.length = Number.isFinite(n) && n > 0 ? n : null;
         } else if (k === "objectType") {
-          // 选项字段这里填的是候选值（逗号分隔），关联对象字段填对象编码
-          if (f.type === "dic") {
-            f.choices = el.value.split(/[,，;；|\n]/).map((s) => s.trim()).filter(Boolean);
-          } else {
-            f.objectType = el.value.trim();
-          }
+          // 只有「关联对象」还走这个 key；选项值已经改成下拉面板，
+          // 增删直接写 f.choices（见 aiChoicePopEl）
+          f.objectType = el.value.trim();
         } else {
           f[k] = el.value;
         }
@@ -1758,6 +2113,20 @@ function bindAiEdit() {
         toast(`已删掉「${f.name}」`);
       };
     }
+
+    // 选项值：点开下拉面板查看/删除/添加
+    const ct = tr.querySelector("[data-ctoggle]");
+    if (ct) {
+      ct.onclick = (e) => {
+        e.stopPropagation();
+        const pop = document.getElementById("aiChoicePop");
+        if (pop && !pop.hidden && aiChoiceIdx === idx) {
+          closeAiChoicePop();
+          return;
+        }
+        openAiChoicePop(idx, ct);
+      };
+    }
   });
 }
 
@@ -1787,6 +2156,10 @@ async function extractDocText(file) {
     });
     const d = await res.json().catch(() => ({}));
     if (!res.ok || d.ok === false) throw new Error(d.error || `读取失败 ${res.status}`);
+    if (!d.text || !d.chars) {
+      // 扫描版 PDF 没有文字层：别把空文本填进输入框让用户一脸茫然
+      throw new Error("这份文档没有可提取的文字（扫描版 PDF 需要 OCR，或先转成 Word）");
+    }
     const ta = $("#aiChatText1");
     if (ta) {
       ta.value = d.text;
@@ -2740,6 +3113,7 @@ function bind() {
   // 第 1 步「业务对象关联项目」：初始页两档控件（导入前就定），
   // 普通模式 / 流程模式共享同一档，存量包页「按包内」独立一档
   bindPlPre();
+  bindProjectSnapshotModal();
 
   $("#modAll").onclick = () => {
     state.picked = new Set((state.data.modules || []).filter((m) => m.count > 0).map((m) => m.code));

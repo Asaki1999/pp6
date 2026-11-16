@@ -102,6 +102,9 @@ let loadings = [];
 ctx.setLoading = (on, text) => { loadings.push([on, text]); };
 
 const st = ctx.__state;
+// 探针不模拟「未连库」分支：给个假 token，ensureProjectSnapshot() 直接放行，
+// 下面的 fetch 计数才仍然只统计 /api/parse。
+st.plSnapshotToken = "probe-token";
 const out = {};
 
 /* ---------------- G · 决策头 ---------------- */

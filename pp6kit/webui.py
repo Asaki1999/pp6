@@ -45,6 +45,7 @@ from .model import (
 from .gen_form import Snippets, _plan_groups, _plan_rows, _span_of
 from .inspect import inspect_path
 from . import modules as mod_def
+from . import spec
 from .reader import read_workbook
 from .template import build_workbook, demo_project
 from .nlq import engine as nlq_engine
@@ -484,6 +485,9 @@ def parse_excel(data: bytes, projlink_header: str | None = None) -> dict:
 
     return {
         "ok": True,
+        # 是不是本工具的填写模板（看页签名，不看有没有填内容）：
+        # 「模板但空着」要在界面上提示去 1_业务对象 填；「不是模板」交给 AI 识别。
+        "looksTemplate": any(name in proj.sheet_names for name in spec.COLUMNS),
         "stats": stats,
         "modules": mod_payload(proj),
         "workflows": workflows,
@@ -1076,6 +1080,52 @@ def nlq_config() -> dict:
         "providers": nlq_providers.as_list(),
         "examples": len(nlq_store.all_examples()),
     }
+
+
+# ---------------------------------------------------------------- 项目字段快照
+# 「关联项目」要对齐 pp_project 的字段定义。三档来源（projlink.load_snapshot）：
+#   ① 目标库快照 ~/.pp6kit/project_fields.json
+#   ② 随包 assets/project_fields.json
+#   ③ 用户上传的项目对象 zip（save_snapshot_upload → token）
+# 客户端没连库时 ① 没有、② 可能过期，所以界面上要提示用户传 ③。
+
+def project_snapshot_status() -> dict:
+    """当前「项目字段」从哪来、要不要让用户传项目包。"""
+    from . import projlink as _pl
+
+    cfg = _db_conf()
+    db_configured = bool(
+        str(cfg.get("host") or "").strip()
+        and str(cfg.get("user") or "").strip()
+        and str(cfg.get("database") or "").strip()
+    )
+    try:
+        snap = _pl.load_snapshot()
+    except Exception as exc:                       # noqa: BLE001
+        return {"ok": True, "dbConfigured": db_configured,
+                "source": "unavailable", "sourceLabel": "无",
+                "fieldCount": 0, "generatedAt": "", "project": {},
+                "warnings": [f"读取项目快照失败：{exc}"]}
+    return {
+        "ok": True,
+        "dbConfigured": db_configured,
+        "source": snap.source,
+        "sourceLabel": _pl._SOURCE_LABEL.get(snap.source, snap.source),
+        "fieldCount": len(snap.fields),
+        "generatedAt": snap.generated_at or "",
+        "project": snap.project or {},
+        "status": snap.status,
+        "warnings": list(snap.warnings or [])[:3],
+    }
+
+
+def project_snapshot_upload(data: bytes) -> dict:
+    """上传一份项目对象包，存成第③档快照。"""
+    from . import projlink as _pl
+
+    res = _pl.save_snapshot_upload(data)
+    res["token"] = res.get("token", "")
+    return res
 
 
 def nlq_save_config(payload: dict) -> dict:
@@ -2126,6 +2176,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/objects":
             # 业务对象目录：接了库就是目标库里的真实对象，没接就是随包快照
             self._json({"ok": True, **objects.status(), "objects": objects.ensure()})
+        elif path == "/api/project-snapshot":
+            # 关联项目要用「项目对象字段」：优先库、其次随包、再次用户上传的项目 zip。
+            # 前端拿 dbConfigured 判断要不要弹「导入项目包」。
+            self._json(project_snapshot_status())
         elif path == "/api/objects/lookup":
             # 用户填了名字 → 查库里有没有：有就返回 id 和已有模板 key
             from urllib.parse import parse_qs, urlparse
@@ -2252,6 +2306,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, body,
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                            name)
+            elif self.path == "/api/project-snapshot":
+                # 用户上传「项目对象包」→ 存成第③档快照，返回 token。
+                # 之后 parse/build 的 X-Project-Link 里带 snapshot=token 就会用它。
+                try:
+                    self._json(project_snapshot_upload(self._body()))
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc)}, 400)
             elif self.path == "/api/objects/refresh":
                 # 手工刷新：连目标库重新拉一遍对象清单
                 try:

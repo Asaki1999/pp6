@@ -737,3 +737,50 @@ def _():
     assert [f.name for f in bo.fields] == ["预算"], [f.name for f in bo.fields]
     assert any("2 个" in n for n in notices), notices
     assert "不要生成「预算名称/预算金额」" in ai_bo.SYSTEM
+
+
+@case("BO36", "bo", "AI 预览里自选的显示列原样落进 Excel 与出包列表", "P0",
+      ["预览页「列表视图」可勾选要展示的字段",
+       "导出 Excel 的 5_列表「显示字段」只写勾中的，不再全量",
+       "出包 data_template 的 displayColumns 与勾选一致"])
+def _():
+    import io as _io
+    import json as _json
+    import zipfile as _zf
+
+    import openpyxl
+
+    from pp6kit import webui as W
+
+    payload = {
+        "bo": {"code": "purchase", "name": "采购申请", "fields": [
+            {"code": "name", "name": "名称", "type": "varchar", "length": 100},
+            {"code": "classificationId", "name": "项目类型", "type": "object",
+             "objectType": "project"},
+            {"code": "amount", "name": "金额", "type": "number"},
+            {"code": "state", "name": "状态", "type": "dic", "choices": ["待审批", "已通过"]},
+        ]},
+        "form": None,
+        # 用户在预览里只勾了这两列
+        "list": {"key": "purchase_list", "name": "采购申请列表", "boCode": "purchase",
+                 "views": ["grid"],
+                 "columns": [{"code": "name", "label": "名称"},
+                             {"code": "classificationId", "label": "项目类型"}],
+                 "sort": "", "titleField": "name", "boardGroup": "",
+                 "detailField": "name", "gantt": None},
+    }
+    xlsx_body, _ = W.ai_apply_bo(payload, None)
+    wb = openpyxl.load_workbook(_io.BytesIO(xlsx_body), data_only=True)
+    ws = wb["5_列表"]
+    header = [c.value for c in ws[1]]
+    col = header.index("显示字段") + 1
+    got = ws.cell(row=3, column=col).value
+    assert got == "name,classificationId", got
+
+    zip_body, _ = W.build_zip(xlsx_body, [], {})
+    z = _zf.ZipFile(_io.BytesIO(zip_body))
+    tpl = next(n for n in z.namelist() if n.startswith("data_template/"))
+    import xml.etree.ElementTree as ET
+    node = next(ET.fromstring(z.read(tpl)).iter("dataTemplateTpl"))
+    cols = [c["name"] for c in _json.loads(node.get("displayColumns") or "[]")]
+    assert cols == ["name_", "classification_id_"], cols
