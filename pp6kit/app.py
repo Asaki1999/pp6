@@ -3,6 +3,9 @@
 窗口用系统自带 WebView（macOS: WKWebView / Windows: Edge WebView2），
 界面仍是本地 HTML，但用户看到的是一个独立应用窗口，不是浏览器标签页。
 文件读写走原生对话框（见 desktop_api），不依赖浏览器下载语义。
+
+关于启动顺序：`console=False` 的打包产物没有控制台，所以日志必须最先就位，
+重模块的导入也放到日志之后——否则导入阶段崩掉就只剩一个卡死的窗口，查不到原因。
 """
 from __future__ import annotations
 
@@ -17,22 +20,46 @@ import webbrowser
 import zipfile
 from pathlib import Path
 
-from .desktop_api import DesktopApi
-from .webui import start_background
+from . import applog
 
 APP_NAME = "PP6 Studio"
+
+# 窗口迟迟不加载完就把同一地址丢给浏览器，至少能用
+LOAD_GRACE_SECONDS = 20
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="pp6kit-app")
     ap.add_argument("--port", type=int, default=8770)
     ap.add_argument("--headless", action="store_true", help="只起服务不开窗口（自检用）")
+    ap.add_argument("--browser", action="store_true", help="不用应用窗口，直接在浏览器打开")
     args = ap.parse_args(argv)
 
-    httpd, url = start_background(args.port)
+    applog.setup()
+    log = applog.get("pp6kit.app")
+
+    log.info("=" * 64)
+    log.info("%s 启动，参数 %s", APP_NAME, sys.argv[1:])
+    applog.dump_env()
+
+    # 这两个模块会连带导入 ai_* 全家族（含 sqlglot 等重依赖），
+    # 放在日志就位之后，导入失败也能留下痕迹。
+    try:
+        from .webui import start_background
+    except Exception:
+        applog.fatal("加载服务模块失败（依赖缺失或打包不完整）")
+        return 2
+
+    try:
+        httpd, url = start_background(args.port)
+    except Exception:
+        applog.fatal("HTTP 服务启动失败，端口 %d" % args.port)
+        return 3
+    log.info("本地服务就绪 -> %s（启动后 %.2f 秒）", url, applog.elapsed())
 
     if args.headless:
         print(url, flush=True)
+        log.info("headless 模式：只提供 HTTP 服务，不创建窗口")
         try:
             while True:
                 time.sleep(3600)
@@ -42,14 +69,39 @@ def main(argv: list[str] | None = None) -> int:
             httpd.shutdown()
         return 0
 
+    if args.browser:
+        log.info("按参数要求跳过应用窗口，直接使用浏览器")
+        return _run_in_browser(url, httpd)
+
     try:
         import webview  # type: ignore
-    except ImportError:
-        print(f"{APP_NAME}: 未安装 pywebview，改用浏览器打开")
+    except Exception:
+        log.warning("导入 pywebview 失败，改用浏览器打开", exc_info=True)
+        return _run_in_browser(url, httpd)
+
+    # WebView2 缺失时创建窗口会白屏甚至卡死（用户看到「未响应」）。
+    # 这种情况直接走浏览器——功能完全一样，只是没有独立窗口。
+    if os.name == "nt":
+        state = applog.webview2_state()
+        if state is False:
+            log.warning("系统未检测到 WebView2 运行时，跳过窗口直接使用浏览器")
+            applog.alert(
+                "缺少 WebView2 组件",
+                "系统未安装 Microsoft Edge WebView2 运行时，无法创建应用窗口。\n\n"
+                "程序已改用默认浏览器打开，功能不受影响。\n"
+                "如需应用窗口，可从微软官网安装 WebView2 运行时后重新打开。")
+            return _run_in_browser(url, httpd)
+        log.info("WebView2 运行时检测：%s", {True: "已安装", None: "无法判断"}.get(state))
+
+    try:
+        from .desktop_api import DesktopApi
+    except Exception:
+        log.warning("加载原生对话框模块失败，改用浏览器打开", exc_info=True)
         return _run_in_browser(url, httpd)
 
     api = DesktopApi()
     try:
+        log.info("准备创建应用窗口 %dx%d", 1240, 920)
         window = webview.create_window(
             APP_NAME,
             url,
@@ -60,17 +112,45 @@ def main(argv: list[str] | None = None) -> int:
             js_api=api,
         )
         api.bind(window)
-    except Exception as exc:
-        print(f"{APP_NAME}: 无法创建窗口（{exc}），改用浏览器打开")
+        log.info("窗口对象已创建（启动后 %.2f 秒）", applog.elapsed())
+    except Exception:
+        log.warning("无法创建窗口，改用浏览器打开", exc_info=True)
         return _run_in_browser(url, httpd)
+
+    loaded = {"ok": False}
+
+    def _on_loaded() -> None:
+        loaded["ok"] = True
+        log.info("界面加载完成（启动后 %.2f 秒）", applog.elapsed())
+
+    try:
+        window.events.loaded += _on_loaded
+    except Exception:
+        log.warning("未能挂接 loaded 事件，跳过加载完成检测", exc_info=True)
+
+    def _watch_load() -> None:
+        """窗口一直不出内容时，把同一地址交给浏览器，别让用户对着白屏干等。"""
+        time.sleep(LOAD_GRACE_SECONDS)
+        if loaded["ok"]:
+            return
+        log.warning("窗口 %d 秒内未完成加载，改为在默认浏览器打开同一地址",
+                    LOAD_GRACE_SECONDS)
+        try:
+            webbrowser.open(url)
+        except Exception:
+            log.warning("调用默认浏览器失败", exc_info=True)
+
+    threading.Thread(target=_watch_load, name="load-watch", daemon=True).start()
 
     if os.environ.get("PP6_SELFTEST") == "1":
         threading.Thread(target=_selftest, args=(window,), daemon=True).start()
 
     try:
+        log.info("进入窗口事件循环（启动后 %.2f 秒）", applog.elapsed())
         webview.start()  # 阻塞直到窗口关闭
-    except Exception as exc:
-        print(f"{APP_NAME}: 窗口启动失败（{exc}），改用浏览器打开")
+        log.info("窗口已关闭（运行 %.1f 秒）", applog.elapsed())
+    except Exception:
+        log.warning("窗口事件循环异常退出，改用浏览器打开", exc_info=True)
         return _run_in_browser(url, httpd)
     finally:
         httpd.shutdown()
@@ -137,8 +217,11 @@ def _selftest(window) -> None:
         checks["clip_ok"] = _clip_get() == probe
 
         print("SELFTEST " + " ".join(f"{k}={v}" for k, v in checks.items()), flush=True)
+        applog.get("pp6kit.app").info("SELFTEST %s",
+                                      " ".join(f"{k}={v}" for k, v in checks.items()))
     except Exception as exc:
         print(f"SELFTEST FAILED {exc}", flush=True)
+        applog.get("pp6kit.app").warning("SELFTEST FAILED", exc_info=True)
     finally:
         _clip_set(backup)  # 还原用户剪贴板
         try:
@@ -149,8 +232,13 @@ def _selftest(window) -> None:
 
 
 def _run_in_browser(url: str, httpd) -> int:
+    log = applog.get("pp6kit.app")
+    log.info("浏览器模式已启动: %s", url)
     print(f"{APP_NAME} 已启动: {url}")
-    webbrowser.open(url)
+    try:
+        webbrowser.open(url)
+    except Exception:
+        log.warning("调用默认浏览器失败，请手动打开 %s", url, exc_info=True)
     try:
         while True:
             time.sleep(3600)
