@@ -113,7 +113,9 @@ def _split_choices(value) -> list[str]:
     if isinstance(value, (list, tuple)):
         items = [str(x).strip() for x in value]
     else:
-        items = re.split(r"[,，;；\r\n]+", str(value or ""))
+        # 与主流程共用一套分隔规则：顿号/斜杠/N/A 保护
+        from .reader import _split_choices as _reader_split
+        items = _reader_split(value)
     return [x for x in (s.strip() for s in items) if x]
 
 
@@ -683,6 +685,10 @@ def _dict_lines(fields: list[BoField], prefix: str, info: dict) -> tuple[list[st
     for f in fields:
         if f.type_new != "dic" or not f.choices:
             continue
+        if f.choice_groups:
+            warns.append(
+                f"{f.code}: 存量包修订暂不重建字典级 dependValues，"
+                f"级联值可能不显示；建议改用整包重建")
         if f.dict_ref:
             # 防御：引用全局字典的字段由 _global_dict_lines 负责（typeScope=GLOBAL
             # + 项目侧固定候选码）。走到这里说明调用方漏收，绝不能按自定义字典

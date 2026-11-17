@@ -320,8 +320,8 @@ def _():
     assert f.precision == 2 and f.length == 20, (f.precision, f.length)
 
 
-@case("RDR22", "reader", "流程驱动对象自动补 4 个流程字段", "P1",
-      ["流程节点/处理人/流程定义/流程实例"])
+@case("RDR22", "reader", "流程驱动对象自动补 6 个流程字段", "P1",
+      ["流程定义/实例/节点/处理人/名称/编号", "和线上 pp_project_create 一致"])
 def _():
     from pp6kit import builder
 
@@ -330,11 +330,14 @@ def _():
                           "流程驱动": "是"})],
         spec.S_FIELD: [field("project_create", "名称", "字符串")],
     }))
-    added = builder.ensure_process_fields(proj.bos[0])
+    added = builder.ensure_process_fields(proj.bos[0], ["开始", "审核", "通过"])
     codes = {f.code for f in proj.bos[0].fields}
-    assert len(added) == 4, added
-    assert {"processNode", "processHandler", "processDefId",
-            "processInstanceId"} <= codes
+    assert len(added) == 6, added
+    assert {"processDefId", "processInstanceId", "processNode",
+            "processHandler", "processName", "processCode"} <= codes
+    node = proj.bos[0].field_by_code("processNode")
+    assert node.type_new == "dic" and node.length == 1000
+    assert node.choices == ["开始", "审核", "通过"]
 
 
 @case("RDR23", "reader", "同一次解析里对象编码自动去重", "P2",

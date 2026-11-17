@@ -133,7 +133,7 @@ def cmd_build(args) -> int:
     codes = None
     if getattr(args, "modules", ""):
         codes = [x.strip() for x in args.modules.replace("，", ",").split(",") if x.strip()]
-    res = build(proj, snippets, out, codes=codes)
+    res = build(proj, snippets, out, codes=codes, db_align=True)
     if not res.deliverables:
         print("\n✗ 选中的模块没有可生成的内容，检查一下 Excel 里对应的表是否填了。")
         return 1

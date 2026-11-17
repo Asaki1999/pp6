@@ -54,6 +54,20 @@ OVER_RE = re.compile(r"超支|超额|超期|延期|逾期|超出预算")
 # 比较类 AST 节点：只认大小比较，不认 `=`/`<>`——
 # `WHERE state_ = 'finished'` 是字符串等值，不是「做了数值比较」。
 CMP_NODES = (exp.GT, exp.GTE, exp.LT, exp.LTE)
+# 明确的业务状态词：问句里出现，SQL 就必须有状态/阶段筛选。
+# 「立项」这类会出现在对象名里的词不算，避免误伤。
+STATUS_RE = re.compile(
+    r"执行中|进行中|已完成|已关闭|未关闭|已暂停|暂停|已终止|终止|"
+    r"未开始|已开始|审批中|待审批|已立项|待立项|已归档|草稿")
+# 时间条件词：SQL 里必须出现日期函数/字段，不能只查全量。
+DATE_RE = re.compile(
+    r"上个月|上月|本月|这个月|今年|去年|明年|本周|上周|本季度|上季度|"
+    r"今天|昨天|最近\s*\d+\s*(?:天|周|月|年)|近\s*\d+\s*(?:天|周|月|年)")
+# 「张三负责的 / 李四提交的」：SQL 里要么出现这个人名，要么关联人员表。
+PERSON_RE = re.compile(r"([\u4e00-\u9fa5]{2,4})\s*(?:负责|经办|提交|创建|处理)的")
+# 问句明确要求排序
+SORT_RE = re.compile(r"按.+(?:排序|倒序|升序|正序)|倒序|升序|正序")
+
 # 解析不了时的兜底（极少发生）：宁可放过，也别把正确答案判成不合格
 NUM_CMP_FALLBACK = re.compile(
     r"[<>]=?\s*\d|\bDATEDIFF\b|\b(TIMESTAMPDIFF|SUBDATE)\b", re.I)
@@ -143,6 +157,46 @@ def judge(question: str, sql: str, rows: int,
     if ROLE_RE.search(q) and "iform_party_employee" not in sql \
             and "iform_party_org" not in sql:
         bad.append("问了角色/负责人，但没关联人员表")
+
+    # 只看 WHERE：SELECT 里的「项目阶段」别名不算筛选条件。
+    wsql = ""
+    wcols: set[str] = set()
+    try:
+        _ast = sqlglot.parse_one(sql, dialect="mysql")
+        _where = _ast.find(exp.Where)
+        if _where is not None:
+            wsql = _where.sql().upper()
+            wcols = {c.name.lower() for c in _where.find_all(exp.Column)}
+    except Exception:
+        wsql = up
+
+    # 9.1) 问了明确状态（执行中/已完成…），WHERE 却没有状态/阶段列
+    if STATUS_RE.search(q):
+        has_state = bool(wcols & {"state_id_", "status_", "phase_id_", "state", "status"}) \
+            or "STATE" in wsql or "STATUS" in wsql or "PHASE" in wsql
+        if not has_state:
+            bad.append("问了状态，但 SQL 没有状态筛选")
+
+    # 9.2) 问了时间范围（上个月/今年/最近7天），WHERE 却没有日期条件
+    if DATE_RE.search(q) and not re.search(
+            r"DATE|TIME|YEAR|MONTH|DAY|INTERVAL|BETWEEN|DATEDIFF|TIMESTAMP", wsql):
+        bad.append("问了时间范围，但 SQL 没有日期条件")
+
+    # 9.3) 点名某人负责/提交，SQL 里既没有人名也没有人员表
+    # 去掉「查一下/帮我/请」这类前缀，否则会把「一下张三」当成名字
+    q_name = re.sub(r"^(?:请|帮我|麻烦)?\s*(?:查一下|查一查|查询|查|看看|看一下|列出|找出)\s*", "", q)
+    pm = PERSON_RE.search(q_name)
+    if pm:
+        who = pm.group(1)
+        roles = {"项目经理", "项目负责人", "负责人", "责任人", "执行人", "处理人", "创建人"}
+        # 光有关联人员表不算：那张表可能只是用来显示责任人。
+        # 人名必须真的出现在 SQL 里（AI 是内联字面量，不参数化）。
+        if who not in roles and who not in wsql:
+            bad.append(f"问了「{who}」，但 SQL 没有按这个人筛选")
+
+    # 9.4) 明确要求排序，SQL 却没有 ORDER BY
+    if SORT_RE.search(q) and "ORDER BY" not in up:
+        bad.append("问了排序，但 SQL 没有 ORDER BY")
 
     # 9) 问「每个 X 的 Y」，分组维度却是 X 自己的父级（选错对象）
     m = re.match(r"^(?:每个|各个|各)\s*([\u4e00-\u9fa5]{2,10}?)\s*(?:负责|的|有)", q)

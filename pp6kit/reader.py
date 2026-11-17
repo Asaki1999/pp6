@@ -148,20 +148,46 @@ def _fix_columns(bo, columns: list[str], where: str, auto_notes: list[str]) -> l
     return fixed
 
 
-def _parse_choices(value) -> list[str]:
+_NA_RE = re.compile(r"(?<![A-Za-z])N/A(?![A-Za-z])", re.I)
+
+
+def _split_choices(text) -> list[str]:
+    """候选值分隔：、，,；;| 和 /。
+
+    例外：「N/A」是一个完整取值，不能被斜杠拆成 N 和 A（尹姣定表里
+    战略类别/项目注册类别都有这个值）。先占位再切，切完还原。
+    """
+    raw = str(text or "")
+    marks: list[str] = []
+
+    def _hold(m):
+        marks.append(m.group(0))
+        return f"\x00{len(marks) - 1}\x00"
+
+    held = _NA_RE.sub(_hold, raw)
+    parts = [x.strip() for x in re.split(r"[,，;；|、/]+", held) if x.strip()]
+    out = []
+    for x in parts:
+        out.append(re.sub(r"\x00(\d+)\x00", lambda m: marks[int(m.group(1))], x))
+    return out
+
+
+def _parse_choices(value, grouped: bool = False) -> list[str]:
     """解析「选项值」列：逗号分隔，中英文逗号都认。
 
     支持 `月报,季报,周报` / `月报，季报` / 换行分隔。
     去重保序（重复项导入后会变成两个同名选项）。
 
-    **分组写法**（级联字段用）：一行一个父选项，父与子用「：」分隔，子项逗号分隔——
+    **分组写法**（级联子字段用）：一行一个父选项，父与子用「：」分隔——
         ```
         中药：OTC、RX、双跨、其他
         化药：OTC、RX、转增加
-        大健康：大健康
         ```
-    这种写法下，这里只返回「所有父选项 + 所有子选项」的并集（用于告诉用户
-    这字段有多少候选值），真正的分组结构由 :func:`_parse_choice_groups` 给出。
+    ``grouped=True``（这一行填了「级联父字段」）时**只收子项，不收父选项**。
+    父选项属于父字段的字典；塞进子字段，导入后子的下拉里会多出
+    「中药」「化药」这种父级值（2026-11-17 尹姣定表实测的问题）。
+
+    ``grouped=False`` 时按普通候选值处理，「L1：创新药」这种带冒号的取值原样保留。
     """
     if value is None:
         return []
@@ -180,13 +206,12 @@ def _parse_choices(value) -> list[str]:
         line = line.strip()
         if not line:
             continue
-        if _GROUP_SEP.search(line):
-            parent, kids = _GROUP_SEP.split(line, 1)
-            _add(parent)
-            for k in re.split(r"[,，;；|、/]+", kids):
+        if grouped and _GROUP_SEP.search(line):
+            _parent, kids = _GROUP_SEP.split(line, 1)
+            for k in _split_choices(kids):
                 _add(k)
             continue
-        for p in re.split(r"[,，;；|\n\r]+", line):
+        for p in _split_choices(line):
             _add(p)
     return out
 
@@ -216,7 +241,7 @@ def _parse_choice_groups(value) -> dict[str, list[str]]:
         if not parent:
             continue
         bucket = groups.setdefault(parent, [])
-        for k in re.split(r"[,，;；|、/]+", kids):
+        for k in _split_choices(kids):
             k = k.strip()
             if k and k not in bucket:
                 bucket.append(k)
@@ -402,6 +427,7 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
             raw_opts = parse_json(get("options"), f"[{spec.S_FIELD}] 第{row_no}行", errors)
             ctrl = {k: raw_opts.pop(k) for k in
                     ("dict_ref", "dict_name", "dict_stru", "dict_items") if k in raw_opts}
+            cascade_parent = str(get("cascade_parent") or "").strip()
             f = BoField(
                 bo_code=bo_code,
                 code=code,
@@ -418,9 +444,10 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
                 desc=str(get("desc") or "").strip(),
                 field_name=str(get("field_name") or "").strip(),
                 sn=sn or (len(bo.fields) + 1),
-                choices=_parse_choices(get("options_text")),
+                # 级联子字段只收子项，父选项不能混进子字段的候选值
+                choices=_parse_choices(get("options_text"), grouped=bool(cascade_parent)),
                 choice_groups=_parse_choice_groups(get("options_text")),
-                cascade_parent=str(get("cascade_parent") or "").strip(),
+                cascade_parent=cascade_parent,
                 dict_ref=str(ctrl.get("dict_ref") or "").strip(),
                 dict_name=str(ctrl.get("dict_name") or "").strip(),
                 dict_stru=str(ctrl.get("dict_stru") or "").strip(),
@@ -533,6 +560,8 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
                     bo_code=_resolve_bo_code(proj, str(get("bo_code") or "").strip(), "表单", auto_notes),
                     form_type=str(get("form_type") or "form").strip(),
                     layout=1 if layout_raw in ("一行一列", "1") else 2,
+                    layout_style=("flat" if str(get("layout_style") or "").strip()
+                                  in ("拖拽布局V1.0", "拖拽布局", "flat", "drag") else "grouped"),
                     type_id=str(get("type_id") or "").strip(),
                     status=str(get("status") or "deploy").strip(),
                     # 面板宽度读进来只用于回写 Excel / 预览显示；

@@ -329,3 +329,65 @@ def _():
     x = pick(data, "form/")
     names = {attrs(t)["name"] for t in all_tags(x, "formField")}
     assert {"mingCheng", "jinE"} <= names, names
+
+
+@case("FRM19", "form", "拖拽布局 V1.0：整张表单一个根 grid，不套 fieldset 分组", "P0",
+      ["布局样式=拖拽布局V1.0 时不生成 fieldset/card 容器",
+       "所有普通控件挂在同一个根 grid_layout 下，parentId 指向它",
+       "字段顺序保持（跨分区也不丢）",
+       "布局契约检查通过（根 grid 允许没有 fieldset）"])
+def _():
+    from pp6kit.reader import read_workbook
+    import io as _io
+
+    data = {
+        S.S_BO: [{"对象名称": "合同", "对象编码": "contract", "物理表名": "pp_contract"}],
+        S.S_FIELD: [field("contract", "名称", "字符串"),
+                    field("contract", "金额", "数字", 精度=2),
+                    field("contract", "状态", "选项", 选项值="草稿,生效")],
+        S.S_FORM: [{"表单key": "create_contract", "表单名称": "新建合同",
+                    "对象编码": "contract", "表单类型": "新建表单",
+                    "布局样式": "拖拽布局V1.0"}],
+        S.S_FORMFIELD: [
+            {"表单key": "create_contract", "字段编码": "mingCheng",
+             "显示标签": "名称", "控件类型": "text", "分区": "基础信息"},
+            {"表单key": "create_contract", "字段编码": "jinE",
+             "显示标签": "金额", "控件类型": "number", "分区": "基础信息"},
+            {"表单key": "create_contract", "字段编码": "zhuangTai",
+             "显示标签": "状态", "控件类型": "dictionary",
+             "取值来源": "contract_zhuangTai", "分区": "扩展信息"},
+        ],
+    }
+    body = build(data)
+    x = pick(body, "form/")
+    # 没有 fieldset / card
+    assert not [t for t in all_tags(x, "formField")
+                if attrs(t).get("fieldType") in ("fieldset", "card")], "flat 模式不该有分组容器"
+    grids = [t for t in all_tags(x, "formField")
+             if attrs(t).get("fieldType") == "grid_layout"]
+    assert len(grids) == 1, len(grids)
+    gid = attrs(grids[0])["id"]
+    assert not attrs(grids[0]).get("parentId"), "根 grid 不该有 parentId"
+    kids = [t for t in all_tags(x, "formField") if attrs(t).get("parentId") == gid]
+    assert len(kids) == 3, len(kids)
+    assert [attrs(k)["name"] for k in kids] == ["mingCheng", "jinE", "zhuangTai"]
+    # 契约检查读的是单个表单 XML（整包里第一份 XML 是 bo，会误判）
+    fx = Path(tempfile.mkdtemp()) / "form.xml"
+    fx.write_text(x, encoding="utf-8")
+    try:
+        bad, _, _ = check_layout(fx)
+    finally:
+        fx.unlink(missing_ok=True)
+    assert bad == [], bad
+
+    # 读回来仍是 flat
+    proj, _, _ = read_workbook(_io.BytesIO(xlsx(data)))
+    assert proj.forms[0].layout_style == "flat"
+
+    # 回写 Excel 再读：布局样式列不能丢
+    from pp6kit import template
+    wb = template.build_workbook(proj)
+    buf = _io.BytesIO()
+    wb.save(buf)
+    proj2, _, _ = read_workbook(_io.BytesIO(buf.getvalue()))
+    assert proj2.forms[0].layout_style == "flat"

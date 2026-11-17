@@ -587,3 +587,64 @@ def _():
     assert "列表至少要保留 1 列" in js, "没有拦住「清空到 0 列」"
     assert "list.columns = fields.slice(0, 1)" in js, "清空按钮没兜底留第一列"
     assert ".ai-col-grid" in css and ".ai-col-item" in css
+
+
+@case("WEB31", "webui", "AI 表单预览可切换「字段分组 / 拖拽布局V1.0」", "P0",
+      ["预览头部有布局样式下拉，选择写回 state.aiData.form.layoutStyle",
+       "flat 时不再画分区标题，控件平铺",
+       "出包时 layoutStyle 原样带走（ai_apply_bo → Form.layout_style）"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    js = (root / "pp6kit" / "static" / "app.js").read_text(encoding="utf-8")
+    css = (root / "pp6kit" / "static" / "style.css").read_text(encoding="utf-8")
+    webui_src = (root / "pp6kit" / "webui.py").read_text(encoding="utf-8")
+
+    assert 'id="aiFormStyle"' in js
+    assert "bindAiFormStyle(" in js
+    assert 'layoutStyle === "flat"' in js
+    assert ".ai-formstyle" in css
+    assert 'layoutStyle' in webui_src and 'layout_style=' in webui_src
+
+
+@case("WEB32", "webui", "查数据页：结果在前、SQL 在后，进页自动读结构", "P0",
+      ["结果卡片必须排在 SQL 卡片之前（否则长 SQL 把结果挤出视野）",
+       "查询理解显示在结果上方",
+       "进页面自动 /api/nlq/test，示例问题不用点设置才出现",
+       "结果不对可一键 AI 重答"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "pp6kit" / "static" / "query.js").read_text(encoding="utf-8")
+    css = (root / "pp6kit" / "static" / "style.css").read_text(encoding="utf-8")
+
+    assert html.index('id="qResultCard"') < html.index('id="qSqlCard"')
+    assert 'id="qRetryAi"' in html
+    assert 'id="qOrigin"' in html
+    assert "ensureQueryReady" in js and "qApi(\"/api/nlq/test\")" in js
+    assert "q-understood" in js and ".q-understood" in css
+    assert 'ask("llm")' in js
+
+
+@case("WEB33", "webui", "查数据页：语义口径可见、缺条件先澄清、结果可入库验证", "P0",
+      ["侧栏显示「口径 N 条 / 已验证 N/M 条」",
+       "缺时间范围渲染澄清卡片，选项写回问题再查",
+       "结果头有「标记为已验证」，点击 POST /api/nlq/verify"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "pp6kit" / "static" / "query.js").read_text(encoding="utf-8")
+    css = (root / "pp6kit" / "static" / "style.css").read_text(encoding="utf-8")
+    py = (root / "pp6kit" / "webui.py").read_text(encoding="utf-8")
+
+    assert 'id="qVerify"' in html
+    assert "/api/nlq/verify" in js and "qVerify" in js
+    assert "renderClarify" in js and "q-clarify" in js
+    assert "口径" in js and "已验证" in js
+    assert ".q-clarify" in css and ".src-verified" in css
+    assert '"/api/nlq/verify"' in py

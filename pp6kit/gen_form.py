@@ -856,6 +856,16 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
             # 分区标题用控件自己的标签，跟原生一致（明细表那一块就叫控件名）
             _split.append((_r[0].label or _title, [_r]))
     groups = _split
+
+    # 拖拽布局 V1.0：不按业务分组套 fieldset，普通控件全部进**一个根 grid_layout**；
+    # 明细表/表格字段仍各自一个容器（它们不能进 grid_layout，会被系统忽略）。
+    flat = form.layout_style == "flat"
+    if flat:
+        _plain_all = [r for _t, _rows in groups for r in _rows if not _is_direct_row(r)]
+        _direct_all = [(_r[0].label or _t, [_r])
+                       for _t, _rows in groups for _r in _rows if _is_direct_row(_r)]
+        groups = ([("", _plain_all)] if _plain_all else []) + _direct_all
+
     container_type = _CONTAINER_BY_KIND.get(form.kind, "fieldset")
     bo_code = bo.code if bo else form.bo_code
     bo_fields = {bf.code: bf for bf in (bo.fields if bo else [])}
@@ -865,12 +875,10 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
 
     # 隐藏字段挂在根上（与线上一致：id / version 不在任何分区里）
     hidden_names = []
-    flow_form = bool(bo and bo.flow_driven)
-    # 普通对象：默认一个隐藏控件都不塞（2026-11-16 用户要求，设计器里太碍眼）。
-    # 流程对象：保留 id/version + 5 个流程字段——流程任务打开表单要拿主键，
-    # 提交时流程状态也要有落点，这套是功能所需，不能省。
-    # 普通表单确实要 id/version 时，在 3_表单 把「补隐藏字段」填「是」。
-    need_hidden = form.auto_hidden or flow_form
+    # 只有显式「补隐藏字段=是」才补。流程字段也**不再**自动塞进表单：
+    # 线上 pp_project_create 的两张表单里一个 process* 控件都没有（2026-11-17
+    # 核对 config-sync-20261113150255），流程值由服务端按对象字段反写。
+    need_hidden = form.auto_hidden
     for which, label in _HIDDEN_FIELDS:
         if not need_hidden:
             continue
@@ -891,6 +899,8 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
     parents = _cascade_parent_names(form)
 
     for gi, (title, rows) in enumerate(groups, start=1):
+        # flat 模式下第一组（普通控件）直接挂根 grid_layout，不套 fieldset
+        no_container = flat and gi == 1 and not title
         # 明细表（dataTemplate）/ 表格字段（tableField）单独成容器：原生表单里它们
         # **不经过** grid_layout，直接挂在容器的 columns 上（项目汇报表里 4 个明细表、
         # project_create 详情里 3 个表格字段，容器 columns 引用的就是控件 id 本身）。
@@ -903,33 +913,34 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
         dm_cid = new_id() if direct else ""
 
         # ---- 分区容器：card（详情）/ fieldset（新建等）
-        c_opts = snip.layout(container_type)
-        c_opts.setdefault("clearable", True)
-        c_opts.setdefault("controls", True)
-        c_opts.setdefault("selection", True)
-        c_opts.setdefault("mobile", True)
-        c_opts.setdefault("autoCollapse", True)
-        if container_type == "fieldset":
-            c_opts.setdefault("border_style", "none")
-            c_opts.setdefault("position", "left")
-            c_opts.setdefault("type", "default")
-            # 线上立项表单：首个分组不加间距，其余 top_margin=20
-            if gi > 1:
-                c_opts["is_margin"] = True
-                c_opts["top_margin"] = 20
-        c_opts["columns"] = [{
-            "name": None, "label": None,
-            "fields": [dm_cid if direct else grid_id], "span": "",
-        }]
-        body.append(el("formField", {
-            "id": container_id,
-            "formId": form_id,
-            "name": ("card_" if container_type == "card" else "fieldset_") + short_id(),
-            "label": title,
-            "fieldType": container_type,
-            "fieldOptions": json_attr(c_opts),
-            "sn": sn,
-        }, indent=2))
+        if not no_container:
+            c_opts = snip.layout(container_type)
+            c_opts.setdefault("clearable", True)
+            c_opts.setdefault("controls", True)
+            c_opts.setdefault("selection", True)
+            c_opts.setdefault("mobile", True)
+            c_opts.setdefault("autoCollapse", True)
+            if container_type == "fieldset":
+                c_opts.setdefault("border_style", "none")
+                c_opts.setdefault("position", "left")
+                c_opts.setdefault("type", "default")
+                # 线上立项表单：首个分组不加间距，其余 top_margin=20
+                if gi > 1:
+                    c_opts["is_margin"] = True
+                    c_opts["top_margin"] = 20
+            c_opts["columns"] = [{
+                "name": None, "label": None,
+                "fields": [dm_cid if direct else grid_id], "span": "",
+            }]
+            body.append(el("formField", {
+                "id": container_id,
+                "formId": form_id,
+                "name": ("card_" if container_type == "card" else "fieldset_") + short_id(),
+                "label": title,
+                "fieldType": container_type,
+                "fieldOptions": json_attr(c_opts),
+                "sn": sn,
+            }, indent=2))
         sn += 1
 
         if direct:
@@ -1015,7 +1026,8 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
         body.append(el("formField", {
             "id": grid_id,
             "formId": form_id,
-            "parentId": container_id,
+            # flat：根 grid_layout 直接挂 formDef，parentId 不写
+            "parentId": None if no_container else container_id,
             "name": "gridLayout_" + short_id(),
             "label": "表格布局V1.0",
             "desc": "",

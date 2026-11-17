@@ -30,8 +30,9 @@ def _attr_line(field, bo: Bo | None = None) -> str:
         if val is None:
             continue
         if key == "options":
-            # 级联值落点：selectOptions[].dependValues。
-            # 必须在序列化前注入 —— model.resolved() 拿不到 bo，算不出父选项短码。
+            # 属性侧的级联声明 + selectOptions 冗余。
+            # 导入真正读的是 dictionary.dependValues（2026-11-17 平台修复包确认），
+            # 这里必须在序列化前注入 —— model.resolved() 拿不到 bo，算不出父选项短码。
             if bo is not None:
                 sel = _select_options(field, bo)
                 if sel:
@@ -81,7 +82,14 @@ def _parent_code(label: str, field: Bo, bo: Bo) -> str:
 
 
 def _select_options(field, bo: Bo) -> list[dict]:
-    """字段 options 里的 selectOptions —— 级联值（dependValues）真正的落点。
+    """字段 options 里的 selectOptions —— 级联值的**冗余副本**。
+
+    2026-11-17 平台修复「导入 zip 不显示级联值」后导出的参考包
+    （config-sync-20261117204647.zip）里，级联值只写在
+    `<dictionary ... dependValues="[&quot;父key&quot;]"/>`；attribute.options
+    里只有 cascadeEnabled / cascadeParentCode，没有 selectOptions。
+    所以 _dict_blocks 必须写 dictionary.dependValues；这里保留 selectOptions
+    是为了兼容旧前端/旧包往返，值必须与字典项 key 完全一致。
 
     依据（2026-11-12，两处独立证据）：
 
@@ -106,10 +114,9 @@ def _select_options(field, bo: Bo) -> list[dict]:
     # value 必须与 dictionaryList 里同名字典项的 key 完全相同 —— 系统靠它
     # 把「选项显示值」和「字典项」对上。两边都用 _choice_code(scope=dict_key)，
     # 所以短码天然一致；一旦不一致，下拉会显示空白。
-    key = field.dict_key()
-    used: set[str] = set()
-    codes = {label: _choice_code(label, i, used, scope=key)
-             for i, label in enumerate(field.sub_choices(), start=1)}
+    codes = _dict_codes(field)
+    parent_field = bo.field_by_code(field.cascade_parent or "")
+    parent_codes = _dict_codes(parent_field) if parent_field is not None else {}
     for label in field.sub_choices():
         parents = [p for p, kids in field.choice_groups.items() if label in kids]
         items.append({
@@ -117,7 +124,10 @@ def _select_options(field, bo: Bo) -> list[dict]:
             "label": label,
             "text": label,
             "disabled": 0,
-            "dependValues": [_parent_code(p, field, bo) for p in parents],
+            # 父值必须在父字段字典里真实存在；查不到就**不写**，
+            # 不能拿 md5 兜一个不存在的 key —— 那样导入后下拉是空的，
+            # 比「没级联」更难查（2026-11-17 用户包里的悬空 dependValues）。
+            "dependValues": [parent_codes[p] for p in parents if p in parent_codes],
             "data": {},
         })
     return items
@@ -234,6 +244,15 @@ def _dict_blocks(bo: Bo) -> tuple[str, str]:
         # 级联分组：本字段的字典项 = 分组里出现的全部子项（去重）。
         # 父选项由父字段自己的字典提供，不重复写在这里。
         labels = f.sub_choices() if f.choice_groups else list(f.choices)
+        codes = _dict_codes(f)
+        # 级联关系要写到**字典项**上（2026-11-17 平台修复后的导出格式）：
+        #   <dictionary ... dependValues="[&quot;父选项key&quot;]"/>
+        # 之前只写在 attribute.options.selectOptions 里，平台导入时读不到，
+        # 所以级联值一直不显示。根字段（被别的字段当父级）写 []。
+        is_cascade = bool(f.choice_groups) or any(
+            x.cascade_parent == f.code for x in bo.fields)
+        parent_field = bo.field_by_code(f.cascade_parent or "")
+        parent_codes = _dict_codes(parent_field) if parent_field is not None else {}
         for i, label in enumerate(labels, start=1):
             # attrs 子元素：选项的展示样式（tag 形状/颜色）。原生「推送工作区」
             # 导出的每个 dictionary 都带这段默认样式 JSON（2026-11-11 risk 包
@@ -249,15 +268,24 @@ def _dict_blocks(bo: Bo) -> tuple[str, str]:
                 '{"backgroundColor":"","shape":"tag","effect":"light",'
                 '"type":"custom","color":"#000000","boardColor":"","icon":""}'
             ), indent=3)
-            dics.append(el("tns:dictionary", {
+            d_attrs = {
                 "typeKey": key,
                 # 选项值用英文短码，对标线上真实数据；
                 # 界面显示的是 name（中文），两列各司其职
-                "key": _code_for_field(f, label, i, used, key),
+                "key": codes[label],
                 "name": label,
                 "sn": i,
                 "disabled": "false",
-            }, dic_children, indent=2))
+            }
+            if is_cascade:
+                deps: list[str] = []
+                if f.choice_groups:
+                    deps = [parent_codes[p]
+                            for p, kids in f.choice_groups.items()
+                            if label in kids and p in parent_codes]
+                # 与系统导出一致：无空格压缩 JSON（[&quot;a&quot;,&quot;b&quot;]）
+                d_attrs["dependValues"] = json_attr(deps)
+            dics.append(el("tns:dictionary", d_attrs, dic_children, indent=2))
 
     type_list = wrap("tns:dictionaryTypeList", types, indent=1) if types \
         else el("tns:dictionaryTypeList", "", None, indent=1)
@@ -294,6 +322,20 @@ def choice_conflicts(bo: Bo) -> list[str]:
                     f"算出了同一个选项值 {code!r}，导入后会互相覆盖")
             bucket[code] = label
     return bad
+
+
+def _dict_codes(field: Bo) -> dict[str, str]:
+    """本字段字典项 label → key 的完整映射。
+
+    字典块、selectOptions、dictionary.dependValues 三处必须用**同一份**码：
+    父字段的字典项 key 是子字段 dependValues 的取值，任何一处重算错位，
+    导入后级联就是空的（2026-11-17 用户反馈「导入 zip 不显示级联值」）。
+    """
+    key = field.dict_key()
+    labels = field.sub_choices() if field.choice_groups else list(field.choices)
+    used: set[str] = set()
+    return {label: _code_for_field(field, label, i, used, key)
+            for i, label in enumerate(labels, start=1)}
 
 
 def _code_for_field(field: Bo, label: str, i: int, used: set, scope: str) -> str:
@@ -479,6 +521,15 @@ def dict_choice_codes(bo: Bo, field_code: str) -> dict[str, str]:
         # 子选项的短码不受影响：_choice_code 的 md5 只用 (scope, 选项名)，
         # 不含序号（QA 2026-11-13 实测 OTC / RX / 转增加 两条路径完全一致）。
         labels = f.sub_choices() if f.choice_groups else list(f.choices)
+        codes = _dict_codes(f)
+        # 级联关系要写到**字典项**上（2026-11-17 平台修复后的导出格式）：
+        #   <dictionary ... dependValues="[&quot;父选项key&quot;]"/>
+        # 之前只写在 attribute.options.selectOptions 里，平台导入时读不到，
+        # 所以级联值一直不显示。根字段（被别的字段当父级）写 []。
+        is_cascade = bool(f.choice_groups) or any(
+            x.cascade_parent == f.code for x in bo.fields)
+        parent_field = bo.field_by_code(f.cascade_parent or "")
+        parent_codes = _dict_codes(parent_field) if parent_field is not None else {}
         for i, label in enumerate(labels, start=1):
             code = _code_for_field(f, label, i, used, key)
             if f.code == field_code:

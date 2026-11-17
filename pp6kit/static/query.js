@@ -19,6 +19,35 @@ async function qApi(path, body) {
   return data;
 }
 
+/* ---------------- 功能开关 ---------------- */
+/* 存量包修订：先隐藏入口（按钮、快捷键 3、关于页文案一起收起来）。
+   patch.js、#mode-patch 面板、/api/patch/* 后端全部保留，代码没动；
+   恢复：把 patch 改回 true，其他都不用改。 */
+window.PP6_FEATURES = { patch: false };
+const PATCH_ON = () => window.PP6_FEATURES.patch !== false;
+
+/* 按开关调整导航：隐藏的工作区按钮 / 快捷键说明 / 关于页文案 */
+function applyFeatureFlags() {
+  const on = PATCH_ON();
+  const btn = document.querySelector('.mode[data-feature="patch"]');
+  if (btn) btn.hidden = !on;
+  const keys = document.getElementById("keysModes");
+  if (keys) {
+    keys.innerHTML = on
+      ? '<kbd>1</kbd>–<kbd>5</kbd><span>切换工作区</span>'
+      : '<kbd>1</kbd><kbd>2</kbd><kbd>4</kbd><kbd>5</kbd><span>切换工作区</span>';
+  }
+  const label = document.getElementById("aboutModeLabel");
+  if (label) label.textContent = on ? "五个工作区" : "四个工作区";
+  const modes = document.getElementById("aboutModes");
+  if (modes) {
+    modes.textContent = on
+      ? "普通模式 · 流程模式 · 存量包修订 · 数据查询 · 系统设置"
+      : "普通模式 · 流程模式 · 数据查询 · 系统设置";
+  }
+}
+applyFeatureFlags();
+
 /* ---------------- 模式切换 ---------------- */
 /* 上下文栏 / 状态栏跟着工作区走，避免「切了页面但标题还是上一个」 */
 const MODE_META = {
@@ -30,6 +59,8 @@ const MODE_META = {
 };
 
 function switchMode(mode) {
+  // 存量包修订被隐藏时，任何来源（快捷键 / 旧链接 / 残留按钮）都回落到普通模式
+  if (mode === "patch" && !PATCH_ON()) mode = "import";
   document.querySelectorAll(".mode").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
   // 流程模式复用普通模式的工作区：导入/AI/预览/编辑完全同一套，
   // 只有导出时是否附带固定三步 XML 不同。
@@ -58,7 +89,7 @@ function switchMode(mode) {
   if (ws) ws.scrollTop = 0;
   window.__currentMode = mode;
 
-  if (mode === "query") loadConfig();
+  if (mode === "query") { loadConfig(); ensureQueryReady(); }
   if (mode === "settings") loadConfig();
   if (mode === "workflow" && window.Workflow) window.Workflow.render();
 }
@@ -75,7 +106,8 @@ document.addEventListener("keydown", (e) => {
   }
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   const hit = { "1": "import", "2": "workflow", "3": "patch", "4": "query", "5": "settings" }[e.key];
-  if (hit) { e.preventDefault(); switchMode(hit); }
+  // 3 号工作区被隐藏时按了不做事（也不能 preventDefault，避免吞掉正常输入）
+  if (hit && (hit !== "patch" || PATCH_ON())) { e.preventDefault(); switchMode(hit); }
 });
 
 /* 状态栏时钟：本地运行，不请求网络 */
@@ -154,6 +186,21 @@ function renderProviders(list) {
     const p = Q_PROVIDERS.find((x) => x.key === sel.value);
     if (p) fillProvider(p);
   };
+}
+
+/* 进查询页就自动读一次结构：连接状态、可查表数、示例问题都不该等用户
+   先去「设置」点一遍「连接并读取结构」才出现。 */
+async function ensureQueryReady() {
+  if (Q.readyTried) return;
+  Q.readyTried = true;
+  try {
+    const d = await qApi("/api/nlq/test");
+    renderConnStats(d);
+    Q.templates = d.templates || [];
+    renderTemplates();
+  } catch (_) {
+    /* 没连库/连不上时保持「还没连接数据库」，用户去设置里配 */
+  }
 }
 
 async function loadConfig() {
@@ -286,7 +333,13 @@ function renderConnStats(d) {
     el.innerHTML = html;
   }
   const hint = document.getElementById("qConnHint");
-  if (hint) hint.textContent = `已连接 ${d.database} · ${d.tableCount} 张表`;
+  if (hint) {
+    const lib = d.library ? ` · 已验证 ${d.library.verified}/${d.library.total} 条` : "";
+    const sem = d.semantic ? ` · 口径 ${d.semantic.length} 条` : "";
+    hint.textContent = `已连接 ${d.database} · ${d.tableCount} 张表${lib}${sem}`;
+    // 鼠标悬停能看到具体口径，排查「为什么它这么理解」时有用
+    hint.title = (d.semantic || []).map((x) => `- ${x.rule}`).join("\n");
+  }
 }
 
 Q.get("qTest").onclick = async () => {
@@ -380,6 +433,8 @@ const ORIGIN = {
             tip: "之前 AI 答对过并已保存，现在直接复用，不再调用大模型" },
   corrected: { icon: "✎", label: "人工修正", cls: "src-mem",
                tip: "你手工改过的 SQL，已记下并优先使用" },
+  clarify: { icon: "?", label: "待确认", cls: "src-warn",
+             tip: "缺关键条件，先确认再查，避免把全量历史算进去" },
 };
 
 function originBadge(d) {
@@ -413,6 +468,12 @@ function renderOrigin(d) {
   if (d.uncertain) {
     html += `<span class="src-warn" title="${qEsc(d.uncertain)}">结果待核对</span>`;
   }
+  if (d.verified) {
+    html += `<span class="src-verified" title="人工确认过，已进已验证库，下次优先复用">✓ 已验证</span>`;
+  }
+  if (d.summary) {
+    html += `<div class="q-understood"><b>查询理解</b>：${qEsc(d.summary)}</div>`;
+  }
   box.innerHTML = html;
   box.hidden = false;
 }
@@ -445,7 +506,17 @@ function showSql(sql, question, generated) {
 }
 
 function renderResult(d, ms) {
+  if (d.clarify) return renderClarify(d);
   Q.get("qResultCard").hidden = false;
+  // 规则/记忆答的都可以一键让 AI 重答；已经是 AI 的就不用了
+  const retry = Q.get("qRetryAi");
+  if (retry) retry.hidden = !d.origin || d.origin === "ai";
+  const verify = Q.get("qVerify");
+  if (verify) {
+    verify.hidden = !d.sql || !!d.verified || d.origin === "clarify";
+    verify.disabled = false;
+    verify.textContent = "标记为已验证";
+  }
   const meta = Q.get("qResultMeta");
   const o = ORIGIN[d.origin] || ORIGIN.rule;
   meta.innerHTML = `${d.rows.length} 行${ms ? " · " + ms + " ms" : ""}` +
@@ -469,6 +540,34 @@ function renderResult(d, ms) {
   Q.last = d;
 }
 
+/* 缺时间范围时只问一句，点选项补进问题里再查；不打断别的查询 */
+function renderClarify(d) {
+  const c = d.clarify || {};
+  Q.get("qResultCard").hidden = false;
+  Q.get("qResultMeta").textContent = "需要确认";
+  const retry = Q.get("qRetryAi");
+  if (retry) retry.hidden = true;
+  const verify = Q.get("qVerify");
+  if (verify) verify.hidden = true;
+  const opts = (c.options || []).map((o) =>
+    `<button class="btn ghost" data-opt="${qEsc(o)}">${qEsc(o)}</button>`).join("");
+  Q.get("qResult").innerHTML = `
+    <div class="q-clarify">
+      <div class="q-clarify-q">${qEsc(c.question || "需要补充一个条件")}</div>
+      ${c.why ? `<div class="q-clarify-why">${qEsc(c.why)}</div>` : ""}
+      <div class="q-clarify-opts">${opts}</div>
+    </div>`;
+  Q.get("qResult").querySelectorAll("button[data-opt]").forEach((btn) => {
+    btn.onclick = () => {
+      const q = Q.get("qQuestion");
+      q.value = q.value.trim() + `（时间范围：${btn.dataset.opt}）`;
+      // 补完条件直接交给 AI：规则对「新增 + 时间 + 分组」这类组合容易过度解释
+      ask("llm", true);
+    };
+  });
+  Q.last = d;
+}
+
 async function runSql(sql) {
   const t0 = performance.now();
   try {
@@ -476,6 +575,8 @@ async function runSql(sql) {
     Q.get("qErr").hidden = true;
     showSql(d.sql, Q.get("qSqlMeta").textContent.replace(/^来自：/, ""));
     renderResult(d, Math.round(performance.now() - t0));
+    // 结果在 SQL 卡片下面，长 SQL 会把它挤出视野；直接带用户过去
+    Q.get("qResultCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
   } catch (e) {
     Q.get("qErr").hidden = false;
     Q.get("qErr").textContent = e.message;
@@ -483,7 +584,7 @@ async function runSql(sql) {
   }
 }
 
-async function ask(engine) {
+async function ask(engine, clarified) {
   Q.get("qRuleBox").hidden = true;
   const question = Q.get("qQuestion").value.trim();
   if (!question) { toast("先写一句你想查什么"); return; }
@@ -491,9 +592,14 @@ async function ask(engine) {
   btn.disabled = true; btn.textContent = "生成中…";
   const t0 = performance.now();
   try {
-    const d = await qApi("/api/nlq/ask", { question, engine });
-    showSql(d.sql, question, true);
-    renderOrigin(d);
+    const d = await qApi("/api/nlq/ask", { question, engine, clarified: !!clarified });
+    if (d.sql) {
+      showSql(d.sql, question, true);
+      renderOrigin(d);
+    } else {
+      Q.get("qSqlCard").hidden = true;
+      Q.get("qOrigin").hidden = true;
+    }
     Q.get("qSqlMeta").textContent = (question ? "来自：" + question : "") +
       (d.note ? "　✎ " + d.note : "");   // 复用人工修正时带上他自己写的原因
     if (d.retried) toast("第一次 SQL 执行报错，已自动修正");
@@ -506,6 +612,8 @@ async function ask(engine) {
       ruleBox.hidden = true;
     }
     renderResult(d, Math.round(performance.now() - t0));
+    // 结果在 SQL 卡片下面，长 SQL 会把它挤出视野；直接带用户过去
+    Q.get("qResultCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
   } catch (e) {
     Q.get("qSqlCard").hidden = false;
     // 清空旧的 SQL：被安全闸拒掉时如果还留着上一次的结果，
@@ -565,6 +673,24 @@ async function copySql() {
 }
 
 Q.get("qCopySql").onclick = copySql;
+Q.get("qRetryAi").onclick = () => ask("llm");
+Q.get("qVerify").onclick = async () => {
+  const question = Q.get("qQuestion").value.trim();
+  const sql = Q.get("qSql").value.trim();
+  if (!question || !sql) { toast("先查一次再标记"); return; }
+  const btn = Q.get("qVerify");
+  btn.disabled = true; btn.textContent = "保存中…";
+  try {
+    const d = await qApi("/api/nlq/verify", { question, sql });
+    toast(`已验证 ${d.verified} 条（共 ${d.total} 条）`);
+    btn.textContent = "已入库 ✓";
+    if (Q.last) Q.last.verified = true;
+    renderOrigin(Q.last);
+  } catch (e) {
+    btn.disabled = false; btn.textContent = "标记为已验证";
+    toast("保存失败：" + e.message, 5000);
+  }
+};
 Q.get("qLlmForget").onclick = async () => {
   if (!confirm("清除后下次需要重新填写 Key，确定吗？")) return;
   try {

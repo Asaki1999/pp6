@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import os
 import re
 import zipfile
 from dataclasses import dataclass, field
@@ -57,15 +59,28 @@ SYSTEM_FIELDS: list[dict] = [
     {"code": "createTime", "name": "创建时间", "type_new": "datetime"},
     {"code": "updateBy", "name": "更新人", "type_new": "user", "length": 64, "is_index": True},
     {"code": "updateTime", "name": "更新时间", "type_new": "datetime"},
-    # deleted 线上是 varchar(1)，存 Y/N。之前写 20，建出来的列比系统宽 19 倍，
-    # 已有表结构对不上时导入端会按「字段已存在」跳过，不报错但列宽是错的。
-    {"code": "deleted", "name": "数据删除状态", "type_new": "varchar", "length": 1, "is_index": True},
+    # deleted 线上主流是 varchar(20)（2026-11-17 只读查库：148 张表 20、19 张表 1）。
+    # 之前写 1 是只看了几个小对象；项目/项目立项都是 20，按主流口径统一。
+    {"code": "deleted", "name": "数据删除状态", "type_new": "varchar", "length": 20, "is_index": True},
     {"code": "version", "name": "版本", "type_new": "number", "length": 20},
     # 下面两个是 2026-10 对照线上系统补的：实测 project/test_plan 等对象的
     # 字段里都有，缺了导入后基线/草稿功能不可用。
     # 名称沿用官方包（是否草稿 varchar(1)）；页签显示的「草稿/10」是模板展示值。
     {"code": "baselineVersion", "name": "基线版本", "type_new": "number", "length": 20},
     {"code": "isDraft", "name": "是否草稿", "type_new": "varchar", "length": 1},
+]
+
+# 普通对象在系统里也带这 4 个流程冗余列（2026-11-17 只读查库实测
+# labor_budget_rate / test_case_base_category：**没勾流程驱动的对象照样有**，
+# 全是 varchar，300/1000/36/36；位置在 baselineVersion 之后、isDraft 之前）。
+# 缺了它们，导入后对象的「默认字段」只有 12 个，和系统新建对象的 16 个对不上
+# （用户 19:16 反馈「你生成的 zip 包默认字段只有几个，系统里生成的有 16 个」）。
+# 流程驱动的对象走 PROCESS_FIELDS（processNode 会升级成 dic + 字典项），不插这批。
+PLAIN_PROCESS_FIELDS: list[dict] = [
+    {"code": "processNode", "name": "流程节点", "type_new": "varchar", "length": 300},
+    {"code": "processHandler", "name": "流程处理人", "type_new": "varchar", "length": 1000},
+    {"code": "processDefId", "name": "流程定义", "type_new": "varchar", "length": 36},
+    {"code": "processInstanceId", "name": "流程实例", "type_new": "varchar", "length": 36},
 ]
 
 
@@ -115,20 +130,60 @@ class BuildResult:
         return [a for a in self.artifacts if a.module == code]
 
 
-def ensure_process_fields(bo: Bo) -> list[str]:
-    """手册：流程驱动的对象必须冗余 4 个字段，流程流转时反写。"""
+def ensure_process_fields(bo: Bo, node_names: list[str] | None = None) -> list[str]:
+    """手册：流程驱动的对象必须冗余 6 个流程字段，流程流转时反写。
+
+    processNode 是 dic（字典项 = 本对象流程的节点名）。node_names 由调用方
+    从 project.workflows 里取：builder.build 已经先补过默认流程，所以正常
+    出包一定能拿到 开始/审核/通过 这几个节点。
+
+    老包（反解/历史 Excel）里已经有的流程字段也**按新口径纠正**：
+    processNode 从 varchar 改 dic、processHandler 200→1000、缺的补上。
+    这些是系统冗余字段，不归用户自定义，改规格不会动业务语义。
+    """
     if not bo.flow_driven:
         return []
     added = []
     have = {f.code for f in bo.fields}
     sn = max([f.sn for f in bo.fields], default=0)
-    for code, name, length in PROCESS_FIELDS:
-        if code in have:
+    for spec_ in PROCESS_FIELDS:
+        code = spec_["code"]
+        existing = bo.field_by_code(code)
+        if existing is not None:
+            # 只纠规格，不动 code/fieldName/sn（存量包铁律）
+            existing.type_new = spec_["type_new"]
+            if spec_.get("length"):
+                existing.length = spec_["length"]
+            if spec_.get("options"):
+                for k, v in spec_["options"].items():
+                    existing.options.setdefault(k, copy.deepcopy(v))
+            if code == "processNode":
+                existing.choices = list(dict.fromkeys(node_names or existing.choices or []))
+                existing.options["isMultiple"] = True
             continue
         sn += 1
+        opts = copy.deepcopy(spec_.get("options") or {})
+        choices = []
+        if code == "processNode":
+            choices = list(dict.fromkeys(node_names or []))
+        elif code == "processCode":
+            # 流程编号：WF-年月日-流水，3 位、全局去重。alias 要稳定，
+            # 否则同一份 Excel 反复出包会被系统当成两个自动编号规则。
+            opts.setdefault("identities", [{
+                "name": "默认编号",
+                "alias": hashlib.md5(f"{bo.code}:processCode".encode()).hexdigest()[:8],
+                "regulation": "WF-{yyyy}{MM}{dd}{NO}",
+                "noLength": 3,
+                "initValue": 1,
+                "step": 1,
+                "duplicateType": "global",
+                "duplicateScope": "",
+                "queryCondition": {"condition": "AND", "rules": []},
+            }])
         bo.fields.append(BoField(
-            bo_code=bo.code, code=code, name=name, type_new="varchar",
-            length=length, sn=sn,
+            bo_code=bo.code, code=code, name=spec_["name"],
+            type_new=spec_["type_new"], length=spec_.get("length"),
+            options=opts, choices=choices, sn=sn,
         ))
         added.append(code)
     return added
@@ -143,7 +198,7 @@ _PLATFORM_CODE_HINT = ("pp_equipment", "test_case", "pp_directory", "iform_")
 # 唯一来源是 model.WF_STATE_OPTIONS：gen_workflow.state_codes() 也用同一份，
 # 否则「对象里的字典 key」与「流程里的 BusinessState」会是两套短码。
 PROCESS_STATE_OPTIONS = list(WF_STATE_OPTIONS)
-PROCESS_FIELD_CODES = {code for code, _name, _length in PROCESS_FIELDS} | {"processState"}
+PROCESS_FIELD_CODES = {f["code"] for f in PROCESS_FIELDS} | {"processState"}
 
 
 def ensure_default_workflow(project) -> list[str]:
@@ -202,7 +257,14 @@ def ensure_workflow_fields(bo: Bo) -> list[str]:
     """
     if not bo.flow_driven:
         return []
-    if bo.field_by_code("processState") is not None:
+    existing = bo.field_by_code("processState")
+    if existing is not None:
+        # 老包里的 processState 可能是 varchar / 没有选项：拉回 dic(64) + 4 个固定状态
+        existing.type_new = "dic"
+        existing.length = 64
+        if not existing.choices:
+            existing.choices = list(PROCESS_STATE_OPTIONS)
+        existing.options.setdefault("isMultiple", False)
         return []
     sn = max([f.sn for f in bo.fields], default=0) + 1
     bo.fields.append(BoField(
@@ -217,11 +279,20 @@ def ensure_system_fields(bo: Bo) -> list[str]:
     have = {f.code for f in bo.fields}
     is_platform = any(bo.code.startswith(h) for h in _PLATFORM_CODE_HINT)
     sn = max([f.sn for f in bo.fields], default=0)
-    for spec_ in SYSTEM_FIELDS:
+    specs = list(SYSTEM_FIELDS)
+    if not bo.flow_driven:
+        # 普通对象也要那 4 个流程冗余列，插在 baselineVersion 与 isDraft 之间，
+        # 顺序照系统新建对象的字段表（sn 连续、不跳号）。
+        cut = next((i for i, s in enumerate(specs) if s["code"] == "isDraft"), len(specs))
+        specs[cut:cut] = PLAIN_PROCESS_FIELDS
+    plain_proc = {s["code"] for s in PLAIN_PROCESS_FIELDS}
+    for spec_ in specs:
         if spec_["code"] in have:
             continue
         if is_platform and spec_["code"] in ("baselineVersion", "isDraft", "ip", "name"):
             continue          # 平台自建对象没有这几个字段（实测 pp_equipment 就不带）
+        if is_platform and spec_["code"] in plain_proc:
+            continue          # 平台对象的默认字段只有 9 个，也不带流程冗余列
         sn += 1
         bo.fields.append(BoField(
             bo_code=bo.code,
@@ -234,6 +305,20 @@ def ensure_system_fields(bo: Bo) -> list[str]:
             is_system=True,
         ))
         added.append(spec_["code"])
+    # 老包 / 反解 Excel 里**已经有**的系统字段：规格也拉回统一口径。
+    # 只改类型/长度/索引，不动 code / fieldName / sn（存量包铁律）；
+    # name 除外——它可能是用户自建的「项目名称 varchar 200」。
+    reserved = {s["code"]: s for s in SYSTEM_FIELDS if s["code"] != "name"}
+    for f in bo.fields:
+        spec_ = reserved.get(f.code)
+        if spec_ is None:
+            continue
+        f.type_new = spec_["type_new"]
+        if spec_.get("length"):
+            f.length = spec_["length"]
+        if spec_.get("is_index"):
+            f.is_index = True
+        f.is_system = True
     return added
 
 
@@ -692,9 +777,160 @@ def normalize_derived_keys(project: Project) -> list[str]:
     return notices
 
 
+def _same_family(a: str, b: str) -> bool:
+    """两个 dataTypeNew 是否落在同一个物理列族（互换不会触发 ALTER）。"""
+    from . import projlink
+    return projlink.family(a) == projlink.family(b)
+
+
+def align_existing_object_fields(project: Project, adopt: bool = False) -> list[str]:
+    """更新导入前，把「目标库已有字段」的类型/长度锁回去。
+
+    平台不支持 `ALTER COLUMN`：只要包里有一个字段类型和库里不一致，整个对象导入
+    就会失败（"不支持修改字段类型: xxx: clob->varchar"）。所以更新模式下：
+      - 目标库能查到对象 → 同名字段一律沿用库里的类型/长度（只改类型，不改 code/
+        fieldName/sn）；
+      - 缓存里没有但库里有同编码对象 → 顺手把 exist_id 补上，按更新导入，
+        避免「以为新建、实际撞已有对象」。
+    """
+    from . import objects as _objects
+
+    notices: list[str] = []
+    targets = [bo for bo in project.bos if bo.exist_id or adopt]
+    infos = _objects.db_object_infos([bo.code for bo in targets])
+    db_ready = bool(_objects._db_ready())
+    for bo in targets:
+        # adopt=True（GUI/CLI 出包）时，同编码对象也自动认成更新——系统导入
+        # 本来就按 code 匹配，不认反而会拿着错的类型去撞「不支持修改字段类型」。
+        # 测试默认 adopt=False，避免本机连库与否影响产物。
+        if not db_ready:
+            notices.append(
+                f"业务对象 {bo.code}: 没连目标库，无法校验已有字段类型；"
+                f"更新导入时类型不一致会被系统整包拒绝")
+            continue
+        info = infos.get(bo.code) or {}
+        if not info:
+            if bo.exist_id:
+                notices.append(
+                    f"业务对象 {bo.code}: 标了「已有对象ID」，但目标库里查不到它的字段；"
+                    f"更新导入时字段类型必须与目标一致，否则系统会拒绝整包")
+            continue
+        if not bo.exist_id:
+            bo.exist_id = info.get("id", "") or ""
+            notices.append(
+                f"业务对象 {bo.code}: 目标库已有同编码对象，已按更新导入"
+                f"（id {bo.exist_id}）；字段类型按目标库保持")
+        changed: list[str] = []
+        resized: list[str] = []
+        kept: list[str] = []
+        for f in bo.fields:
+            spec = (info.get("fields") or {}).get(f.code)
+            if not spec:
+                continue
+            tgt_type = spec.get("type_new") or ""
+            if tgt_type and f.type_new != tgt_type:
+                # 按**物理族**比，不按 dataTypeNew 逐字比：平台只在物理列类型变化时
+                # 才报「不支持修改字段类型」。同族互换（varchar/dic/object、
+                # clob/table）系统允许，不该被库里的旧值锁住。
+                # 尤其 table ↔ clob：表格子表本来就按 clob 落库，物理族相同；
+                # 若照库里的 clob 锁回去，重出的包又把「表格」变回「大文本」
+                # （2026-11-17 用户反馈的复发路径）。
+                if _same_family(f.type_new, tgt_type):
+                    kept.append(f"{f.code} {f.type_new}→库 {tgt_type}")
+                else:
+                    changed.append(f"{f.code} {f.type_new}→{tgt_type}")
+                    f.type_new = tgt_type
+            if spec.get("length") and f.length != spec["length"]:
+                resized.append(f"{f.code} {f.length}→{spec['length']}")
+                f.length = spec["length"]
+        if changed:
+            notices.append(
+                f"业务对象 {bo.code}: 目标已有这些字段，类型按目标库保持"
+                f"（系统不支持改类型）：{'、'.join(changed[:6])}")
+        if any(" table→" in k for k in kept):
+            # 表格字段最容易被这里坑：库里上次导成了 clob，若不提示，
+            # 用户会以为「我明明在需求里写了表格」
+            notices.append(
+                f"业务对象 {bo.code}: 目标库这些字段是 clob、包里是「表格」"
+                f"（同属 clob 族，不冲突），已按表格出包："
+                f"{'、'.join(k for k in kept if ' table→' in k)[:200]}")
+        if resized:
+            notices.append(
+                f"业务对象 {bo.code}: 目标已有这些字段，长度按目标库保持："
+                f"{'、'.join(resized[:6])}")
+    return notices
+
+
+def avoid_unupdatable_forms(project: Project) -> list[str]:
+    """目标里同名表单没有「主历史版本」→ 平台无法更新，给它换个新 key。
+
+    8112 实测：`project_create_details` 这条 form_def 是老版本留下的，
+    iform_form_def_his 里一条主历史都没有，导入时直接报
+    「目标表单没有主历史版本」。改 key 新建是唯一不改库的解法；对象/流程/脚本里
+    对旧 key 的引用一起改掉。
+    """
+    from . import objects as _objects
+
+    notices: list[str] = []
+    renames: dict[str, str] = {}
+    keys = {f.key for f in project.forms}
+    states = _objects.form_main_versions([f.key for f in project.forms])
+    for form in project.forms:
+        state = states.get(form.key)
+        if state is None:
+            continue
+        if state == -1:
+            # 目标里没有这个 key：当新建，别带缓存的旧 id
+            form.exist_key = ""
+            continue
+        if state > 0:
+            continue
+        base = f"{form.key}_v2"
+        n = 2
+        while base in keys:
+            n += 1
+            base = f"{form.key}_v{n}"
+        keys.add(base)
+        renames[form.key] = base
+        form.key = base
+        form.exist_key = ""
+        notices.append(
+            f"表单 {form.key}: 目标里同名表单没有主历史版本（系统拒绝更新），"
+            f"本包改用新 key {base}；导入后请在对象/列表里重新选这张表单")
+    if not renames:
+        return notices
+
+    for form in project.forms:
+        for ff in form.fields:
+            ff.form_key = renames.get(ff.form_key, ff.form_key)
+        for rule in form.hide_rules:
+            rule.form_key = renames.get(rule.form_key, rule.form_key)
+    project.form_scripts = {renames.get(k, k): v
+                            for k, v in project.form_scripts.items()}
+    for bo in project.bos:
+        for k, v in list(bo.options.items()):
+            if not isinstance(v, str):
+                continue
+            nv = v
+            for old, new in renames.items():
+                nv = nv.replace(old, new)
+            if nv != v:
+                bo.options[k] = nv
+    for wf in project.workflows:
+        for node in wf.nodes:
+            node.form_key = renames.get(node.form_key, node.form_key)
+    return notices
+
+
 def build(project: Project, snippets: dict, out_dir: Path | None = None,
-          codes: list[str] | None = None) -> BuildResult:
-    """codes：要出包的模块（bo/form/list/dataset/filter）；None = 全部。"""
+          codes: list[str] | None = None, db_align: bool = False) -> BuildResult:
+    """codes：要出包的模块（bo/form/list/dataset/filter）；None = 全部。
+
+    db_align：GUI/CLI 出包时按目标库已有对象对齐字段类型（更新导入不能改类型）。
+    回归测试用 PP6_OFFLINE=1 强制关掉，保证产物与连库与否无关。
+    """
+    if os.environ.get("PP6_OFFLINE", "").strip() in ("1", "true", "yes"):
+        db_align = False
     res = BuildResult()
     snip = Snippets(snippets)
     out = Path(out_dir or project.out_dir or "out")
@@ -772,7 +1008,10 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
             bo.type_id = bo.type_id or project.type_id
             if not bo.type_id:
                 res.notices.append(f"业务对象 {bo.code}: 未指定分类ID")
-            proc = ensure_process_fields(bo)
+            # processNode 的字典项 = 本对象流程图里的节点名（开始/审核/通过…）
+            node_names = [n.name for w in project.workflows
+                          if w.bo_code == bo.code for n in w.nodes]
+            proc = ensure_process_fields(bo, node_names)
             if proc:
                 res.notices.append(f"业务对象 {bo.code}: 流程驱动，已补齐冗余字段 {', '.join(proc)}")
             if bo.code in wf_bos:
@@ -791,6 +1030,9 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
         # 在详情表单与 gen_bo 之前 → 字段与控件都会被生成。
         for line in ensure_project_links(project):
             res.notices.append(line)
+
+        # 更新导入：目标库已有字段的类型/长度锁回去（平台不支持 ALTER COLUMN）
+        res.notices.extend(align_existing_object_fields(project, adopt=db_align))
 
     # 库里已有同名对象 → 用它的 id，导入才是「更新」；否则新 id = 「新增」。
     # 判断依据就是目标库 iform_bo_def.id，填错就会多出一份同名字段的对象。
@@ -879,6 +1121,9 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
             bo_code=bo.code,
             kind=FORM_DETAIL,
             form_type="form",
+            # 详情表单跟随该对象第一张表单的布局样式（新建是拖拽，详情也拖拽）
+            layout_style=(next((x.layout_style for x in project.forms
+                                if x.bo_code == bo.code), "grouped")),
         )
         for x in sorted(bo.fields, key=lambda x: x.sn):
             if x.is_system or x.code in PROCESS_FIELD_CODES:
@@ -897,6 +1142,23 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
             ))
         project.forms.append(dform)
         detail_of_bo[bo.code] = dkey
+
+    # 目标里同名表单没有主历史版本 → 平台无法更新，给本包表单换新 key。
+    # 必须在对象 XML / 表单 / 列表渲染之前：bo.options.formKey、待办入口、
+    # 列表详情指向的 key 都要跟着改。
+    renamed = avoid_unupdatable_forms(project)
+    if renamed:
+        res.notices.extend(renamed)
+        form_of_bo = {}
+        for form in project.forms:
+            form_of_bo.setdefault(form.bo_code, form.key)
+        list_form_of_bo = dict(form_of_bo)
+        for code, form in list_create_form.items():
+            list_form_of_bo[code] = form.key
+        detail_of_bo = {}
+        for form in project.forms:
+            if form.kind == FORM_DETAIL:
+                detail_of_bo.setdefault(form.bo_code, form.key)
 
     # ---- 业务对象
     for bo in project.bos if plan.has("bo") else []:

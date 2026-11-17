@@ -222,6 +222,8 @@ def refine(payload: dict, cfg: dict, timeout: int = 150) -> dict:
     # 微调也可能把级联子字段的候选值改拍平了（模型重排 values 时常见），
     # 补一轮归属映射，别让级联在纠错后失效
     notices.extend(ai_bo.fix_cascade_groups(bo, cfg))
+    # 微调时新增的表格字段同样可能只写类型不写列，按修改要求补出来
+    notices.extend(ai_bo.fill_table_columns(bo, cfg, description=instruction))
 
     # 兜底：模型经常「改类型时把候选值弄丢」，或者干脆不回传 choices。
     # 按字段编码把旧候选值补回去，只有模型明确给了新值才覆盖。

@@ -167,6 +167,8 @@ COLUMNS: dict[str, list[Col]] = {
         Col("表单类型", "kind", 18, choices=["标准全套", "新建表单", "详情表单", "条件专用表单", "导入专用表单"],
             note="标准全套=一键生成 新建/详情/条件专用 三张（推荐）"),
         Col("布局", "layout", 14, choices=["一行一列", "一行两列"], note="默认一行两列"),
+        Col("布局样式", "layout_style", 18, choices=["字段分组", "拖拽布局V1.0"],
+            note="字段分组=每个分区一个 fieldset（默认）；拖拽布局=整张表单一个根 grid_layout，不套分组"),
         Col("分类ID", "type_id", 22, note="留空取默认"),
         Col("状态", "status", 10, choices=["deploy", "draft"]),
         Col("面板宽度%", "width", 12, note="出包统一 90%，此列仅作记录"),

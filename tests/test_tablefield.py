@@ -335,3 +335,128 @@ def _():
     cond_key = next(k for k in cond_forms if f"create_{BO}" in k)
     assert "tableField" not in cond_forms[cond_key], \
         "条件专用表单不该自动插表格控件"
+
+
+@case("TBF16", "tablefield", "AI 路径：表格缺列定义不再降级成大文本", "P0",
+      ["2026-11-17 用户反馈「需求里是表格，导入 zip 后变成大文本」",
+       "保留 dataTypeNew=table，只补一列占位",
+       "模型把 columns 键名写成中文（列名/类型）也要能认"])
+def _():
+    from pp6kit import ai_bo, gen_bo
+
+    bo, notes = ai_bo.build_bo({"name": "合同", "code": "contract_demo", "fields": [
+        {"name": "付款计划表", "type": "table"},
+        {"name": "预算明细", "type": "table",
+         "columns": [{"列名": "阶段", "类型": "字符串"},
+                     {"列名": "金额", "类型": "数字"}]},
+    ]})
+    by_name = {f.name: f for f in bo.fields}
+
+    # ① 模型只说「这是表格」、没给列 → 仍然是表格，不能变成 clob
+    tab = by_name["付款计划表"]
+    assert tab.type_new == "table", f"表格被降级成了 {tab.type_new}"
+    r = tab.resolved()
+    assert r["dataTypeNew"] == "table" and r["datatype"] == "clob", r
+    assert r["type"] == "", "表格字段 type 必须为空串，否则系统按普通列建成大文本"
+    assert [c["name"] for c in r["options"]["columns"]] == ["付款计划"], r["options"]
+    # 只是个占位，等 fill_table_columns 拿到真列后整批换掉
+    assert tab.table_columns[0].placeholder is True
+
+    # ② 中文键的 columns 也要认出来，不能整批丢掉
+    budget = by_name["预算明细"]
+    assert [c.name for c in budget.table_columns] == ["阶段", "金额"]
+    assert [c.input_type for c in budget.table_columns] == ["varchar", "number"]
+
+    # ③ XML 侧确认：attribute 是 table 而不是 clob
+    xml = gen_bo.render(bo)
+    frag = next(t for t in all_tags(xml, "attribute")
+                if attrs(t).get("name") == "付款计划表")
+    a = attrs(frag)
+    assert a["dataTypeNew"] == "table" and a["type"] == "" and a["datatype"] == "clob", a
+
+
+_FAKE_CFG = {"channels": [{"base_url": "http://fake", "api_key": "k",
+                           "model": "fake", "enabled": True}]}
+
+
+@case("TBF17", "tablefield", "表格缺列时让 AI 按需求把列名补出来", "P0",
+      ["用户 2026-11-17：「表格里面的列名你不会帮我添加吗」",
+       "fill_table_columns 单独问一次模型，回填后占位列消失",
+       "已经有真实列的表格不被覆盖、也不进请求"])
+def _():
+    from pp6kit import ai_bo, gen_bo
+    from pp6kit.nlq import llm
+
+    bo, _ = ai_bo.build_bo({"name": "合同", "code": "contract_demo", "fields": [
+        {"name": "付款计划表", "type": "table"},
+        {"name": "预算明细", "type": "table",
+         "columns": [{"name": "阶段", "type": "varchar"}]},
+    ]})
+    seen = {}
+
+    def fake_chat(cfg, messages, timeout=60, **kw):
+        seen["prompt"] = messages[-1]["content"]
+        seen["system"] = messages[0]["content"]
+        return ('{"付款计划表": ['
+                '{"name":"阶段","type":"varchar"},'
+                '{"name":"计划开始时间","type":"date"},'
+                '{"name":"计划金额","type":"number","precision":2},'
+                '{"name":"是否里程碑","type":"dic","values":["是","否"]}]}'), {"model": "fake"}
+
+    orig = llm.chat_any
+    llm.chat_any = fake_chat
+    try:
+        notes = ai_bo.fill_table_columns(
+            bo, _FAKE_CFG,
+            description="合同要管付款计划，含阶段、开始时间、金额、是否里程碑")
+    finally:
+        llm.chat_any = orig
+
+    pay = {f.name: f for f in bo.fields}["付款计划表"]
+    assert [c.name for c in pay.table_columns] == \
+        ["阶段", "计划开始时间", "计划金额", "是否里程碑"], pay.table_columns
+    assert [c.input_type for c in pay.table_columns] == ["varchar", "date", "number", "dic"]
+    assert pay.table_columns[2].precision == 2
+    assert pay.table_columns[3].choices == ["是", "否"]
+    assert all(not c.placeholder for c in pay.table_columns), "占位列没被换掉"
+    assert any("自动生成" in n for n in notes), notes
+
+    # 已经给过列的表格不该被覆盖，也不该出现在请求里
+    budget = {f.name: f for f in bo.fields}["预算明细"]
+    assert [c.name for c in budget.table_columns] == ["阶段"]
+    assert "预算明细" not in seen["prompt"], "已给列的表格不该再问模型"
+    assert "付款计划表" in seen["prompt"] and "4~8 列" in seen["system"]
+
+    # 回填后 XML 里是真列，类型仍是 table
+    xml = gen_bo.render(bo)
+    frag = next(t for t in all_tags(xml, "attribute") if attrs(t).get("name") == "付款计划表")
+    a = attrs(frag)
+    assert a["dataTypeNew"] == "table" and a["type"] == ""
+    opts = json.loads(html.unescape(a["options"]))
+    assert [c["name"] for c in opts["columns"]] == \
+        ["阶段", "计划开始时间", "计划金额", "是否里程碑"]
+
+
+@case("TBF18", "tablefield", "补列失败不打断出包：占位列兜住并提示手工补", "P1")
+def _():
+    from pp6kit import ai_bo
+    from pp6kit.nlq import llm
+
+    bo, _ = ai_bo.build_bo({"name": "合同", "code": "contract_demo", "fields": [
+        {"name": "付款计划表", "type": "table"},
+    ]})
+
+    def boom(cfg, messages, timeout=60, **kw):
+        raise RuntimeError("网络炸了")
+
+    orig = llm.chat_any
+    llm.chat_any = boom
+    try:
+        notes = ai_bo.fill_table_columns(bo, _FAKE_CFG)
+    finally:
+        llm.chat_any = orig
+
+    pay = bo.fields[0]
+    assert pay.type_new == "table", "补列失败也不能把类型改回大文本"
+    assert pay.table_columns and pay.table_columns[0].placeholder is True
+    assert any("没自动生成" in n for n in notes), notes

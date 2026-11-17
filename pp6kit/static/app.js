@@ -1,6 +1,10 @@
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
+/* 存量包修订是否可见（开关在 query.js 的 PP6_FEATURES）。
+   隐藏期间不提「workarea 3」，免得用户照着文案找一页不存在的入口。 */
+const patchModeOn = () => !window.PP6_FEATURES || window.PP6_FEATURES.patch !== false;
+
 const TYPE_LABEL = {
   varchar: "单行文本",
   clob: "多行文本",
@@ -1218,9 +1222,12 @@ function renderForms() {
       <div class="paper-head">
         <h3>${esc(form.name)}</h3>
         <span class="chip">${esc(form.key)}</span>
-        <span class="sub muted">${esc(KIND_LABEL[form.kind] || "")} · ${form.layout === 1 ? "一行一列" : "一行两列"} · 标签宽 ${form.labelWidth}px · 面板 ${form.width}% · 绑定 ${esc(form.boName || form.boCode || "未绑定")} · ${form.fieldCount} 个控件</span>
+        <span class="sub muted">${esc(KIND_LABEL[form.kind] || "")} · ${form.layoutStyle === "flat" ? "拖拽布局V1.0（无分组）" : "字段分组"} · ${form.layout === 1 ? "一行一列" : "一行两列"} · 标签宽 ${form.labelWidth}px · 面板 ${form.width}% · 绑定 ${esc(form.boName || form.boCode || "未绑定")} · ${form.fieldCount} 个控件</span>
       </div>
-      ${(form.groups || [{ title: "", rows: form.rows || [], count: form.fieldCount }]).map((g) => `
+      ${(form.layoutStyle === "flat"
+          ? [{ title: "", rows: form.rows || [], count: form.fieldCount }]
+          : (form.groups || [{ title: "", rows: form.rows || [], count: form.fieldCount }])
+        ).map((g) => `
         <div class="fgroup">
           ${g.title ? `<div class="fgroup-head">${esc(g.title)}<span class="fgroup-cnt">${g.count || 0} 项</span></div>` : ""}
           ${g.rows.map((row) => `
@@ -1729,6 +1736,8 @@ function renderAiForm(form) {
   // 带 group」的旧契约——ai_form 序列化时给每个字段都写了 group，
   // 那样每字段都会断行并重复一次分区名。
   let curGroup = "";
+  // 拖拽布局 V1.0：不画分区标题，所有控件按顺序平铺
+  const flat = form.layoutStyle === "flat";
   const perRow = form.layout === 1 ? 1 : AI_MAX_PER_ROW;
   const lines = [];
   let buf = [];
@@ -1737,7 +1746,7 @@ function renderAiForm(form) {
   };
   form.fields.forEach((f) => {
     const group = (f.group || "").trim();
-    if (group && group !== curGroup) {
+    if (!flat && group && group !== curGroup) {
       flush();                       // 换分区必换行，不能接着上一区排
       curGroup = group;
       lines.push({ title: curGroup });
@@ -1782,6 +1791,12 @@ function renderAiForm(form) {
     <div class="ai-form-head">
       <span class="chip">${esc(form.name)}</span>
       <span class="muted">${form.fieldCount} 个控件 · ${req} 个必填 · ${form.layout === 1 ? "一行一列" : "一行两列"} · 标签宽 ${form.labelWidth}px</span>
+      <label class="ai-formstyle">布局
+        <select id="aiFormStyle" class="ai-input">
+          <option value="grouped"${flat ? "" : " selected"}>字段分组</option>
+          <option value="flat"${flat ? " selected" : ""}>拖拽布局V1.0</option>
+        </select>
+      </label>
     </div>
     <div class="ai-form-body">${body}</div>${ruleHtml}`;
 }
@@ -1897,6 +1912,23 @@ function bindListColumnPicker(d) {
   }
 }
 
+// 表单布局样式切换：字段分组 ⇄ 拖拽布局 V1.0（写回 state，出包原样带走）
+function bindAiFormStyle(d) {
+  const sel = $("#aiFormStyle");
+  if (!sel || !state.aiData || !state.aiData.form) return;
+  sel.onchange = () => {
+    state.aiData.form.layoutStyle = sel.value;
+    const panel = document.querySelector('[data-ai-panel="form"]');
+    if (panel) {
+      panel.innerHTML = renderAiForm(state.aiData.form);
+      bindAiFormStyle(d);
+    }
+    toast(sel.value === "flat"
+      ? "已改为拖拽布局 V1.0：整张表单一个画布，不套字段分组"
+      : "已改为字段分组：按分区生成 fieldset");
+  };
+}
+
 // 级联详情下拉的选择写回 state（渲染完成后调用一次）
 function bindDetailFieldPicker() {
   const df = $("#aiDetailField");
@@ -1938,6 +1970,7 @@ function renderAiActions(d) {
 
   bindDetailFieldPicker();
   bindListColumnPicker(d);
+  bindAiFormStyle(d);
   bindAiEdit();
   renderAiRelations(d);
 }
@@ -2605,7 +2638,8 @@ function classifyInspect(res, summary, err) {
       kind: "not_zip", skipDownload: true,
       title: "这不是一个有效的 zip 包（或包已损坏）",
       message: (summary.message || (err && err.message) || "无法打开为 zip 包。") + "。" + listText,
-      recovery: "确认选的是 .zip；重新从系统「发布 ZIP」下载（.crdownload 直接改名 .zip）；或到工作区 3「存量包修订」验证能否打开。",
+      recovery: "确认选的是 .zip；重新从系统「发布 ZIP」下载（.crdownload 直接改名 .zip）"
+        + (patchModeOn() ? "；或到工作区 3「存量包修订」验证能否打开。" : "。"),
     });
   }
   /* 是否「外层多套了一层」：首段不是合法目录，但路径里出现 /bo/ 之类。
@@ -2652,7 +2686,8 @@ function classifyInspect(res, summary, err) {
       kind: "empty", skipDownload: true,
       title: "包内没有可反解的 bo/form/data_template XML",
       message: "没有下载会误导人的空 xlsx。" + listText,
-      recovery: "去工作区 1 重新出包（空模板 / 全不选会被拦）；只是想给线上对象补字段请改用工作区 3「存量包修订」。",
+      recovery: "去工作区 1 重新出包（空模板 / 全不选会被拦）"
+        + (patchModeOn() ? "；只是想给线上对象补字段请改用工作区 3「存量包修订」。" : "。"),
     });
   }
   // 6 正常
@@ -2897,7 +2932,7 @@ function renderInspectCard(payload) {
   const recovery = cls.recovery
     ? `<div class="set-note"><strong>恢复动作</strong>：${esc(cls.recovery)}</div>` : "";
   const extraOk = isOk
-    ? `<div class="set-note">反解会拆成 Excel 重造包，原生包未建模内容（对象角色 / 日志模板 / 字典样式 / 权限）会丢；补字段请改用工作区 3「存量包修订」。</div>`
+    ? `<div class="set-note">反解会拆成 Excel 重造包，原生包未建模内容（对象角色 / 日志模板 / 字典样式 / 权限）会丢${patchModeOn() ? "；补字段请改用工作区 3「存量包修订」" : ""}。</div>`
     : "";
   box.hidden = false;
   box.innerHTML = `

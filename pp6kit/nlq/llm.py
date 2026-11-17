@@ -5,8 +5,10 @@
 """
 from __future__ import annotations
 
+import http.client
 import json
 import re
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -18,6 +20,15 @@ class LlmError(Exception):
 
 class RateLimited(LlmError):
     """被限流（429），应该切到下一家。"""
+
+
+class TransientError(LlmError):
+    """网络/TLS 抖动：握手被重置、连接中断、超时、5xx。
+
+    这类错误重试通常就好了（2026-11-17 用户截图：
+    `SSL: UNEXPECTED_EOF_WHILE_READING`，同一秒手动请求又正常）。
+    不能当成 Key/模型问题直接跳到下一家。
+    """
 
 
 class NoAccess(LlmError):
@@ -108,7 +119,15 @@ def chat(base_url: str, api_key: str, model: str, messages: list[dict],
             raise LlmError(_auth_hint(api_key, body)) from exc
         if exc.code == 404:
             raise NoAccess(f"模型 {model} 不存在或已下线：{body[:100]}") from exc
+        if exc.code >= 500:
+            raise TransientError(f"服务端 {exc.code}：{body[:80]}") from exc
         raise LlmError(f"接口返回 {exc.code}：{body}") from exc
+    except (ssl.SSLError, urllib.error.URLError, TimeoutError,
+            ConnectionError, http.client.RemoteDisconnected) as exc:
+        # SSL EOF / 连接被重置 / 读取超时：属于网络抖动，交给上层重试
+        raise TransientError(f"网络/TLS 抖动：{exc}") from exc
+    except LlmError:
+        raise
     except Exception as exc:
         raise LlmError(f"调用失败：{exc}") from exc
 
@@ -146,8 +165,28 @@ def _chan_key(ch: dict) -> str:
     return f"{(ch.get('base_url') or '').rstrip('/')}|{(ch.get('api_key') or '')[-8:]}"
 
 
+def _chat_retry(base_url: str, api_key: str, model: str, messages: list[dict],
+                timeout: int, max_tokens: int | None, retries: int) -> str:
+    """网络抖动重试：同一渠道同一模型最多再试 retries 次，指数退避。
+
+    只对 TransientError 重试；限流/未开通/参数错误原样往上抛，
+    避免把 401 这种确定性错误也拖成好几次。
+    """
+    last: TransientError | None = None
+    for i in range(retries + 1):
+        try:
+            return chat(base_url, api_key, model, messages,
+                        timeout=timeout, max_tokens=max_tokens)
+        except TransientError as exc:
+            last = exc
+            if i < retries:
+                time.sleep(min(2.4, 0.7 * (i + 1)))
+    raise last or TransientError("网络/TLS 抖动")
+
+
 def chat_any(cfg: dict, messages: list[dict], timeout: int = 60,
-             retry_429: int = 1, max_tokens: int | None = None) -> tuple[str, dict]:
+             retry_429: int = 1, max_tokens: int | None = None,
+             retry_transient: int = 2) -> tuple[str, dict]:
     """依次尝试各渠道，返回 (回答, 实际用的渠道)。
 
     四级降级：
@@ -174,14 +213,16 @@ def chat_any(cfg: dict, messages: list[dict], timeout: int = 60,
             label = model or ch.get("base_url", "")
             for attempt in range(retry_429 + 1):
                 try:
-                    text = chat(ch["base_url"], ch["api_key"], model,
-                                messages, timeout=timeout, max_tokens=max_tokens)
+                    text = _chat_retry(ch["base_url"], ch["api_key"], model,
+                                       messages, timeout, max_tokens,
+                                       retry_transient)
                     if not (text or "").strip():
                         # 推理模型（deepseek-flash 实测）偶尔把 max_tokens 全烧在
                         # reasoning 上，content 返回空串（2026-11-12：三次两空）。
                         # 空回答对任何调用方都没用，静默重试一次最划算。
-                        text = chat(ch["base_url"], ch["api_key"], model,
-                                    messages, timeout=timeout, max_tokens=max_tokens)
+                        text = _chat_retry(ch["base_url"], ch["api_key"], model,
+                                           messages, timeout, max_tokens,
+                                           retry_transient)
                     if model != ch.get("model"):
                         ch = dict(ch, model=model)     # 记录实际用的模型
                     return text, ch
@@ -195,6 +236,10 @@ def chat_any(cfg: dict, messages: list[dict], timeout: int = 60,
                     _NO_ACCESS.add(f"{_chan_key(ch)}|{model}")
                     denied.append(label)
                     errors.append(f"{label}：未开通")
+                    break
+                except TransientError as exc:
+                    errors.append(
+                        f"{label}：{exc}（已自动重试 {retry_transient} 次，仍失败）")
                     break
                 except LlmError as exc:
                     errors.append(f"{label}：{exc}")

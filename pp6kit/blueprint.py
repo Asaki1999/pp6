@@ -56,8 +56,9 @@ _CONTROL_BY_TYPE = {
 }
 
 # 流程冗余字段 / 流程状态是系统反写用的，不在表单上给用户填。
-PROCESS_FIELD_CODES = {"processNode", "processHandler", "processDefId",
-                       "processInstanceId", "processState"}
+PROCESS_FIELD_CODES = {"processDefId", "processInstanceId", "processNode",
+                       "processHandler", "processName", "processCode",
+                       "processState"}
 
 _NAME_TEMPLATE = {
     FORM_CREATE: "新建{obj}",
@@ -124,6 +125,7 @@ def _make(bo: Bo, kind: str, src: Form | None, group_src: Form | None = None) ->
         bo_code=bo.code,
         form_type="form",
         layout=src.layout if src else 2,
+        layout_style=src.layout_style if src else "grouped",
         type_id=src.type_id if src else "",
         status=src.status if src else "deploy",
         width=src.width if src else 90,

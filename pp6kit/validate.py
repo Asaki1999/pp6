@@ -385,10 +385,38 @@ def validate(proj: Project) -> list[Issue]:
                 if hit.get("exists"):
                     issues.append(Issue(
                         "warn", f"业务对象 {bo.code}",
-                        f"与系统已有对象「{hit['code']}」同名（id {hit.get('id', '')}），"
-                        f"将按【新建】导入；要更新它请在「已有对象ID」列填该 id"))
+                        f"与系统已有对象「{hit['code']}」同编码（id {hit.get('id', '')}），"
+                        f"导入时系统会按编码匹配、按【更新】处理；"
+                        f"若确实想新建，请改对象编码"))
     except Exception:
         pass
+
+    # 级联：分组父值必须真实存在于父字段候选值里，否则导入后下拉是空的。
+    # 这类包「导入成功」但级联不联动，最难查，必须在出包前说清楚。
+    for bo in proj.bos:
+        for f in bo.fields:
+            if f.type_new != "dic" or not f.cascade_parent:
+                continue
+            parent = bo.field_by_code(f.cascade_parent)
+            where = f"业务对象 {bo.code}"
+            if parent is None:
+                issues.append(Issue(
+                    "error", where,
+                    f"字段 {f.code}: 级联父字段 {f.cascade_parent} 在本对象里不存在"))
+                continue
+            if not f.choice_groups:
+                issues.append(Issue(
+                    "warn", where,
+                    f"字段 {f.code}: 配了级联父级 {parent.code}，但候选值没有分组；"
+                    f"请按「{parent.choices[0] if parent.choices else '父值'}：子1、子2」"
+                    f"写进「选项值」，否则导入后级联不会生效"))
+                continue
+            missing = [p for p in f.choice_groups if p not in parent.choices]
+            if missing:
+                issues.append(Issue(
+                    "warn", where,
+                    f"字段 {f.code}: 级联分组里的父值 {'、'.join(missing[:3])} "
+                    f"不在父字段 {parent.code} 的候选值里，这部分选项不会联动"))
 
     # 流程（workflowDefinition）：结构错会让导入端直接拒绝，
     # 所以在出包前拦住，而不是让用户拿着 XML 去试

@@ -10,7 +10,7 @@ import decimal
 import re
 import time
 
-from . import graph, guard, llm
+from . import graph, guard, llm, semantic
 from .introspect import SchemaPack
 
 MAX_TABLES_IN_PROMPT = 6
@@ -188,11 +188,13 @@ def _schema_block(pack: SchemaPack, tables: list[str]) -> str:
 
 def build_messages(pack: SchemaPack, question: str, examples: list[dict] | None = None) -> list[dict]:
     tables = select_tables(pack, question)
-    parts = [SYSTEM, "", "=== 可用 schema ===", _schema_block(pack, tables)]
+    parts = [SYSTEM, "", "=== 业务口径 ===", semantic.prompt_block(pack),
+             "", "=== 可用 schema ===", _schema_block(pack, tables)]
     if examples:
         parts += ["", "=== 参考示例（同库已验证的问答，照这个写法） ==="]
         for ex in examples[:6]:
-            parts.append(f"问题：{ex['question']}\nSQL：{ex['sql']}")
+            tag = "【已验证】" if ex.get("verified") or ex.get("source") == "corrected" else ""
+            parts.append(f"{tag}问题：{ex['question']}\nSQL：{ex['sql']}")
     parts += ["", "=== 待回答 ===", f"问题：{question}", "SQL："]
     return [
         {"role": "system", "content": "\n".join(parts)},
@@ -482,3 +484,106 @@ def templates(pack: SchemaPack) -> list[dict]:
             add(title, question,
                 f"SELECT * FROM `{name}` WHERE IFNULL(deleted_, 'N') <> 'Y' LIMIT 200")
     return out
+
+
+def explain_sql(sql: str, pack) -> str:
+    """把 SQL 翻成一句人话，让用户一眼看出「它到底理解成了什么」。
+
+    只做低风险的语法层摘要，不猜业务语义：
+      查询「项目」，按 状态、创建时间 筛选，按 创建时间 倒序，最多 200 行
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    try:
+        ast = sqlglot.parse_one(sql or "", dialect="mysql")
+    except Exception:
+        return ""
+
+    # 表别名 → 物理表名，否则 s.name_ 会被猜成第一个有 name_ 的表（项目名称）
+    alias_map: dict[str, str] = {}
+    for t in ast.find_all(exp.Table):
+        alias_map[t.alias_or_name] = t.name
+
+    def _col_label(col) -> str:
+        table = alias_map.get(col.table or "", col.table or "")
+        cname = col.name
+        t = pack.tables.get(table) if table else None
+        if t is not None:
+            c = t.column(cname)
+            if c is not None:
+                # 关联表的 name_ 列在库里就叫「名称」，单独看没意义；
+                # 用表名代替（项目状态 / 项目类型 / 隶属部门…）
+                if c.label in ("名称", "名字") and cname == "name_":
+                    return t.label
+                return c.label
+        for t2 in pack.tables.values():
+            c = t2.column(cname)
+            if c is not None:
+                return c.label
+        return cname
+
+    bits: list[str] = []
+    table = ast.find(exp.Table)
+    if table is not None:
+        t = pack.tables.get(table.name)
+        bits.append(f"查询「{t.label}」" if t is not None else f"查询 {table.name}")
+
+    # 聚合
+    if any(ast.find(x) is not None for x in (exp.Count, exp.Sum, exp.Avg, exp.Max, exp.Min)):
+        bits.append("做统计")
+    else:
+        n = len(ast.expressions or [])
+        if n:
+            bits.append(f"取 {n} 列")
+
+    where = ast.find(exp.Where)
+    if where is not None:
+        labels: list[str] = []
+        # 只把「列 = 字面量 / IN / LIKE / BETWEEN」当筛选条件；
+        # join 的 a.id_=b.id_ 不是筛选，COALESCE(deleted_,'N') 这种审计条件也略过
+        for node in where.find_all(exp.EQ, exp.NEQ, exp.In, exp.Like, exp.Between):
+            if node.find(exp.Literal) is None:
+                continue
+            for col in node.find_all(exp.Column):
+                if col.name.lower() in ("deleted_", "tenant_id_", "id_"):
+                    continue
+                label = _col_label(col)
+                if label not in labels:
+                    labels.append(label)
+        wsql = where.sql().upper()
+        if "INTERVAL" in wsql or "DATE_SUB" in wsql or "CURDATE" in wsql \
+                or "CURRENT_DATE" in wsql or "DATEDIFF" in wsql:
+            bits.append("有时间范围")
+        if labels:
+            bits.append("按 " + "、".join(labels[:4]) + " 筛选")
+
+    group = ast.find(exp.Group)
+    if group is not None:
+        labels = []
+        for col in group.find_all(exp.Column):
+            label = _col_label(col)
+            if label not in labels:
+                labels.append(label)
+        if labels:
+            bits.append("按 " + "、".join(labels[:3]) + " 分组")
+
+    order = ast.find(exp.Order)
+    if order is not None:
+        parts = []
+        for ordered in order.expressions:
+            label = _col_label(ordered.this) if isinstance(ordered.this, exp.Column) else ""
+            direction = "倒序" if (ordered.args.get("desc") is True) else "正序"
+            parts.append(f"{label} {direction}".strip())
+        if parts:
+            bits.append("按 " + "、".join(parts[:2]))
+
+    limit = ast.find(exp.Limit)
+    if limit is not None:
+        try:
+            n = int(limit.expression.name)
+            bits.append(f"最多 {n} 行")
+        except Exception:
+            pass
+
+    return "，".join(bits)

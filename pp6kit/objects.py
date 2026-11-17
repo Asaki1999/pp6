@@ -846,3 +846,144 @@ def bind(project) -> list[str]:
             setattr(obj, "module_id", mod_names[cur])
             notices.append(f"模块「{cur}」→ 已替换为模块 id {mod_names[cur]}")
     return notices
+
+
+# ---------------------------------------------------------------- 目标库实时核对
+# 出包前要用到两类「目标库当前状态」，缓存（objects.json/templates.json）里没有：
+#   1. 某个对象已有哪些字段、类型是什么 —— 更新导入不能改类型，否则整包被拒；
+#   2. 某个表单有没有「主历史版本」——没有的表单平台无法更新，只能新建。
+# 都只读，失败就当没有（不阻断出包）。
+
+def _connect_ro(db: dict, timeout: int = 4):
+    from .nlq.introspect import connect
+    return connect(db.get("host", ""), db.get("port", 3306),
+                   db.get("user", ""), db.get("password", ""),
+                   db.get("database", ""), timeout=timeout, readonly=True)
+
+
+def db_object_info(code: str) -> dict:
+    """目标库里的对象：{id, fields:{code: {type_new, length}}}；没有/没库返回 {}。"""
+    db = _db_ready()
+    if not db or not code:
+        return {}
+    try:
+        conn = _connect_ro(db)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id_ FROM iform_bo_def WHERE code_=%s "
+            "AND COALESCE(state_, '')<>'deleted' ORDER BY id_ DESC LIMIT 1", (code,))
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close()
+            return {}
+        bo_id = row[0]
+        cur.execute(
+            "SELECT code_, type_, data_type_new_, attr_length_ FROM iform_bo_attr "
+            "WHERE def_id_=%s", (bo_id,))
+        fields = {}
+        for c, datatype, new, length in cur.fetchall():
+            fields[c] = {"type_new": (new or datatype or "").strip(),
+                         "datatype": (datatype or "").strip(),
+                         "length": int(length) if length else None}
+        cur.close(); conn.close()
+        return {"id": bo_id, "fields": fields}
+    except Exception:
+        return {}
+
+
+def form_main_version(key: str) -> int | None:
+    """目标表单的主历史版本数。
+
+    返回值：None=没连库/查询失败（未知）；-1=目标里没有这个 key；0=有表单但
+    **没有主历史版本**（平台会拒绝更新，报「目标表单没有主历史版本」）；>0=正常。
+    """
+    db = _db_ready()
+    if not db or not key:
+        return None
+    try:
+        conn = _connect_ro(db)
+        cur = conn.cursor()
+        cur.execute("SELECT id_ FROM iform_form_def WHERE key_=%s LIMIT 1", (key,))
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close()
+            return -1
+        cur.execute(
+            "SELECT COUNT(*) FROM iform_form_def_his "
+            "WHERE parent_id_=%s AND is_main_='Y'", (row[0],))
+        n = int(cur.fetchone()[0])
+        cur.close(); conn.close()
+        return n
+    except Exception:
+        return None
+
+
+def db_object_infos(codes) -> dict[str, dict]:
+    """批量版 db_object_info：一次连接查完，避免每个对象开一次库。"""
+    wanted = [c for c in dict.fromkeys(codes) if c]
+    db = _db_ready()
+    if not db or not wanted:
+        return {}
+    try:
+        conn = _connect_ro(db)
+        cur = conn.cursor()
+        marks = ",".join(["%s"] * len(wanted))
+        cur.execute(
+            f"SELECT id_, code_ FROM iform_bo_def WHERE code_ IN ({marks}) "
+            f"AND COALESCE(state_, '')<>'deleted' ORDER BY id_ DESC", tuple(wanted))
+        id_by_code: dict[str, str] = {}
+        for bo_id, code in cur.fetchall():
+            id_by_code.setdefault(code, bo_id)
+        if not id_by_code:
+            cur.close(); conn.close()
+            return {}
+        ids = list(id_by_code.values())
+        marks2 = ",".join(["%s"] * len(ids))
+        cur.execute(
+            f"SELECT def_id_, code_, type_, data_type_new_, attr_length_ "
+            f"FROM iform_bo_attr WHERE def_id_ IN ({marks2})", tuple(ids))
+        fields_by_id: dict[str, dict] = {i: {} for i in ids}
+        for def_id, c, datatype, new, length in cur.fetchall():
+            fields_by_id.setdefault(def_id, {})[c] = {
+                "type_new": (new or datatype or "").strip(),
+                "datatype": (datatype or "").strip(),
+                "length": int(length) if length else None}
+        cur.close(); conn.close()
+        return {code: {"id": bo_id, "fields": fields_by_id.get(bo_id, {})}
+                for code, bo_id in id_by_code.items()}
+    except Exception:
+        return {}
+
+
+def form_main_versions(keys) -> dict[str, int]:
+    """批量版 form_main_version：key → 主历史版本数；查不到 key 的返回 -1。"""
+    wanted = [k for k in dict.fromkeys(keys) if k]
+    db = _db_ready()
+    if not db or not wanted:
+        return {}
+    try:
+        conn = _connect_ro(db)
+        cur = conn.cursor()
+        marks = ",".join(["%s"] * len(wanted))
+        cur.execute(f"SELECT id_, key_ FROM iform_form_def WHERE key_ IN ({marks}) "
+                    f"ORDER BY id_ DESC", tuple(wanted))
+        ids: dict[str, str] = {}
+        for fid, key in cur.fetchall():
+            ids.setdefault(key, fid)
+        if not ids:
+            cur.close(); conn.close()
+            return {k: -1 for k in wanted}
+        id_list = list(ids.values())
+        marks2 = ",".join(["%s"] * len(id_list))
+        cur.execute(
+            f"SELECT parent_id_, COUNT(*) FROM iform_form_def_his "
+            f"WHERE parent_id_ IN ({marks2}) AND is_main_='Y' GROUP BY parent_id_",
+            tuple(id_list))
+        counts = {pid: int(n) for pid, n in cur.fetchall()}
+        cur.close(); conn.close()
+        out = {k: -1 for k in wanted}
+        for key, fid in ids.items():
+            out[key] = counts.get(fid, 0)
+        return out
+    except Exception:
+        return {}

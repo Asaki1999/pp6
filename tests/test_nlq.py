@@ -1474,3 +1474,148 @@ def _():
                 "EXPLAIN UPDATE pp_project SET name_='x'",
                 "EXPLAIN DROP TABLE pp_project"):
         assert not guard.is_read_only(sql), f"写语句藏在 EXPLAIN 里漏过了：{sql}"
+
+
+@case("NLQ110", "nlq", "模型调用遇到 SSL EOF/网络抖动会自动重试", "P1",
+      ["瞬断一次不再直接判失败", "只重试网络类错误，401/未开通不重试",
+       "重试仍失败时错误信息说明重试次数"])
+def _():
+    from pp6kit.nlq import llm
+
+    cfg = {"channels": [{"base_url": "https://example.invalid/v1",
+                         "api_key": "k", "model": "m", "enabled": True}]}
+    calls = {"n": 0}
+    orig = llm.chat
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise llm.TransientError("SSL: UNEXPECTED_EOF_WHILE_READING")
+        return "正常"
+
+    llm.chat = flaky
+    try:
+        text, _used = llm.chat_any(cfg, [{"role": "user", "content": "hi"}],
+                                   retry_transient=2)
+    finally:
+        llm.chat = orig
+    assert text == "正常"
+    assert calls["n"] == 3, calls
+
+    # 一直抖动 → 报错里带「已自动重试」
+    llm.chat = lambda *a, **k: (_ for _ in ()).throw(
+        llm.TransientError("SSL EOF"))
+    try:
+        try:
+            llm.chat_any(cfg, [{"role": "user", "content": "hi"}], retry_transient=1)
+        except llm.LlmError as exc:
+            assert "自动重试" in str(exc), exc
+        else:
+            raise AssertionError("应该抛 LlmError")
+    finally:
+        llm.chat = orig
+
+
+@case("NLQ111", "nlq", "规则 SQL 漏掉状态/时间/人名/排序时自动判不合格", "P0",
+      ["问「执行中」但 SQL 没状态筛选 → 换 AI",
+       "问「上个月」但 SQL 没日期条件 → 换 AI",
+       "问「张三负责」但 SQL 只显示人员表、没按人名筛 → 换 AI",
+       "问「按创建时间倒序」但没 ORDER BY → 换 AI"])
+def _():
+    from pp6kit.nlq import hybrid
+
+    base = "SELECT t.name_ FROM pp_task t LIMIT 200"
+    assert not hybrid.judge("列出执行中的项目", base, 10).ok
+    assert not hybrid.judge("上个月新增的合同金额合计", base, 10).ok
+    emp = ("SELECT t.name_, (SELECT GROUP_CONCAT(j.name_) FROM iform_party_employee j "
+           "WHERE FIND_IN_SET(j.id_, t.assignee_ids_)) FROM pp_task t LIMIT 200")
+    assert not hybrid.judge("查一下张三负责的任务", emp, 200).ok
+    assert not hybrid.judge("按创建时间倒序列出项目", base, 10).ok
+
+    good = ("SELECT COUNT(*) FROM pp_project WHERE state_id_ IN "
+            "(SELECT id_ FROM pp_project_state WHERE name_='执行中')")
+    assert hybrid.judge("列出执行中的项目", good, 5).ok
+    dated = "SELECT SUM(amount_) FROM pp_contract WHERE create_time_ >= DATE_SUB(CURDATE(), INTERVAL 1 MONTH)"
+    assert hybrid.judge("上个月新增的合同金额合计", dated, 1).ok
+    named = emp.replace("WHERE 1=1", "") + " WHERE t.assignee_ids_ LIKE '%张三%'"
+    assert hybrid.judge("查一下张三负责的任务", named, 2).ok
+
+
+@case("NLQ112", "nlq", "SQL 会翻成一句「查询理解」给用户核对", "P1",
+      ["点出主表、统计/列数、筛选、排序、行数上限"])
+def _():
+    from pp6kit.nlq import engine
+    from pp6kit.nlq.introspect import Column, SchemaPack, Table
+
+    pack = SchemaPack("db", "srv", {"pp_project": Table(
+        "pp_project", "项目", columns=[
+            Column("name_", "项目名称", "varchar"),
+            Column("state_id_", "状态", "varchar"),
+            Column("create_time_", "创建时间", "datetime"),
+        ])})
+    text = engine.explain_sql(
+        "SELECT name_ FROM pp_project WHERE state_id_='x' ORDER BY create_time_ DESC LIMIT 200",
+        pack)
+    assert "项目" in text and "状态" in text and "倒序" in text and "200 行" in text, text
+
+
+@case("NLQ113", "nlq", "业务语义层把「项目状态/阶段/负责人」钉到真实表和列", "P0",
+      ["项目状态必须用 state_id_ → pp_project_state，不能用 phase_/progress_",
+       "项目阶段是多值 phase_ids_，要用 FIND_IN_SET",
+       "缺表时规则自动不注入，不整段失效"])
+def _():
+    from pp6kit.nlq import semantic
+    from pp6kit.nlq.introspect import SchemaPack, Table
+
+    pack = SchemaPack("db", "srv", {
+        "pp_project": Table("pp_project", "项目"),
+        "pp_project_state": Table("pp_project_state", "项目状态"),
+        "pp_project_phase": Table("pp_project_phase", "项目阶段"),
+    })
+    text = semantic.prompt_block(pack)
+    assert "state_id_" in text and "pp_project_state" in text
+    assert "phase_ids_" in text and "FIND_IN_SET" in text
+    assert "业务口径" in text
+
+    # 只有项目表时，依赖状态表的规则不能注入
+    slim = SchemaPack("db", "srv", {"pp_project": Table("pp_project", "项目")})
+    text2 = semantic.prompt_block(slim)
+    assert "pp_project_state" not in text2
+    assert "deleted_" in text2
+
+
+@case("NLQ114", "nlq", "缺时间范围的「新增/趋势」先追问，不硬查全量", "P0",
+      ["新增了多少合同 → 问时间范围", "上个月新增 → 不再追问", "最近的项目（最新）→ 不追问"])
+def _():
+    from pp6kit.nlq import clarify
+
+    c = clarify.check("新增了多少合同")
+    assert c and c["options"] == ["本月", "上个月", "今年", "全部"]
+    assert clarify.check("上个月新增合同金额") is None
+    assert clarify.check("最近的项目有哪些") is None
+    assert clarify.check("今年以来新增的合同") is None
+
+
+@case("NLQ115", "nlq", "已验证查询库：人工点过才可信，AI 再学不能降级", "P0",
+      ["add_example 默认未验证", "verify 后 verified=1", "同问题再 add_example 仍保持已验证"])
+def _():
+    import tempfile
+    from pathlib import Path
+    from pp6kit.nlq import store
+
+    tmp = Path(tempfile.mkdtemp()) / "nlq.json"
+    orig = store._file
+    store._file = lambda: tmp
+    try:
+        store.add_example("每个项目有多少任务", "SELECT 1")
+        assert store.library_stats()["verified"] == 0
+        out = store.verify_example("每个项目有多少任务", "SELECT 2")
+        assert out["verified"] == 1
+        assert store.find_correction("每个项目有多少任务") is None
+        # 同问题再被 AI 学一次，不能把人工验证降级
+        store.add_example("每个项目有多少任务", "SELECT 3")
+        data = store.load()
+        assert data["examples"][0]["verified"] is True
+        assert data["examples"][0]["sql"] == "SELECT 3"
+    finally:
+        store._file = orig

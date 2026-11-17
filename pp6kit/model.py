@@ -52,12 +52,24 @@ from . import fieldtypes as _ft  # noqa: E402
 # 需要 objectType 的类型
 NEED_OBJECT_TYPE = {"object", "dic"}
 
-# 搭建规范：流程驱动的业务对象必须冗余这四个字段，流程流转时反写
+# 流程驱动的业务对象必须冗余这 6 个字段，流程流转时反写。
+# 逐键对照线上 pp_project_create（2026-11-17 只读查库 + 原生包双重确认）：
+#   processDefId      varchar(200)
+#   processInstanceId varchar(200)
+#   processNode       dic(1000)，字典 = 流程节点名（isMultiple / isDefault）
+#   processHandler    varchar(1000)
+#   processName       varchar(255)
+#   processCode       autoNumber(64)，WF-{yyyy}{MM}{dd}{NO}，noLength 3，全局去重
+# processState 不在这里：它只在「本包里有流程」时才补，且要 4 个固定选项，
+# 见 builder.ensure_workflow_fields（和流程里的 BusinessState 同源）。
 PROCESS_FIELDS = [
-    ("processNode", "流程节点", 1000),
-    ("processHandler", "流程处理人", 200),
-    ("processDefId", "流程定义", 200),
-    ("processInstanceId", "流程实例", 200),
+    {"code": "processDefId", "name": "流程定义", "type_new": "varchar", "length": 200},
+    {"code": "processInstanceId", "name": "流程实例", "type_new": "varchar", "length": 200},
+    {"code": "processNode", "name": "流程节点", "type_new": "dic", "length": 1000,
+     "options": {"isMultiple": True, "isDefault": True}},
+    {"code": "processHandler", "name": "流程处理人", "type_new": "varchar", "length": 1000},
+    {"code": "processName", "name": "流程名称", "type_new": "varchar", "length": 255},
+    {"code": "processCode", "name": "流程编号", "type_new": "autoNumber", "length": 64},
 ]
 
 # 表单类型（顺序即标准搭建顺序）
@@ -225,6 +237,9 @@ class TableColumn:
     name_en: str = ""                 # 英文名，样本里都是空串
     exist_id: str = ""                # 反解已有包时原样保留列 id
     sn: int = 0                       # 列顺序（Excel 里的「序号」/ 反解按原序）
+    # 占位列标记：AI 没给出列定义时先顶一列，等 fill_table_columns 拿到真列后整批替换。
+    # 不写进 options（option() 只挑键），只在内存里当状态用。
+    placeholder: bool = False
 
     def col_id(self, scope: str, index: int) -> str:
         if self.exist_id:
@@ -341,6 +356,28 @@ class BoField:
                 if it not in out:
                     out.append(it)
         return out
+
+    def choice_text(self) -> str:
+        """候选值写回 Excel「选项值」列：分组字段要保留「父：子1、子2」。
+
+        2026-11-17 用户反馈：AI 预览里明明有级联分组，下载 Excel 再出包，
+        dependValues 全是空的。根因就是这里只写了扁平 `choices`，
+        分组信息在 Excel 往返时丢了。
+        """
+        groups = {str(k): [str(x) for x in (v or []) if str(x).strip()]
+                  for k, v in (self.choice_groups or {}).items() if str(k).strip()}
+        if not groups:
+            return "\n".join(self.choices)
+        lines: list[str] = []
+        covered: set[str] = set()
+        for parent, kids in groups.items():
+            if not kids:
+                continue
+            lines.append(f"{parent}：{'、'.join(kids)}")
+            covered.update(kids)
+        # 不在任何分组里的候选项原样补在后面，别丢
+        lines.extend([c for c in self.choices if c not in covered])
+        return "\n".join(lines)
 
     def resolved_field_name(self) -> str:
         if self.field_name:
@@ -591,9 +628,20 @@ class BoField:
         # 生成的 XML 整个缺这个键——导入后新建记录时字段不带默认值，和真实系统
         # 行为不一致。Excel「默认值」填了值 → true；datetime 默认 true；
         # 其余保守给 false（不臆造 number=0 之类的语义）。
-        opts.setdefault(
-            "isDefault",
-            bool(self.default_value) or type_new == "datetime")
+        #
+        # 系统字段例外：原生包里 id/tenantId/ip/createBy/createTime/updateBy/
+        # updateTime/deleted/version/baselineVersion/isDraft/process* 一律
+        # isDefault=true（2026-11-17 只读查库 labor_budget_rate / NEW01 /
+        # test_case_base_category 三个对象、16 个默认字段全是 true）。
+        # 我们原来只给 datetime 置 true，导入后系统「默认字段」页签里就只剩
+        # 两三个，用户 19:16 反馈「你生成的包默认字段只有几个，系统里有 16 个」。
+        if self.is_system:
+            opts.setdefault("isMultiple", False)
+            opts["isDefault"] = True
+        else:
+            opts.setdefault(
+                "isDefault",
+                bool(self.default_value) or type_new == "datetime")
 
         return {
             "code": self.code,
@@ -730,6 +778,10 @@ class Form:
     bo_code: str
     form_type: str = "form"
     layout: int = 2          # 1=一行一列, 2=一行两列
+    # 表单布局样式：
+    #   grouped = 字段分组（当前默认，每个分区一个 fieldset + 内部 grid_layout）
+    #   flat    = 拖拽布局 V1.0（整张表单一个根 grid_layout，不套 fieldset 分组）
+    layout_style: str = "grouped"
     type_id: str = ""
     status: str = "deploy"
     kind: str = FORM_CREATE

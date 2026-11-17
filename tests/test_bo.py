@@ -10,7 +10,7 @@ import re
 from pp6kit import spec as S
 from pp6kit import webui
 from tests._harness import (all_tags, attrs, attr_of, case, field, pick,
-                            sample_zip, texts, unzip, xlsx, xml_ok)
+                            project_of, sample_zip, texts, unzip, xlsx, xml_ok)
 
 
 def build(sheets: dict) -> bytes:
@@ -450,8 +450,9 @@ def _():
     assert vt.choice_groups == {"中药": ["OTC", "RX", "双跨", "其他"],
                                 "化药": ["OTC", "RX", "双跨", "其他"],
                                 "大健康": ["大健康"]}, vt.choice_groups
-    # 扁平 choices 含父值与子值（与 reader 路径一致）
-    assert "中药" in vt.choices and "OTC" in vt.choices
+    # 扁平 choices **只含子值**：父值属于父字段，混进来会让子下拉
+    # 多出「中药」「化药」（2026-11-17 尹姣定表实测的问题）
+    assert vt.choices == ["OTC", "RX", "双跨", "其他", "大健康"], vt.choices
 
     # 非分组字段不受影响
     st = bo.field_by_code("status")
@@ -784,3 +785,434 @@ def _():
     node = next(ET.fromstring(z.read(tpl)).iter("dataTemplateTpl"))
     cols = [c["name"] for c in _json.loads(node.get("displayColumns") or "[]")]
     assert cols == ["name_", "classification_id_"], cols
+
+
+@case("BO37", "bo", "两种模式的内置字段口径：普通 16 个，流程再加 7 个", "P0",
+      ["普通：业务字段 + 名称 + id/tenantId/ip/createBy/createTime/updateBy/"
+       "updateTime/deleted/version/baselineVersion + 流程四件套(300/1000/36/36) + isDraft",
+       "普通对象也要流程四件套——系统新建对象照样落这 4 列（只读查库 "
+       "labor_budget_rate / test_case_base_category），缺了「默认字段」就是 12 个",
+       "流程：普通 12 个 + processDefId/processInstanceId/processNode/"
+       "processHandler/processName/processCode/processState",
+       "系统字段的 options.isDefault 一律 true（原生包 16 个默认字段全是 true）",
+       "规格对齐线上 pp_project_create：deleted=20、handler=1000、name=255、"
+       "node=dic(1000)、code=autoNumber(WF-)"])
+def _():
+    import html as _html
+    import json as _json
+
+    SYS12 = ["name", "id", "tenantId", "ip", "createBy", "createTime",
+             "updateBy", "updateTime", "deleted", "version",
+             "baselineVersion", "isDraft"]
+    # 普通对象的流程四件套：varchar，不是 dic/autoNumber
+    PLAIN_PROC = ["processNode", "processHandler", "processDefId",
+                  "processInstanceId"]
+    PLAIN16 = SYS12[:-1] + PLAIN_PROC + ["isDraft"]
+    FLOW6 = ["processDefId", "processInstanceId", "processNode",
+             "processHandler", "processName", "processCode"]
+
+    def built(flow: str):
+        x = pick(build({
+            S.S_BO: [{"对象名称": "测试对象", "对象编码": "test_obj",
+                      "物理表名": "pp_test_obj", "流程驱动": flow}],
+            S.S_FIELD: [field("test_obj", "标题", "字符串")],
+        }), "bo/")
+        items = [attrs(t) for t in all_tags(x, "attribute")]
+        return x, [a["code"] for a in items], {a["code"]: a for a in items}
+
+    x, codes, by = built("否")
+    assert codes == ["biaoTi"] + PLAIN16, codes
+    assert len(SYS12) + len(PLAIN_PROC) == 16, "系统默认字段是 16 个"
+    assert by["deleted"]["length"] == "20", by["deleted"]
+    assert by["isDraft"]["length"] == "1"
+    assert by["id"]["isindex"] == "Y" and by["tenantId"]["isindex"] == "Y"
+    # 四件套规格照系统新建对象：300 / 1000 / 36 / 36，全是 varchar
+    assert (by["processNode"]["length"], by["processNode"]["dataTypeNew"]) == ("300", "varchar")
+    assert (by["processHandler"]["length"], by["processHandler"]["dataTypeNew"]) == ("1000", "varchar")
+    assert (by["processDefId"]["length"], by["processDefId"]["dataTypeNew"]) == ("36", "varchar")
+    assert (by["processInstanceId"]["length"], by["processInstanceId"]["dataTypeNew"]) == ("36", "varchar")
+    # 默认字段标记：16 个系统字段全是 isDefault=true（原来只有 datetime 两个）
+    for code in PLAIN16:
+        o = _json.loads(_html.unescape(by[code]["options"]))
+        assert o.get("isDefault") is True, f"{code} 缺默认字段标记：{o}"
+    # 业务字段不能沾上这个标记（否则会在对象属性页里被当成系统自动填充字段）
+    assert _json.loads(_html.unescape(by["biaoTi"]["options"])).get("isDefault") is not True
+
+    x, codes, by = built("是")
+    assert codes == ["biaoTi"] + FLOW6 + ["processState"] + SYS12, codes
+    assert by["deleted"]["length"] == "20"
+    assert by["processDefId"]["length"] == "200"
+    assert by["processInstanceId"]["length"] == "200"
+    assert by["processHandler"]["length"] == "1000", "处理人线上是 1000，不是 200"
+    assert by["processName"]["length"] == "255"
+    assert by["processNode"]["dataTypeNew"] == "dic"
+    assert by["processNode"]["length"] == "1000"
+    node_opts = _json.loads(_html.unescape(by["processNode"]["options"]))
+    assert node_opts.get("isMultiple") is True
+    assert by["processCode"]["dataTypeNew"] == "autoNumber"
+    ident = _json.loads(_html.unescape(by["processCode"]["options"]))["identities"][0]
+    assert ident["regulation"] == "WF-{yyyy}{MM}{dd}{NO}"
+    assert ident["noLength"] == 3 and ident["duplicateType"] == "global"
+    # processNode 的字典项 = 默认流程的三个节点
+    assert "test_obj_processNode" in x
+    for node in ("开始", "审核", "通过"):
+        assert node in x
+
+
+@case("BO38", "bo", "老包/反解 Excel 里的系统字段规格会被拉回统一口径", "P0",
+      ["存量包里 deleted 常是 1、processHandler 是 200、processNode 是 varchar",
+       "重建时只改类型/长度/索引，不动 code/fieldName/sn",
+       "缺的 processName/processCode/processState 照补"])
+def _():
+    rows = [
+        {"对象编码": "test_obj", "序号": 1, "字段编码": "biaoTi",
+         "字段名称": "标题", "数据类型": "字符串", "长度": 200},
+        {"对象编码": "test_obj", "序号": 2, "字段编码": "deleted",
+         "字段名称": "数据删除状态", "数据类型": "字符串", "长度": 1, "建索引": "是"},
+        {"对象编码": "test_obj", "序号": 3, "字段编码": "processNode",
+         "字段名称": "流程节点", "数据类型": "字符串", "长度": 1000},
+        {"对象编码": "test_obj", "序号": 4, "字段编码": "processHandler",
+         "字段名称": "流程处理人", "数据类型": "字符串", "长度": 200},
+        {"对象编码": "test_obj", "序号": 5, "字段编码": "processState",
+         "字段名称": "流程状态", "数据类型": "字符串", "长度": 64},
+    ]
+    x = pick(build({
+        S.S_BO: [{"对象名称": "测试对象", "对象编码": "test_obj",
+                  "物理表名": "pp_test_obj", "流程驱动": "是"}],
+        S.S_FIELD: rows,
+    }), "bo/")
+    by = {attrs(t)["code"]: attrs(t) for t in all_tags(x, "attribute")}
+    assert by["deleted"]["length"] == "20", by["deleted"]
+    assert by["processHandler"]["length"] == "1000", by["processHandler"]
+    assert by["processNode"]["dataTypeNew"] == "dic", by["processNode"]
+    assert by["processState"]["dataTypeNew"] == "dic", by["processState"]
+    assert "processName" in by and "processCode" in by
+    assert by["biaoTi"]["length"] == "200", "业务字段不许被改"
+
+
+@case("BO39", "bo", "级联候选值：父值不能混进子字段（读表 + AI 两条路）", "P0",
+      ["读表：『中药：OTC、RX』只把子项写进子字段字典",
+       "AI 拍平（子字段里同时有中药/化药/OTC）也能按父字段去污",
+       "AI 漏写 cascadeParent 时，按分组父值自动认父字段",
+       "真实样本：尹姣定立项表的分组能被确定性抽出来"])
+def _():
+    import html as _html
+    import json as _json
+    from pathlib import Path
+
+    from pp6kit import ai_bo, ai_sheet
+
+    # ① 读表：级联列按「父：子」分组，父值不进子字段
+    x = pick(build({
+        S.S_BO: [{"对象名称": "测试对象", "对象编码": "test_obj",
+                  "物理表名": "pp_test_obj"}],
+        S.S_FIELD: [
+            {"对象编码": "test_obj", "序号": 1, "字段编码": "pinZhongLeiBie",
+             "字段名称": "品种类别", "数据类型": "选项", "选项值": "中药、化药、大健康"},
+            {"对象编码": "test_obj", "序号": 2, "字段编码": "pinZhongFenLei",
+             "字段名称": "品种分类", "数据类型": "选项",
+             "选项值": "中药：OTC、RX、双跨、其他\n化化：OTC、RX\n大健康：大健康",
+             "级联父字段": "pinZhongLeiBie"},
+        ],
+    }), "bo/")
+    child = attrs(next(t for t in all_tags(x, "attribute")
+                       if attrs(t)["code"] == "pinZhongFenLei"))
+    opts = _json.loads(_html.unescape(child["options"]))
+    labels = [o["label"] for o in opts.get("selectOptions") or []]
+    assert labels == ["OTC", "RX", "双跨", "其他", "大健康"], labels
+    assert "中药" not in labels and "化化" not in labels
+
+    # ② AI 拍平 + 显式父字段：父值从子字段候选值里去掉
+    bo, notes = ai_bo.build_bo({"name": "立项", "fields": [
+        {"code": "productCategory", "name": "品种类别", "type": "dic",
+         "values": ["中药", "化药", "大健康"]},
+        {"code": "productClass", "name": "品种分类", "type": "dic",
+         "cascadeParent": "productCategory",
+         "values": ["中药", "化药", "OTC", "RX", "双跨", "其他"]},
+    ]})
+    child = bo.field_by_code("productClass")
+    assert child.choices == ["OTC", "RX", "双跨", "其他"], child.choices
+    assert any("混进了父字段" in n for n in notes), notes
+
+    # ③ AI 只给分组、没写 cascadeParent：按父值集合自动认父
+    bo, notes = ai_bo.build_bo({"name": "立项", "fields": [
+        {"code": "productCategory", "name": "品种类别", "type": "dic",
+         "values": ["中药", "化药", "大健康"]},
+        {"code": "productClass", "name": "品种分类", "type": "dic",
+         "values": ["中药：OTC、RX、双跨、其他", "化药：OTC、RX", "大健康：大健康"]},
+    ]})
+    child = bo.field_by_code("productClass")
+    assert child.cascade_parent == "productCategory", child.cascade_parent
+    assert child.choices == ["OTC", "RX", "双跨", "其他", "大健康"], child.choices
+    assert child.choice_groups["中药"] == ["OTC", "RX", "双跨", "其他"]
+
+    # ④ 真实样本：说明里的「随…联动」和「父：子」分组要能抽出来
+    root = Path(__file__).resolve().parents[1]
+    summary = ai_sheet.summarize(
+        (root / "PP6" / "项目基本信息表单-尹姣定.xlsx").read_bytes())
+    fields = {f["label"]: f for f in summary["sheets"][0]["fields"]}
+    pc = fields["品种分类"]
+    assert pc["parentLabel"] == "品种类别", pc.get("parentLabel")
+    assert pc["groups"]["中药"] == ["OTC", "RX", "双跨", "其他"], pc["groups"]
+    assert "N/A" in pc["groups"], "N/A 被斜杠拆开了"
+    assert fields["项目注册类别"]["parentLabel"] == "战略类别"
+
+    # ⑤ 概要抽出的分组真的能盖到「模型拍平」的 spec 上
+    flat = {"fields": [
+        {"code": "productCategory", "name": "品种类别", "type": "dic",
+         "values": ["中药", "化药", "大健康"]},
+        {"code": "productClass", "name": "品种分类", "type": "dic",
+         "values": ["中药", "化药", "大健康", "OTC", "RX", "双跨", "其他"]},
+    ]}
+    notes: list[str] = []
+    ai_sheet._apply_cascade_hints(flat, summary, notes)
+    assert flat["fields"][1]["cascadeParent"] == "productCategory"
+    bo, _ = ai_bo.build_bo(flat)
+    assert bo.field_by_code("productClass").choices == ["OTC", "RX", "双跨", "其他", "大健康"]
+
+    # ⑥ 「L1：创新药」是带代码前缀的单个取值，不按父子分组拆开
+    flat_vals, _g, _t = ai_bo._clean_values(
+        ["L1：创新药、改良型新药项目", "L2：仿制药、进口注册药品"], cascade=True)
+    assert flat_vals == ["L1：创新药、改良型新药项目", "L2：仿制药、进口注册药品"], flat_vals
+
+
+@case("BO40", "bo", "文档/PDF 里的「当 A 为 X 时 B 为 Y」能抽成级联", "P0",
+      ["不限 Excel：Word/PDF 抽出的文字也走同一套",
+       "父值 X 不能出现在 B 的候选值里",
+       "句子里的字段名可能带「」/引号，要剥掉"])
+def _():
+    from pp6kit import ai_bo
+
+    text = ("当「品种类别」为中药时，品种分类的下拉值为 OTC、RX、双跨、其他；"
+            "当 a 下拉候选值为 xxx 时，b 字段的下拉值为 yyy、zzz。")
+    hints = ai_bo.parse_conditional_cascades(text)
+    assert [(h["parent"], h["parentValue"], h["child"]) for h in hints] == [
+        ("品种类别", "中药", "品种分类"), ("a", "xxx", "b")], hints
+
+    spec = {"fields": [
+        {"code": "pinZhongLeiBie", "name": "品种类别", "type": "dic",
+         "values": ["中药", "化药"]},
+        {"code": "pinZhongFenLei", "name": "品种分类", "type": "dic",
+         "values": ["中药", "化药", "OTC", "RX"]},
+    ]}
+    ai_bo._apply_text_cascades(spec, hints[:1])
+    assert spec["fields"][1]["cascadeParent"] == "pinZhongLeiBie"
+    bo, _ = ai_bo.build_bo(spec)
+    assert bo.field_by_code("pinZhongFenLei").choices == ["OTC", "RX", "双跨", "其他"]
+
+
+@case("BO41", "bo", "更新导入：目标已有字段的类型/长度被锁回去", "P0",
+      ["平台不支持 ALTER COLUMN，一个字段类型不同整包失败",
+       "目标库已有 clob，本包写 varchar → 改回 clob",
+       "没标已有对象ID时，GUI 出包会自动认成更新（adopt）"])
+def _():
+    from pp6kit import builder, objects
+
+    proj, _, _ = project_of(xlsx({
+        S.S_BO: [{"对象名称": "合同", "对象编码": "contract",
+                  "物理表名": "pp_contract", "已有对象ID": "644"}],
+        S.S_FIELD: [{"对象编码": "contract", "序号": 1, "字段编码": "note",
+                     "字段名称": "说明", "数据类型": "字符串", "长度": 200}],
+    }))
+    bo = proj.bos[0]
+    orig = objects.db_object_infos
+    objects.db_object_infos = lambda codes: {
+        "contract": {"id": "644", "fields": {"note": {"type_new": "clob", "length": None}}}}
+    try:
+        notes = builder.align_existing_object_fields(proj)
+    finally:
+        objects.db_object_infos = orig
+    assert bo.field_by_code("note").type_new == "clob"
+    assert any("不支持改类型" in n for n in notes), notes
+
+    # adopt：没标 id，但目标同编码对象存在 → 自动按更新处理并锁类型
+    proj2, _, _ = project_of(xlsx({
+        S.S_BO: [{"对象名称": "合同", "对象编码": "contract",
+                  "物理表名": "pp_contract"}],
+        S.S_FIELD: [{"对象编码": "contract", "序号": 1, "字段编码": "note",
+                     "字段名称": "说明", "数据类型": "字符串", "长度": 200}],
+    }))
+    bo2 = proj2.bos[0]
+    objects.db_object_infos = lambda codes: {
+        "contract": {"id": "777", "fields": {"note": {"type_new": "clob", "length": None}}}}
+    try:
+        builder.align_existing_object_fields(proj2, adopt=True)
+    finally:
+        objects.db_object_infos = orig
+    assert bo2.exist_id == "777"
+    assert bo2.field_by_code("note").type_new == "clob"
+
+
+@case("BO42", "bo", "目标表单没有主历史版本 → 换新 key 并改引用", "P0",
+      ["8112 的 project_create_details 是遗留表单，没有主历史版本",
+       "平台无法更新它，只能新建；不改库的前提下换 key",
+       "对象 options.formKey / 控件 form_key 一起改"])
+def _():
+    from pp6kit import builder, objects
+
+    proj, _, _ = project_of(xlsx({
+        S.S_BO: [{"对象名称": "项目立项", "对象编码": "project_create",
+                  "物理表名": "pp_project_create"}],
+        S.S_FIELD: [field("project_create", "摘要", "字符串")],
+        S.S_FORM: [{"表单key": "project_create_details", "表单名称": "立项详情",
+                    "对象编码": "project_create", "表单类型": "详情表单"}],
+        S.S_FORMFIELD: [{"表单key": "project_create_details", "字段编码": "zhaiYao",
+                         "显示标签": "摘要", "控件类型": "text"}],
+    }))
+    bo = proj.bos[0]
+    bo.options["formKey"] = "project_create_details"
+    form = proj.forms[0]
+    orig = objects.form_main_versions
+    objects.form_main_versions = lambda keys: {
+        k: (0 if k == "project_create_details" else -1) for k in keys}
+    try:
+        notes = builder.avoid_unupdatable_forms(proj)
+    finally:
+        objects.form_main_versions = orig
+    assert form.key == "project_create_details_v2", form.key
+    assert form.fields[0].form_key == "project_create_details_v2"
+    assert bo.options["formKey"] == "project_create_details_v2"
+    assert any("没有主历史版本" in n for n in notes), notes
+
+
+@case("BO43", "bo", "更新导入：表格字段不被库里的 clob 锁成「大文本」", "P0",
+      ["table 与 clob 同属 clob 物理族，互换不 ALTER，没必要锁",
+       "2026-11-17 用户反馈：需求里是表格，导入后变成大文本",
+       "库里上次已导成 clob 时，重出的包仍要保留 dataTypeNew=table"])
+def _():
+    from pp6kit import builder, objects
+
+    proj, _, _ = project_of(xlsx({
+        S.S_BO: [{"对象名称": "项目立项", "对象编码": "project_create",
+                  "物理表名": "pp_project_create", "已有对象ID": "644"}],
+        S.S_FIELD: [{"对象编码": "project_create", "序号": 1, "字段编码": "planExcel",
+                     "字段名称": "里程碑计划表", "数据类型": "表格（table）"}],
+        S.S_TABLE_COL: [{"对象编码": "project_create", "字段编码": "planExcel",
+                         "序号": 1, "列名": "阶段", "列类型": "字符串（varchar）"}],
+    }))
+    bo = proj.bos[0]
+    orig = objects.db_object_infos
+    # 库里那条字段是上次误导成的大文本（clob）
+    objects.db_object_infos = lambda codes: {
+        "project_create": {"id": "644",
+                           "fields": {"planExcel": {"type_new": "clob", "length": None}}}}
+    try:
+        notes = builder.align_existing_object_fields(proj)
+    finally:
+        objects.db_object_infos = orig
+
+    f = bo.field_by_code("planExcel")
+    assert f.type_new == "table", f"表格被库里的 clob 锁回去了：{f.type_new}"
+    r = f.resolved()
+    assert r["dataTypeNew"] == "table" and r["datatype"] == "clob" and r["type"] == "", r
+    assert any("按表格出包" in n for n in notes), notes
+
+    # 反过来：跨族（varchar → clob）仍然必须锁，否则整包被系统拒绝
+    proj2, _, _ = project_of(xlsx({
+        S.S_BO: [{"对象名称": "合同", "对象编码": "contract",
+                  "物理表名": "pp_contract", "已有对象ID": "645"}],
+        S.S_FIELD: [{"对象编码": "contract", "序号": 1, "字段编码": "note",
+                     "字段名称": "说明", "数据类型": "字符串"}],
+    }))
+    objects.db_object_infos = lambda codes: {
+        "contract": {"id": "645", "fields": {"note": {"type_new": "clob", "length": None}}}}
+    try:
+        builder.align_existing_object_fields(proj2)
+    finally:
+        objects.db_object_infos = orig
+    assert proj2.bos[0].field_by_code("note").type_new == "clob"
+
+
+@case("BO44", "bo", "级联值写到 dictionary.dependValues（平台修复后的导入格式）", "P0",
+      ["参考 config-sync-20261117204647.zip：dependValues 在字典项上，不在 selectOptions",
+       "父值 key 必须与父字段字典项 key 完全一致（否则导入后级联是空的）",
+       "根字段/无父项写 []，三层链逐级对上"])
+def _():
+    import html as _html
+    import json as _json
+
+    x = pick(build({
+        S.S_BO: [{"对象名称": "测试级联", "对象编码": "csjl",
+                  "物理表名": "pp_csjl"}],
+        S.S_FIELD: [
+            {"对象编码": "csjl", "序号": 1, "字段编码": "xuanXiangA",
+             "字段名称": "选项A", "数据类型": "选项", "选项值": "A、B、C"},
+            {"对象编码": "csjl", "序号": 2, "字段编码": "xuanXiangB",
+             "字段名称": "选项B", "数据类型": "选项",
+             "选项值": "A：1\nB：2\nC：2", "级联父字段": "xuanXiangA"},
+            {"对象编码": "csjl", "序号": 3, "字段编码": "xuanXiangC",
+             "字段名称": "选项C", "数据类型": "选项",
+             "选项值": "1：J\n2：Q", "级联父字段": "xuanXiangB"},
+        ],
+    }), "bo/")
+
+    items = {}
+    for d in all_tags(x, "dictionary"):
+        a = attrs(d)
+        items.setdefault(a["typeKey"], {})[a["name"]] = {
+            "key": a["key"],
+            "deps": _json.loads(_html.unescape(a.get("dependValues") or "[]")),
+        }
+    A = items["csjl_xuanXiangA"]
+    B = items["csjl_xuanXiangB"]
+    C = items["csjl_xuanXiangC"]
+    # 「A、B、C」必须拆成 3 个选项（顿号分隔）
+    assert set(A) == {"A", "B", "C"}, A
+    assert B["1"]["deps"] == [A["A"]["key"]], (B["1"], A)
+    assert B["2"]["deps"] == [A["B"]["key"], A["C"]["key"]], B["2"]
+    assert C["J"]["deps"] == [B["1"]["key"]], (C["J"], B)
+    assert C["Q"]["deps"] == [B["2"]["key"]], (C["Q"], B)
+    # 根字段也带 dependValues=[]（与系统导出格式一致）
+    assert all(v["deps"] == [] for v in A.values())
+    # 属性侧仍需声明父子关系，平台靠它决定控件是否级联
+    b = attrs(next(t for t in all_tags(x, "attribute")
+                   if attrs(t)["code"] == "xuanXiangB"))
+    opts = _json.loads(_html.unescape(b["options"]))
+    assert opts["cascadeEnabled"] is True
+    assert opts["cascadeParentCode"] == "xuanXiangA"
+
+
+@case("BO45", "bo", "AI 预览的级联分组经 Excel 往返后仍写进 dependValues", "P0",
+      ["AI → ai_apply_bo → 2_字段「选项值」必须写成「父：子1、子2」",
+       "出包 dictionary.dependValues 指向父字段真实 key",
+       "分组父值不存在时不写悬空依赖码"])
+def _():
+    import io as _io
+    import json as _json
+    import zipfile as _zip
+
+    payload = {"bo": {"code": "casc_ai", "name": "级联AI", "fields": [
+        {"name": "品种类别", "code": "productCategory", "type": "dic",
+         "choices": ["中药", "化药", "大健康"]},
+        {"name": "品种分类", "code": "productClass", "type": "dic",
+         "cascadeParent": "productCategory",
+         "choices": ["OTC", "RX", "大健康"],
+         "choiceGroups": {"中药": ["OTC", "RX"], "化药": ["OTC", "RX"],
+                          "大健康": ["大健康"]}},
+    ]}}
+    xlsx_bytes, _ = webui.ai_apply_bo(payload)
+    body, _ = webui.build_zip(xlsx_bytes)
+    z = _zip.ZipFile(_io.BytesIO(body))
+    bo = next(n for n in z.namelist() if n.startswith("bo/"))
+    root = __import__("xml.etree.ElementTree", fromlist=["ET"]).fromstring(z.read(bo).decode())
+
+    parent = {d.get("name"): d.get("key") for d in root.iter()
+              if d.tag.endswith("dictionary")
+              and d.get("typeKey") == "casc_ai_productCategory"}
+    kids = {d.get("name"): d for d in root.iter()
+            if d.tag.endswith("dictionary")
+            and d.get("typeKey") == "casc_ai_productClass"}
+    assert parent, "父字段字典缺失"
+    assert set(kids) == {"OTC", "RX", "大健康"}, kids
+    assert _json.loads(kids["大健康"].get("dependValues")) == [parent["大健康"]]
+    assert set(_json.loads(kids["OTC"].get("dependValues"))) == {
+        parent["中药"], parent["化药"]}
+
+    # Excel 的选项值列要保留分组写法，否则下一次读表又变平
+    import openpyxl
+    wb = openpyxl.load_workbook(_io.BytesIO(xlsx_bytes))
+    texts = {}
+    for row in wb["2_字段"].iter_rows(min_row=2, values_only=True):
+        if row[2]:
+            texts[row[2]] = str(row[7] or "")
+    assert "中药：OTC、RX" in texts["productClass"], texts["productClass"]

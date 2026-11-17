@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 import zipfile
 from dataclasses import dataclass, field as dc_field
@@ -18,6 +19,10 @@ from pathlib import Path
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# 回归一律离线：不查目标库、不按「同编码对象」自动改成更新导入。
+# 否则同一份用例在「连着库」和「没连库」的机器上产物不一样。
+os.environ.setdefault("PP6_OFFLINE", "1")
 
 
 # ---------------------------------------------------------------- 用例注册

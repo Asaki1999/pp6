@@ -349,6 +349,7 @@ def to_dict(form: Form) -> dict:
         "boCode": form.bo_code,
         "kind": form.kind,
         "layout": form.layout,
+        "layoutStyle": form.layout_style,
         "labelWidth": form.resolved_label_width(),
         "fieldCount": len(form.fields),
         "fields": [

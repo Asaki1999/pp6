@@ -99,6 +99,9 @@ SHEET_EXTRA = """
    `"values": ["中药：OTC、RX、双跨、其他", "化药：OTC、RX、双跨、其他", "大健康：大健康"]`），
    同时给这个字段填 `cascadeParent` = 父字段编码（「随"品种类别"联动」→ 品种类别字段的编码）。
    不要把分组拍平成不相关的候选值——拍平后级联联动就没了。
+   **概要里如果直接给了「· 级联父字段：…」或「· 分组候选值（父：子）：…」，
+   原样照它填 `cascadeParent` 和 `values`**，不要自己再拆一遍；
+   父值只属于父字段，不要写进子字段的 `values`。
 4. 对象名用表单标题去掉公司简称和「表单」二字（「三九项目立项信息表单」→「项目立项信息」）。
 5. 分组〔提报信息〕〔品种基本信息〕保留：同组字段排相邻，顺序按文档。
 6. **文档里出现的每个字段都要输出，一个都不能少**；字段多时宁可写得紧凑
@@ -316,8 +319,82 @@ def _extract_form(grid: list[list[str]]) -> dict:
     for f in fields:
         f["label"], f["cond"] = _split_label_condition(f["label"])
 
+    _cascade_hints(fields)
     return {"title": title, "sections": sections, "fields": fields,
             "kind": "form", "dropped": dup}
+
+
+# 「随“品种类别”字段联动」→ 父字段名
+_LINK_RE = re.compile(r'随\s*[“"]([^”"]{1,24})[”"]\s*(?:字段)?\s*联动')
+# 一行一个父值的分组写法：中药：OTC、RX、双跨、其他
+_GROUP_LINE = re.compile(r"^([^：:>＞【】\s]{1,24})[：:>＞](.+)$")
+# 单行形态：「中药：OTC、RX、双跨、其他 化药：OTC、RX…」——靠「空格 + 下一个父值：」断句
+_INLINE_GROUP = re.compile(
+    r"(?:^|\s)([^\s：:>＞【】]{1,24})[：:>＞]\s*([^：:>＞]+?)"
+    r"(?=\s+[^\s：:>＞【】]{1,24}[：:>＞]|$)")
+
+
+_NA_RE = re.compile(r"(?<![A-Za-z])N/A(?![A-Za-z])", re.I)
+
+
+def _split_kids(text: str) -> list[str]:
+    """子项分隔（、，,；;|/），N/A 保留完整。"""
+    marks: list[str] = []
+
+    def _hold(m):
+        marks.append(m.group(0))
+        return f"\x00{len(marks) - 1}\x00"
+
+    held = _NA_RE.sub(_hold, str(text or ""))
+    return [re.sub(r"\x00(\d+)\x00", lambda m: marks[int(m.group(1))], x).strip()
+            for x in re.split(r"[,，;；|、/]+", held) if x.strip()]
+
+
+def _add_group(groups: dict[str, list[str]], parent: str, kids_text: str) -> None:
+    parent = str(parent).strip()
+    kids = _split_kids(kids_text)
+    if not parent or not kids:
+        return
+    bucket = groups.setdefault(parent, [])
+    for k in kids:
+        if k not in bucket:
+            bucket.append(k)
+
+
+def _cascade_hints(fields: list[dict]) -> None:
+    """从表单规格的说明文字里提前抽出「级联父字段」和「父→子分组」。
+
+    模型经常把「中药：OTC、RX…」拍平，或者把父值「中药」也算进子字段。
+    这里先在 Python 侧把结构化信息抽出来，作为概要的一部分喂给模型；
+    即使模型还是拍平，ai_bo 的分组解析 + 父字段推断也能兜住。
+
+    只认简单的「父：子1、子2」行（父值不含空格/【】）。像
+    「【中药】新品获得：中药1类…」这种多级写法不在这里猜，交给模型。
+    """
+    for f in fields:
+        text = f"{f.get('note') or ''} {f.get('cond') or ''}"
+        m = _LINK_RE.search(text)
+        if m:
+            f["parentLabel"] = m.group(1).strip()
+        groups: dict[str, list[str]] = {}
+        note = f.get("note") or ""
+        # 概要里的换行在 _cell_text 已经压成空格，所以先按行解析，
+        # 再对「候选值： 中药：OTC… 化药：OTC…」这种单行形态做一次配对。
+        for line in re.split(r"[\n。；;]+", note):
+            mm = _GROUP_LINE.match(line.strip())
+            if mm:
+                _add_group(groups, mm.group(1), mm.group(2))
+        m = re.search(r"候选值[：:]\s*(.+)", note)
+        body = m.group(1) if m else note
+        for mm in _INLINE_GROUP.finditer(" " + body):
+            _add_group(groups, mm.group(1), mm.group(2))
+        # 多级写法（【中药】新品获得：…）不在这里猜，避免抽出一堆错父值；
+        # 只给 parentLabel，让模型按原文处理。
+        if "【" in body:
+            groups = {}
+        # 只有一个分组不算「分组写法」（防把「L1：创新药」当级联）
+        if len(groups) >= 2:
+            f["groups"] = groups
 
 
 def _table_from_grid(grid: list[list[str]]) -> dict | None:
@@ -409,6 +486,13 @@ def render_summary(summary: dict) -> str:
             for f in sh["fields"]:
                 sec = f"〔{f['section']}〕" if f.get("section") else ""
                 lines.append(f"  - {f['label']}｜{f['note']}{sec}")
+                if f.get("parentLabel"):
+                    lines.append(f"      · 级联父字段：{f['parentLabel']}"
+                                 f"（cascadeParent 必须填它的编码，值不要混进子字段）")
+                if f.get("groups"):
+                    pairs = "；".join(f"{p}→{'、'.join(k)}"
+                                     for p, k in f["groups"].items())
+                    lines.append(f"      · 分组候选值（父：子）：{pairs}")
             lines.append("")
             continue
 
@@ -460,6 +544,35 @@ def _avoid_dict_key_clash(bo) -> list[str]:
             key = new_key
         used.add(key)
     return notices
+
+
+def _apply_cascade_hints(spec: dict, summary: dict, notices: list[str]) -> None:
+    """把概要里抽出的级联信息盖到模型输出的 spec 上（不覆盖模型已给的）。"""
+    raw_fields = spec.get("fields") or (spec.get("bo") or {}).get("fields") or []
+    by_name: dict[str, dict] = {}
+    for raw in raw_fields:
+        if not isinstance(raw, dict):
+            continue
+        nm = str(raw.get("name") or "").strip()
+        if nm:
+            by_name.setdefault(nm, raw)
+    for sh in summary.get("sheets") or []:
+        for f in sh.get("fields") or []:
+            label = str(f.get("label") or "").strip()
+            target = by_name.get(label)
+            if target is None:
+                continue
+            parent_label = str(f.get("parentLabel") or "").strip()
+            if parent_label and not target.get("cascadeParent"):
+                parent = by_name.get(parent_label)
+                if parent and parent.get("code"):
+                    target["cascadeParent"] = parent["code"]
+            groups = f.get("groups")
+            if groups and not target.get("choiceGroups"):
+                target["choiceGroups"] = groups
+                notices.append(
+                    f"字段「{label}」的候选值按说明里的「父：子」分组还原"
+                    f"（{'、'.join(list(groups)[:4])}→…），父值不会出现在子字段里")
 
 
 def analyze(summary: dict, cfg: dict, known_objects: list | None = None,
@@ -566,11 +679,20 @@ def analyze(summary: dict, cfg: dict, known_objects: list | None = None,
             except json.JSONDecodeError:
                 pass
 
+    # 概要里已经抽出的「级联父字段 / 父→子分组」直接盖到 spec 上：
+    # 模型拍平或漏写 cascadeParent 时，这一步仍然能把级联关系补回来。
+    _cascade_notes: list[str] = []
+    _apply_cascade_hints(spec, summary, _cascade_notes)
+
     # values（候选值）在 build_bo 里统一落到 choices，这里不再单独处理
     bo, notices = ai_bo.build_bo(spec, pool, strict_objects=True)
+    notices = _cascade_notes + notices
     notices.extend(_avoid_dict_key_clash(bo))
     # 级联字段的分组候选值若被模型拍平，单独补一轮归属映射
     notices.extend(ai_bo.fix_cascade_groups(bo, cfg))
+    # 表格字段只判了类型、没给列：按需求再问一次，把列名补出来
+    # （用户 2026-11-17：「表格里面的列名你不会帮我添加吗」）
+    notices.extend(ai_bo.fill_table_columns(bo, cfg, hint=hint))
 
     # 把「来源列」还给前端，预览时能对照原表
     src = {}

@@ -1102,8 +1102,10 @@ def _():
         assert 'mode="workflow"' in z.read(bo_name).decode("utf-8")
 
 
-@case("WF34", "workflow", "流程冗余字段/流程状态在表单里只做隐藏控件", "P0",
-      ["processNode 等 fieldType=hidden", "不在表单分区里露出 GUID/状态"])
+@case("WF34", "workflow", "流程冗余字段只在对象上：表单不塞 process* 隐藏控件", "P0",
+      ["对象侧有 7 个 process* 字段（线上 pp_project_create 同款）",
+       "表单侧一个 process* 控件都没有——流程值由服务端按对象字段反写",
+       "业务字段仍然是可见的 text"])
 def _():
     data = xlsx({
         S.S_BO: [{"对象名称": "合同", "对象编码": "contract",
@@ -1117,16 +1119,20 @@ def _():
     proj, errors, _ = project_of(data)
     assert not errors, errors
     with tempfile.TemporaryDirectory() as tmp:
-        res = builder.build(proj, webui._snippets(), Path(tmp), codes=["form"])
+        res = builder.build(proj, webui._snippets(), Path(tmp), codes=["bo", "form"])
+        bo_xml = next(a for a in res.artifacts if a.module == "bo").xml
         form_xml = next(a for a in res.artifacts if a.module == "form").xml
-    root = ET.fromstring(form_xml)
+
+    bo_codes = {a.get("code") for a in ET.fromstring(bo_xml).iter()
+                if a.tag.endswith("attribute")}
+    for code in ("processDefId", "processInstanceId", "processNode",
+                 "processHandler", "processName", "processCode", "processState"):
+        assert code in bo_codes, (code, sorted(bo_codes))
+
     by_name = {}
-    for ff in root.iter("formField"):
-        name = ff.get("name") or ""
-        by_name.setdefault(name, []).append(ff)
-    for code in ("processNode", "processHandler", "processDefId",
-                 "processInstanceId", "processState"):
-        assert code in by_name, (code, sorted(by_name)[:20])
-        assert all(x.get("fieldType") == "hidden" for x in by_name[code]), code
+    for ff in ET.fromstring(form_xml).iter("formField"):
+        by_name.setdefault(ff.get("name") or "", []).append(ff)
+    leaked = [n for n in by_name if n.startswith("process")]
+    assert not leaked, f"表单里不该有流程隐藏控件：{leaked}"
     # 业务字段仍然是可见的 text
     assert any(x.get("fieldType") == "text" for x in by_name.get("mingCheng", []))

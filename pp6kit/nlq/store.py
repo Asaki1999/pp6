@@ -149,12 +149,51 @@ def load_llm() -> dict:
     return {"channels": []}
 
 
-def add_example(question: str, sql: str) -> None:
+def add_example(question: str, sql: str, verified: bool = False,
+                source: str = "ai") -> None:
     data = load()
+    old = next((e for e in data["examples"] if e.get("question") == question), {})
+    # 人工修正过的问法，AI 再学一次也不能覆盖（人比模型权威）
+    if old.get("source") == "corrected":
+        return
     examples = [e for e in data["examples"] if e.get("question") != question]
-    examples.insert(0, {"question": question, "sql": sql})
+    examples.insert(0, {
+        "question": question,
+        "sql": sql,
+        # 之前人工验证过的，不能被后来一次 AI 学习降级
+        "verified": bool(verified or old.get("verified")),
+        "source": source,
+    })
     data["examples"] = examples[:200]
     save(data)
+
+
+def verify_example(question: str, sql: str = "") -> dict:
+    """把一条问答标成「已验证」——之后检索优先用它，提示词里也会标注。
+
+    只信人点过的那一下；AI 自己答对不算验证（它也会错）。
+    """
+    q = (question or "").strip()
+    if not q:
+        raise ValueError("问题不能为空")
+    data = load()
+    hit = next((e for e in data["examples"] if (e.get("question") or "").strip() == q), None)
+    if hit is None:
+        if not sql.strip():
+            raise ValueError("示例库里没有这个问题，需要同时提供 SQL")
+        hit = {"question": q, "sql": sql.strip()}
+        data["examples"].insert(0, hit)
+    hit["verified"] = True
+    hit["verified_at"] = datetime.now().isoformat(timespec="seconds")
+    if sql.strip():
+        hit["sql"] = sql.strip()
+    save(data)
+    return {"saved": True, **library_stats(data)}
+
+
+def library_stats(data: dict | None = None) -> dict:
+    ex = (data or load()).get("examples") or []
+    return {"total": len(ex), "verified": sum(1 for e in ex if e.get("verified"))}
 
 
 def save_correction(question: str, sql: str, original_sql: str = "", note: str = "") -> dict:
@@ -234,8 +273,10 @@ def pick_examples(question: str, limit: int = 6, tables: list[str] | None = None
     """
     user_examples = all_examples()
     seen = {e.get("question") for e in user_examples}
+    # 内置语料是跑通过的问答对，默认视为已验证；用户新增的要人工点「已验证」
     examples = list(user_examples) + [
-        e for e in builtin_examples() if e.get("question") not in seen
+        {**e, "verified": True}
+        for e in builtin_examples() if e.get("question") not in seen
     ]
     if not examples:
         return []
@@ -265,6 +306,8 @@ def pick_examples(question: str, limit: int = 6, tables: list[str] | None = None
         # 人工修正过的示例加权重：这是用户亲自改对的，比我们预置的和 AI 生成的都可信
         if ex.get("source") == "corrected":
             score += 0.5
+        if ex.get("verified"):
+            score += 0.8
         scored.append((score, ex))
     scored.sort(key=lambda x: -x[0])
     return [e for _, e in scored[:limit]]

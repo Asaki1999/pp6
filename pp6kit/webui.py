@@ -49,6 +49,7 @@ from . import spec
 from .reader import read_workbook
 from .template import build_workbook, demo_project
 from .nlq import engine as nlq_engine
+from .nlq import semantic as nlq_semantic
 from .nlq import local as nlq_local
 from .nlq import guard as nlq_guard
 from .nlq import hybrid as nlq_hybrid
@@ -219,6 +220,7 @@ def _form_payload(form, bo) -> dict:
         "boCode": form.bo_code,
         "boName": bo.name if bo else "",
         "layout": form.layout,
+        "layoutStyle": form.layout_style,
         "width": form.resolved_width(),
         "kind": form.kind,
         "labelWidth": form.resolved_label_width(),
@@ -619,7 +621,7 @@ def build_zip(data: bytes, codes: list[str] | None = None,
                 raise ValueError("这份 Excel 里的业务对象全是流程模式，同步包里没有可出的"
                                  "内容：流程对象请到左侧「流程模式」工作区导出")
 
-        res = build(proj, _snippets(), work, codes=codes)
+        res = build(proj, _snippets(), work, codes=codes, db_align=True)
         if rel_notices:
             res.notices.extend(rel_notices)
         for line in align_report.get("notices") or []:
@@ -952,7 +954,7 @@ def import_module(data: bytes, code: str,
         _projlink.apply(proj, decisions)
     work = _tmp_dir("import-build")
     try:
-        res = build(proj, _snippets(), work, codes=[code])
+        res = build(proj, _snippets(), work, codes=[code], db_align=True)
         if not res.deliverables:
             raise ValueError(f"「{mod_def.label(code)}」没有可导入的内容")
         d = res.deliverables[0]
@@ -994,7 +996,7 @@ def workflow_files(data: bytes, workflow_all: bool = False) -> tuple[bytes, str,
 
     out = _tmp_dir("workflow-out")
     try:
-        res = build(proj, _snippets(), out, codes=["workflow"])
+        res = build(proj, _snippets(), out, codes=["workflow"], db_align=True)
         files = [d for d in res.deliverables if d.module == "workflow"]
         if not files:
             raise ValueError("没有生成出流程定义，检查 9_流程 与 10_流程节点 是否填了")
@@ -1437,6 +1439,13 @@ def ai_apply_bo(payload: dict, relations_header: str | None = None) -> tuple[byt
     bo = Bo(code=data["code"], name=data.get("name") or data["code"],
             tbl_name=table_name_for(data["code"]), desc=data.get("desc") or "")
     for i, f in enumerate(data.get("fields") or [], start=1):
+        _groups = dict(f.get("choiceGroups") or {})
+        _choices = list(f.get("choices") or [])
+        # 分组里的子项必须都在 choices 里，否则 Excel 写出去会缺项
+        for _kids in _groups.values():
+            for _k in (_kids or []):
+                if _k and _k not in _choices:
+                    _choices.append(_k)
         bo.fields.append(BoField(
             bo_code=bo.code,
             code=f.get("code") or f"field{i}",
@@ -1445,7 +1454,10 @@ def ai_apply_bo(payload: dict, relations_header: str | None = None) -> tuple[byt
             length=f.get("length"),
             object_type=f.get("objectType") or "",
             # 选项值要落到 2_字段 的「选项值」列，否则预览里改的候选值白改
-            choices=list(f.get("choices") or []),
+            choices=_choices,
+            # 分组必须一起带走：Excel 的「选项值」列按「父：子1、子2」写，
+            # 读回来才能还原 choice_groups → dependValues
+            choice_groups=_groups,
             # 单选/多选（dic）、重复值校验、索引这些开关都走 options。
             # 前端预览传的是顶层字段 isMultiple/isIndex，这里归到 options 里，
             # 否则 resolved() 拿不到、生成出来的永远是单选。
@@ -1476,6 +1488,7 @@ def ai_apply_bo(payload: dict, relations_header: str | None = None) -> tuple[byt
             kind=FORM_CREATE,
             form_type="form",
             layout=int(form_data.get("layout") or 2),
+            layout_style=("flat" if form_data.get("layoutStyle") == "flat" else "grouped"),
         )
         # 用户在预览里删过字段时，表单里可能还引用着它——剔除掉，
         # 否则会生成「控件 xxx 在对象字段中不存在」的坏表单
@@ -1644,10 +1657,12 @@ def nlq_test() -> dict:
             for t in tables[:60]
         ],
         "templates": nlq_engine.templates(pack),
+        "library": nlq_store.library_stats(),
+        "semantic": nlq_semantic.glossary(pack),
     }
 
 
-def nlq_ask(payload: dict) -> dict:
+def _nlq_ask_impl(payload: dict) -> dict:
     """engine: hybrid（默认）/ local / llm / auto
 
     hybrid = 规则先跑，规则没把握才调 AI，AI 答对了顺便沉淀成示例。
@@ -1667,6 +1682,17 @@ def nlq_ask(payload: dict) -> dict:
     try:
         pack = _schema()
         allowed = set(pack.tables) | nlq_guard.PARTY_TABLES | {"iform_cat_dic", "iform_cat_type"}
+
+        # 缺时间范围时先追问一句，避免「新增/趋势」把全量历史算进去
+        if not payload.get("clarified"):
+            from .nlq import clarify as nlq_clarify
+            clar = nlq_clarify.check(question)
+            if clar:
+                return {"sql": "", "columns": [], "rows": [],
+                        "clarify": clar,
+                        "source": "需要确认时间范围",
+                        "origin": "clarify", "origin_label": "待确认",
+                        "question": question}
 
         if mode == "llm":
             return _ask_ai(conn, pack, question, cfg, learn=True)
@@ -1719,13 +1745,35 @@ def nlq_ask(payload: dict) -> dict:
             res["origin_label"] = "规则生成"
             return res
 
-        # AI 0 行而规则有行 → 保留规则结果，别把能用的答案换掉
+        # AI 0 行而规则有行：
+        #   - 规则本来就被判「没答到点上」→ 不能把 200 行错结果端给用户，
+        #     改用 AI 的 0 行 + 诊断，并说明为什么（2026-11-17「张三」实测）
+        #   - 规则没被判错 → 保留规则结果，别把能用的答案换掉
         if not ai.get("rows") and res.get("rows"):
+            if not verdict.ok:
+                ai["source"] = f"AI 按更严格的条件重查（{verdict.note}），结果 0 行"
+                ai["ruleSql"] = res.get("sql")
+                ai["ruleRows"] = len(res.get("rows") or [])
+                ai["rule_reason"] = verdict.note
+                ai["uncertain"] = (
+                    f"规则结果没答到点上（{verdict.note}），AI 重查 0 行；"
+                    f"请核对筛选条件是否写得太严")
+                # 去掉「查一下/帮我」前缀，否则会把「一下张三」当成名字
+                q_name = re.sub(
+                    r"^(?:请|帮我|麻烦)?\s*(?:查一下|查一查|查询|查|看看|看一下|列出|找出)\s*",
+                    "", question)
+                m = re.search(r"([\u4e00-\u9fa5]{2,4})\s*(?:负责|经办|提交|创建|处理)的",
+                              q_name)
+                if m and m.group(1) not in ("项目经理", "项目负责人", "负责人", "责任人"):
+                    ai["hint"] = (f"库里可能没有「{m.group(1)}」这个人，"
+                                  f"或该人员名下没有对应数据；可先查人员表核对姓名。")
+                else:
+                    ai.setdefault("hint", nlq_engine.diagnose(conn, pack, ai.get("sql", "")))
+                return ai
             res["source"] += "；AI 没答出来，保留规则结果"
             res["ai_error"] = "AI 查询结果为空"
             res["origin"] = "rule"          # 呈现在眼前的是规则结果
             res["origin_label"] = "规则生成"
-            # 规则本来就判不过，AI 又没答出来 → 结果可能不对，必须提示
             res["uncertain"] = f"这条规则本来没把握（{verdict.note}），AI 也没查出来，请人工核对"
             return res
 
@@ -1770,6 +1818,7 @@ def _ask_ai(conn, pack, question: str, cfg: dict, learn: bool = True,
     res["source"] = "大模型生成" + (f"（{res['channel']}）" if res.get("channel") else "")
     res["origin"] = "ai"                      # 大模型生成
     res["origin_label"] = "AI 生成"
+    res["verified"] = False
     res["model"] = res.get("channel") or ""
     res["question"] = question
     if not res.get("rows"):
@@ -1805,6 +1854,7 @@ def _ask_local(conn, pack, question: str, allowed: set, allowed_extra: bool = Fa
                         "note": tip,
                         "origin": "corrected",
                         "origin_label": "人工修正",
+                        "verified": True,
                         "question": question}
         except Exception:
             pass          # 改过的 SQL 也失效了（表结构变了），往下走
@@ -1841,6 +1891,7 @@ def _ask_local(conn, pack, question: str, allowed: set, allowed_extra: bool = Fa
                         "note": tip,
                         "origin": "corrected" if by_human else "memory",
                         "origin_label": "人工修正" if by_human else "复用的 AI 答案",
+                        "verified": bool(similar.get("verified")) or by_human,
                         "source_question": similar.get("question", ""),
                         "question": question}
         except Exception:
@@ -1859,6 +1910,17 @@ def _ask_local(conn, pack, question: str, allowed: set, allowed_extra: bool = Fa
     return out
 
 
+def nlq_ask(payload: dict) -> dict:
+    """对外入口：在结果上补一句「查询理解」，前端直接展示。"""
+    res = _nlq_ask_impl(payload)
+    try:
+        if res.get("sql"):
+            res["summary"] = nlq_engine.explain_sql(res["sql"], _schema())
+    except Exception:
+        pass
+    return res
+
+
 def nlq_run(payload: dict) -> dict:
     sql = (payload.get("sql") or "").strip()
     if not sql:
@@ -1869,9 +1931,22 @@ def nlq_run(payload: dict) -> dict:
         allowed = set(pack.tables) | nlq_guard.PARTY_TABLES | {"iform_cat_dic", "iform_cat_type"}
         safe = nlq_guard.validate(sql, allowed)
         cols, rows = nlq_engine.run_sql(conn, safe)
-        return {"sql": safe, "columns": cols, "rows": rows}
+        out = {"sql": safe, "columns": cols, "rows": rows}
+        try:
+            out["summary"] = nlq_engine.explain_sql(safe, pack)
+        except Exception:
+            pass
+        return out
     finally:
         conn.close()
+
+
+def nlq_verify(payload: dict) -> dict:
+    """人工确认「这条 SQL 是对的」→ 进已验证库，之后优先复用。"""
+    q = (payload.get("question") or "").strip()
+    sql = (payload.get("sql") or "").strip()
+    out = nlq_store.verify_example(q, sql)
+    return {"ok": True, **out}
 
 
 def nlq_save_example(payload: dict) -> dict:
@@ -2269,6 +2344,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, **nlq_ask(json.loads(self._body()))})
             elif self.path == "/api/nlq/run":
                 self._json({"ok": True, **nlq_run(json.loads(self._body()))})
+            elif self.path == "/api/nlq/verify":
+                self._json(nlq_verify(json.loads(self._body())))
             elif self.path == "/api/nlq/example":
                 self._json(nlq_save_example(json.loads(self._body())))
             elif self.path == "/api/nlq/correct":

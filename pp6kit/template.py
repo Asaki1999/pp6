@@ -58,7 +58,7 @@ def sheet_data(proj: Project) -> dict[str, list[list]]:
             out[spec.S_FIELD].append([
                 bo.code, f.sn, f.code, f.field_name, f.name, type_text, f.object_type,
                 # 选项值：一行一个（Excel 里 Alt+Enter 换行），比逗号串好读好改
-                "\n".join(f.choices),
+                f.choice_text(),
                 f.cascade_parent,
                 f.length, f.precision,
                 "是" if f.is_index else "否", "是" if f.is_null else "否",
@@ -84,7 +84,9 @@ def sheet_data(proj: Project) -> dict[str, list[list]]:
         out[spec.S_FORM].append([
             form.key, form.name, form.bo_code,
             _KIND_TO_LABEL.get(form.kind, form.kind),
-            "一行一列" if form.layout == 1 else "一行两列", form.type_id, form.status,
+            "一行一列" if form.layout == 1 else "一行两列",
+            "拖拽布局V1.0" if form.layout_style == "flat" else "字段分组",
+            form.type_id, form.status,
             form.width, form.label_width or "", "是" if form.auto_hidden else "否",
         ])
         for ff in form.fields:

@@ -515,15 +515,25 @@ def build_bo(spec: dict, known_objects: list | None = None,
         # （「中药：OTC、RX、双跨、其他」一行一条），必须同时保留扁平列表和分组映射，
         # 否则出包只能出成 6 个不相关联的候选值，级联永远不会过滤
         # （2026-11-12 用户实测：导入后品种分类随品种类别不联动）。
-        _flat, _groups = _clean_values(raw.get("values"))
+        _flat, _groups, _tentative = _clean_values(
+            raw.get("values"),
+            cascade=bool(raw.get("cascadeParent")),
+            groups_hint=raw.get("choiceGroups"),
+        )
 
         # 表格字段（子表）：列定义由模型给，走和 Excel「2.1_表格列」同一条模型路径
         table_columns = _clean_columns(raw.get("columns"))
         if ftype == "table" and not table_columns:
-            notices.append(
-                f"字段「{raw.get('name') or fcode}」是表格但没给列定义，已按大文本处理"
-                f"（空子表导入后是一片空白）")
-            ftype = "clob"
+            # 以前这里把字段直接改成 clob（大文本），理由是「空子表导入后一片空白」。
+            # 但代价是**类型被悄悄改掉**：用户导入后拿到一个多行文本框，
+            # 得删字段重建才能变成子表（2026-11-17 用户反馈
+            # 「需求里有表格类型，导入 zip 后变成大文本」就是这条路径）。
+            # 现在保留 table，先补一列占位顶住；真正的列由 fill_table_columns
+            # 再问一次模型补出来（用户明确要求「列名你帮我加」）。
+            _fname = (raw.get("name") or fcode).strip()
+            table_columns = [TableColumn(
+                name=_placeholder_column_name(_fname), input_type="varchar",
+                sn=1, placeholder=True)]
         if ftype == "table":
             # 子表按 clob 落库，没有「长度」概念
             length = None
@@ -538,7 +548,7 @@ def build_bo(spec: dict, known_objects: list | None = None,
             object_type=object_type,
             readonly=bool(raw.get("readonly")),
             choices=_flat,
-            choice_groups=_groups,
+            choice_groups=(_groups or _tentative),
             # 级联：AI 想表达「这个下拉只列父字段选过之后剩下的项」就填父字段编码
             cascade_parent=str(raw.get("cascadeParent") or "").strip(),
             table_columns=table_columns,
@@ -565,7 +575,85 @@ def build_bo(spec: dict, known_objects: list | None = None,
             notices.append(
                 f"⚠ 字段「{f.name}」的级联父级「{p}」在本对象里不存在"
                 f"（既不是字段编码也不是字段名），请预览里改成正确编码")
+    infer_cascade_parents(bo, notices)
+    strip_parent_choices(bo, notices)
     return bo, notices
+
+
+def infer_cascade_parents(bo: Bo, notices: list[str]) -> None:
+    """候选值是分组写法、但没填 cascadeParent 时，按父值集合反查父字段。
+
+    例（尹姣定立项表）：品种分类的分组键是 中药/化药/大健康/生物制品/N/A，
+    同对象里「品种类别」的候选值正好是这 5 个 → 认定 品种类别 → 品种分类。
+    只认「唯一一个字段的候选值覆盖全部父值」的情况；有歧义就不猜。
+    """
+    dic_fields = [f for f in bo.fields if f.type_new == "dic" and f.choices]
+    for child in bo.fields:
+        if child.type_new != "dic" or child.cascade_parent or not child.choice_groups:
+            continue
+        parents = set(child.choice_groups)
+        if len(parents) < 2:
+            continue
+        hits = [p for p in dic_fields
+                if p is not child and parents <= set(p.choices)]
+        # 父字段一般定义在子字段前面；有多个候选时只保留之前的
+        before = [p for p in hits if p.sn < child.sn]
+        if before:
+            hits = before
+        if len(hits) != 1:
+            # 认不到父字段：按普通候选值处理，别留下没有父级的分组
+            child.choice_groups = {}
+            continue
+        parent = hits[0]
+        child.cascade_parent = parent.code
+        # 候选值改成子项（去重保序），父值只在分组映射里
+        kids: list[str] = []
+        for vals in child.choice_groups.values():
+            for k in vals:
+                if k not in kids:
+                    kids.append(k)
+        if kids:
+            child.choices = kids
+        notices.append(
+            f"字段「{child.name}」的候选值是分组写法，"
+            f"已按父值自动认到父字段「{parent.name}」（{parent.code}）")
+
+
+def strip_parent_choices(bo: Bo, notices: list[str]) -> None:
+    """子字段的候选值里混进了父字段的值 → 去掉。
+
+    模型有时把「当品种类别=中药时，品种分类为 OTC/RX…」读成
+    「品种分类 = 中药、OTC、RX…」，把父值也算成子字段的候选值。
+    这里只在**重合很多**（≥2 个且覆盖父字段六成以上）时动手，避免误删
+    恰好同名的单个业务值；有分组映射的字段不动（分组本身就说明清了）。
+    """
+    by_code = {f.code: f for f in bo.fields}
+    for child in bo.fields:
+        parent = by_code.get(child.cascade_parent or "")
+        if parent is None or child.type_new != "dic" or child.choice_groups:
+            continue
+        if parent.type_new != "dic" or not parent.choices:
+            continue
+        overlap = [c for c in child.choices if c in parent.choices]
+        if len(overlap) < 2 or len(overlap) < len(parent.choices) * 0.6:
+            continue
+        kept = [c for c in child.choices if c not in overlap]
+        if not kept:
+            continue
+        child.choices = kept
+        notices.append(
+            f"字段「{child.name}」的候选值里混进了父字段「{parent.name}」的值"
+            f"（{'、'.join(overlap[:4])}），已去掉；父值只在父字段里出现")
+
+
+def _placeholder_column_name(field_name: str) -> str:
+    """表格字段没拿到列定义时，给占位列取个像样的名字。
+
+    「付款计划表」→「付款计划」、「预算明细」→「预算」，去掉的只是
+    表明「这是个表」的后缀；实在啥都不剩就用「内容」。
+    """
+    name = re.sub(r"(表格|明细表|明细|子表|表)$", "", (field_name or "").strip()).strip()
+    return (name or "内容")[:40]
 
 
 def _clean_columns(raw) -> list[TableColumn]:
@@ -574,6 +662,10 @@ def _clean_columns(raw) -> list[TableColumn]:
     宽容两种写法：`["名称","数量"]`（只给列名）与
     `[{"name":"名称","type":"varchar","precision":0,"values":[...]}]`。
     认不出的类型降级成字符串，不整条丢弃——丢列比降级更难发现。
+
+    键名也要宽容：模型经常把 name/type 写成中文（列名/类型）或照数据库叫
+    fieldName/dataType。只认英文键时整批列都会被丢掉，字段随后被判成
+    「没给列」——2026-11-17 用户遇到的「表格变大文本」就有这一支。
     """
     if not isinstance(raw, list):
         return []
@@ -583,17 +675,20 @@ def _clean_columns(raw) -> list[TableColumn]:
             item = {"name": item}
         if not isinstance(item, dict):
             continue
-        name = str(item.get("name") or item.get("label") or "").strip()[:40]
+        name = str(_first_of(item, "name", "label", "列名", "列名称", "字段名",
+                            "fieldName", "title") or "").strip()[:40]
         if not name:
             continue
         typ = fieldtypes.resolve_column_type(
-            item.get("type") or item.get("inputType") or "varchar")
+            _first_of(item, "type", "inputType", "列类型", "类型", "数据类型", "dataType")
+            or "varchar")
         if typ not in TABLE_COLUMN_TYPES:
             typ = "varchar"
-        values = [str(x).strip()[:40] for x in (item.get("values") or item.get("choices") or [])
+        values = [str(x).strip()[:40]
+                  for x in (_first_of(item, "values", "choices", "选项值") or [])
                   if str(x).strip()]
         prec = item.get("precision")
-        width = item.get("widthPercent")
+        width = _first_of(item, "widthPercent", "宽度", "宽度%")
         out.append(TableColumn(
             name=name,
             input_type=typ,
@@ -605,45 +700,171 @@ def _clean_columns(raw) -> list[TableColumn]:
     return out
 
 
-def _clean_values(raw) -> tuple[list[str], dict[str, list[str]]]:
-    """AI 给的候选值 → (扁平列表, 分组映射)。
+def _first_of(item: dict, *keys):
+    """按顺序取第一个有值的键（AI 输出键名不稳定的兜底）。"""
+    for k in keys:
+        v = item.get(k)
+        if v not in (None, ""):
+            return v
+    return None
 
-    扁平列表是所有候选值（供 choices 用）；分组映射只在条目里出现
-    「父：子1、子2」时才非空，给 choice_groups 用。
 
-    放在 build_bo 里统一收口：以前只有走「读 Excel」那条路才 _attach_values，
-    「一句话生成」和直接调 build_bo 的场景候选值会被丢掉。
-    分组解析与 reader._parse_choice_groups 同一套规则（用户 2026-11-12 的
-    「品种分类随品种类别联动」就是靠它保住分组）。
+_NA_RE = re.compile(r"(?<![A-Za-z])N/A(?![A-Za-z])", re.I)
+
+
+def _split_choice_text(text: str) -> list[str]:
+    """候选值分隔（、，,；;|/），但保留 N/A 这个完整取值。"""
+    marks: list[str] = []
+
+    def _hold(m):
+        marks.append(m.group(0))
+        return f"\x00{len(marks) - 1}\x00"
+
+    held = _NA_RE.sub(_hold, text or "")
+    return [re.sub(r"\x00(\d+)\x00", lambda m: marks[int(m.group(1))], x)
+            for x in re.split(r"[,，;；|、/]+", held) if x.strip()]
+
+
+def _clean_values(raw, cascade: bool = False, groups_hint=None
+                  ) -> tuple[list[str], dict[str, list[str]], dict[str, list[str]]]:
+    """AI 给的候选值 → (扁平列表, 分组映射, 试探性分组)。
+
+    级联子字段（``cascade=True``）的分组写法「父值：子1、子2」：
+      - 扁平列表**只放子项**，父值属于父字段，不能混进子字段的字典
+        （2026-11-17 用户反馈：导入后子字段下拉里出现了「中药」「化药」这种父级值）；
+      - 分组映射保留 父→子，供 gen_bo 写 dependValues。
+
+    非级联字段不做分组：`L1：创新药` 这种带冒号的单条取值原样保留。
+    但是「每一行都是 父：子、子」的形态会另存成试探性分组（第三个返回值），
+    等所有字段建完后由 :func:`infer_cascade_parents` 用兄弟字段的候选值反查：
+    父值全都出现在某个字段里 → 认定父子关系，子字段候选值改成子项。
+    显式给了 ``choiceGroups`` 时以它为准（结构最可靠）。
     """
-    if not isinstance(raw, list):
-        return [], {}
-    out: list[str] = []
     groups: dict[str, list[str]] = {}
+    tentative: dict[str, list[str]] = {}
+    out: list[str] = []
 
     def _add(x: str) -> None:
         x = x.strip()[:40]
         if x and x not in out:
             out.append(x)
 
+    def _kids(text: str) -> list[str]:
+        return [k.strip()[:40] for k in _split_choice_text(str(text)) if k.strip()]
+
+    # ① 模型直接给了 choiceGroups：扁平列表 = 所有子项
+    if isinstance(groups_hint, dict) and groups_hint:
+        for parent, kids in groups_hint.items():
+            p = str(parent).strip()[:40]
+            if not p or not isinstance(kids, (list, tuple)):
+                continue
+            bucket = groups.setdefault(p, [])
+            for k in kids:
+                k = str(k).strip()[:40]
+                if k:
+                    _add(k)
+                    if k not in bucket:
+                        bucket.append(k)
+        return (out[:50] if len(out) >= 2 else []), groups, {}
+
+    if not isinstance(raw, list):
+        return [], {}, {}
     for v in raw:
         s = str(v).strip()
         if not s:
             continue
         m = re.match(r"^([^：:>＞]{1,20})[：:>＞](.+)$", s)
         if m:
-            parent, kids = m.group(1).strip(), m.group(2)
-            _add(parent)
-            bucket = groups.setdefault(parent, [])
-            for k in re.split(r"[,，;；|、/]+", kids):
-                k = k.strip()[:40]
-                if k:
-                    _add(k)
+            parent, kids = m.group(1).strip(), _kids(m.group(2))
+            if kids:
+                bucket = tentative.setdefault(parent, [])
+                for k in kids:
                     if k not in bucket:
                         bucket.append(k)
+        # 「L1：创新药、改良型新药项目」这种是**带代码前缀的单个取值**，
+        # 不是「父：子」分组（父值 L1 不可能是另一个下拉的候选值）。
+        code_prefix = bool(re.fullmatch(r"[A-Za-z]{1,3}\d{1,2}", m.group(1).strip())) if m else False
+        if cascade and m and kids and not code_prefix:
+            for k in kids:
+                _add(k)
             continue
         _add(s)
-    return (out[:30] if len(out) >= 2 else []), groups
+    return (out[:50] if len(out) >= 2 else []), groups, tentative
+
+
+_CASCADE_SENTENCE = re.compile(
+    r"(?:当|若|如果)\s*"
+    r"(?P<parent>[^，。；：:\s]{1,12}?)\s*(?:字段)?\s*(?:的)?\s*"
+    r"(?:下拉)?(?:候选值|选项值|选项|取值)?\s*(?:为|是|选择|选)\s*"
+    r"[“\"']?(?P<pval>[^”\"',，。；：:\s]{1,20}?)[”\"']?\s*(?:时|，|,)\s*[，,]?\s*"
+    r"(?P<child>[^，。；：:\s]{1,12}?)\s*(?:字段)?\s*(?:的)?\s*"
+    r"(?:下拉值|下拉|候选值|选项值|选项|取值)\s*(?:为|是|包括|有|[:：])\s*"
+    r"(?P<kids>[^。；]+)")
+
+
+def parse_conditional_cascades(text: str) -> list[dict]:
+    """从自然语言里抽「当 A 为 X 时，B 的下拉值为 Y」。
+
+    返回 [{parent, parentValue, child, kids}]。文档/PDF 里常见的写法：
+      当「品种类别」为中药时，品种分类的下拉值为 OTC、RX、双跨、其他
+    """
+    out: list[dict] = []
+    for m in _CASCADE_SENTENCE.finditer(str(text or "")):
+        kids = [k.strip() for k in _split_choice_text(m.group("kids"))
+                if k.strip()]
+        if not kids:
+            continue
+        def _clean(x: str) -> str:
+            return x.strip().strip("「」“”\"'")
+
+        out.append({
+            "parent": _clean(m.group("parent")),
+            "parentValue": _clean(m.group("pval")),
+            "child": _clean(m.group("child")),
+            "kids": [_clean(k) for k in kids],
+        })
+    return out
+
+
+def _apply_text_cascades(spec: dict, hints: list[dict]) -> None:
+    """把句子级联盖到 spec：填 cascadeParent + 合并 choiceGroups。"""
+    if not hints:
+        return
+    raw_fields = spec.get("fields") or (spec.get("bo") or {}).get("fields") or []
+    by_name = {}
+    for raw in raw_fields:
+        if isinstance(raw, dict):
+            nm = str(raw.get("name") or "").strip()
+            if nm:
+                by_name.setdefault(nm, raw)
+    for h in hints:
+        parent = by_name.get(h["parent"])
+        child = by_name.get(h["child"])
+        if parent is None or child is None:
+            continue
+        if not child.get("cascadeParent") and parent.get("code"):
+            child["cascadeParent"] = parent["code"]
+        groups = child.get("choiceGroups")
+        if not isinstance(groups, dict):
+            groups = {}
+        bucket = groups.setdefault(h["parentValue"], [])
+        for k in h["kids"]:
+            if k not in bucket:
+                bucket.append(k)
+        child["choiceGroups"] = groups
+
+
+def _cascade_prompt(hints: list[dict]) -> str:
+    if not hints:
+        return ""
+    lines = ["", "===== 已识别的级联关系（必须照此生成）====="]
+    for h in hints:
+        lines.append(
+            f"- 「{h['parent']}」= {h['parentValue']} → 「{h['child']}」只能是："
+            f"{'、'.join(h['kids'])}")
+    lines.append("子字段的 cascadeParent 填父字段编码；候选值只写子项，"
+                 "父值不要写进子字段的 values。")
+    return "\n".join(lines)
 
 
 def generate(description: str, cfg: dict, known_objects: list | None = None,
@@ -668,9 +889,10 @@ def generate(description: str, cfg: dict, known_objects: list | None = None,
     # 的教训）。按描述长度估预算：中文描述里字段数大约是顿号/分句数的量级，
     # 每 8 个字 ≈ 一个字段 × 240 token，再带 2000 推理余量。
     _budget = max(8000, min(32000, 4000 + len(description) // 8 * 240))
+    hints = parse_conditional_cascades(description)
     text, used = llm.chat_any(_fast_cfg(cfg), [
         {"role": "system", "content": SYSTEM + extra},
-        {"role": "user", "content": description.strip()},
+        {"role": "user", "content": description.strip() + _cascade_prompt(hints)},
     ], timeout=timeout, max_tokens=_budget)
 
     try:
@@ -678,7 +900,10 @@ def generate(description: str, cfg: dict, known_objects: list | None = None,
     except json.JSONDecodeError as exc:
         raise llm.LlmError(f"模型输出不是合法 JSON（{exc.msg}），请再试一次或把需求写简单些") from exc
 
+    _apply_text_cascades(spec, hints)
     bo, notices = build_bo(spec, pool, description=description)
+    # 模型往往只写「这是表格」不给列，按需求再问一次把列补出来
+    notices.extend(fill_table_columns(bo, cfg, description=description))
     return {
         "ok": True,
         "bo": bo,
@@ -775,6 +1000,138 @@ def fix_cascade_groups(bo: Bo, cfg: dict, timeout: int = 60) -> list[str]:
                 f"⚠ 字段「{f.name}」的级联分组补齐失败，候选值按平铺生成，"
                 f"导入后级联不会过滤；可在预览里手动改成「父值：子1、子2」分组写法")
     return notices
+
+
+# ---------------------------------------------------------------- 表格列补齐
+#
+# 用户 2026-11-17：「表格里面的列名你不会帮我添加吗」。模型（尤其快模型）
+# 经常只回 `type: table` 而不写 columns。让用户自己到「2.1_表格列」一行行补
+# 不合理——正确的做法是就着子表名 + 需求原文**再问一次模型要列**：
+# 输入小、输出小，一次能把好几张子表一起补完。和 fix_cascade_groups 同一套路。
+
+_COLUMN_SYSTEM = """你是 PowerProject 系统的表单设计师。用户给了几张「表格」字段（子表），\
+你要按业务常识和需求原文，把每张子表的列设计出来。
+
+只输出 JSON，不要解释，形如：
+{"里程碑计划表": [{"name": "阶段", "type": "varchar"},
+                 {"name": "计划开始时间", "type": "date"},
+                 {"name": "金额", "type": "number", "precision": 2},
+                 {"name": "是否里程碑", "type": "dic", "values": ["是", "否"]}]}
+
+规则：
+1. 列名用中文，2~8 个字，是业务上真实会填的列；不要写「内容」「列1」这种占位。
+2. type 只能是 varchar / number / date / datetime / dic / user / department。
+3. dic 列必须给 values（候选值数组）；number 列可给 precision（小数位）。
+4. 每张子表 4~8 列，按填写顺序排列；不要加「序号」「操作」「合计」这类系统列。
+5. 需求原文里明确提到的列，一个都不能漏；没提到的，按该子表的业务含义补齐。
+6. 键用上面给你的子表名称原文。"""
+
+
+def fill_table_columns(bo: Bo, cfg: dict, description: str = "",
+                       hint: str = "", timeout: int = 60) -> list[str]:
+    """表格字段缺列时，单独问一次模型把列补出来。
+
+    只处理「一列都没有」或「只有占位列」的表格字段。已经有真实列的
+    （模型自己给了 / Excel 里填了 / 反解出来的）一律不动。
+    失败不影响出包——占位列兜着，只是提示用户手工补。
+    """
+    notices: list[str] = []
+    targets = [f for f in bo.fields
+               if f.type_new == "table" and _columns_missing(f)]
+    if not targets:
+        return notices
+    if not _pick_provider(cfg):
+        notices.append(
+            "表格列没自动生成（还没配大模型）："
+            + "、".join(f.name for f in targets)
+            + " 请在「2.1_表格列」补列")
+        return notices
+
+    lines = [f"业务对象：{bo.name}（{bo.code}）", "需要设计列的表格字段："]
+    for f in targets:
+        lines.append(f"- {f.name}（编码 {f.code}）")
+    ctx = (description or "").strip()
+    if hint:
+        ctx = (ctx + "\n" + hint).strip()
+    if ctx:
+        lines.append("\n需求原文：\n" + ctx[:2000])
+    lines.append('\n请只输出 JSON：{"子表名称": [{"name": "列名", "type": "varchar"}, ...]}')
+    prompt = "\n".join(lines)
+
+    data = None
+    # deepseek-flash 是推理模型，max_tokens 给小了 content 会是空串
+    # （同 fix_cascade_groups 的实测），所以给 4000 + 空返回重试。
+    for _ in range(3):
+        try:
+            text, _used = llm.chat_any(_fast_cfg(cfg), [
+                {"role": "system", "content": _COLUMN_SYSTEM},
+                {"role": "user", "content": prompt},
+            ], timeout=timeout, max_tokens=4000)
+        except Exception:
+            break
+        if not (text or "").strip():
+            continue
+        try:
+            data = _extract_json(text)
+            break
+        except json.JSONDecodeError:
+            continue
+    if data is None:
+        notices.append(
+            "⚠ 表格列没自动生成（模型没返回可用结果）："
+            + "、".join(f.name for f in targets) + " 请到「2.1_表格列」补列")
+        return notices
+
+    done: list[str] = []
+    missed: list[str] = []
+    for f in targets:
+        got = _clean_columns(_columns_from_reply(data, f))
+        if got:
+            f.table_columns = got          # 占位列整批换掉
+            head = "、".join(c.name for c in got[:5]) + ("…" if len(got) > 5 else "")
+            done.append(f"「{f.name}」{len(got)} 列（{head}）")
+        else:
+            missed.append(f.name)
+    if done:
+        notices.append("表格列已按需求自动生成：" + "；".join(done)
+                       + "——导入前可在预览里核对/增删")
+    if missed:
+        notices.append("⚠ 这些表格还是没生成出列：" + "、".join(missed)
+                       + "，请到「2.1_表格列」补")
+    return notices
+
+
+def _columns_missing(field) -> bool:
+    """这个表格字段是否还等着补列（无列，或只有一列占位）。"""
+    cols = list(getattr(field, "table_columns", None) or [])
+    return not cols or all(getattr(c, "placeholder", False) for c in cols)
+
+
+def _columns_from_reply(data, field) -> list:
+    """从模型回复里挑出这个子表的列。
+
+    键可能是字段名、字段编码，也可能整包成 {"tables":[{name, columns}]}。
+    """
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+    for key in (field.name, field.code):
+        got = data.get(key)
+        if isinstance(got, list):
+            return got
+        if isinstance(got, dict) and isinstance(got.get("columns"), list):
+            return got["columns"]
+    for box in ("tables", "fields", "columns"):
+        seq = data.get(box)
+        if not isinstance(seq, list):
+            continue
+        for item in seq:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("name") or item.get("code") or "") in (field.name, field.code):
+                return item.get("columns") or []
+    return []
 
 
 def type_choices() -> list[dict]:
