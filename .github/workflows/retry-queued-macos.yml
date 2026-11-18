@@ -41,6 +41,10 @@ jobs:
               return;
             }
             core.info(`第 ${attempt} 次尝试：重跑 job ${jobIds.join(', ')}`);
-            await github.rest.actions.reRunJobsForWorkflowRun({
-              owner, repo, run_id: runId, job_ids: jobIds
-            });
+            // 逐个重跑：Octokit 的方法名是 reRunJobForWorkflowRun（单数 Job），
+            // 按 job_id 重跑。曾误写成 reRunJobsForWorkflowRun（不存在）导致看守自身失败。
+            for (const jobId of jobIds) {
+              await github.rest.actions.reRunJobForWorkflowRun({
+                owner, repo, job_id: jobId
+              });
+            }
