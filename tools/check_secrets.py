@@ -71,6 +71,7 @@ def tracked(root: Path | None = None) -> list[str]:
 
 def main() -> int:
     files = tracked()
+    print(f"密钥扫描：待检查 {len(files)} 个文件", flush=True)
     hits: list[tuple[str, int, str, str]] = []
     for name in files:
         if name in SKIP_FILES:

@@ -35,14 +35,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 挡住误提交的明文 Key（2026-11-18 排查过一次“以为推到 GitHub”）
-      - name: 密钥扫描
-        run: python tools/check_secrets.py
-
       - uses: actions/setup-python@v5
         with:
           # 与本机已验证的打包环境一致（本机 .venv: Python 3.13.12）
           python-version: "3.13"
+
+      # 挡住误提交的明文 Key（2026-11-18 排查过一次“以为推到 GitHub”）
+      # 必须放在 setup-python 之后：Windows runner 系统 python 是商店存根，
+      # 直接 python xxx 会 exit 1，扫不出东西也让整个 job 红掉（2026-11-19）。
+      - name: 密钥扫描
+        run: python tools/check_secrets.py
 
       - name: 安装依赖
         run: |
