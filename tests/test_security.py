@@ -226,3 +226,51 @@ def _():
             assert check_secrets.main() == 0
         finally:
             check_secrets.tracked = orig
+
+
+@case("SEC14", "security", "密钥扫描在中文路径与非 UTF-8 locale 下不误报", "P0",
+      ["git ls-files -z 显式 UTF-8 解码，Windows cp1252 也不炸",
+       "降级分支不扫 .git/out/dist，中文文件名照样进扫描列表"])
+def _():
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    from tools import check_secrets
+
+    d = Path(tempfile.mkdtemp())
+    # 模拟仓库里的中文路径：UTF-8 字节里含 cp1252 未定义的 0x81
+    cn = "docs/项目关联字段-说明.md"
+    (d / cn).parent.mkdir(parents=True, exist_ok=True)
+    (d / cn).write_text("只是说明文档，没有密钥\n", encoding="utf-8")
+
+    # git 正常：check_output 返回 NUL 分隔的 bytes，按 UTF-8 解出中文路径
+    # 真实仓库里这条命令会带出全仓库文件；此处只验证解码逻辑本身：
+    # 直接喂一段含中文的 NUL 分隔 bytes，等价于 Windows runner 上的输出
+    encoded = ("docs/原生包样本/b\0" + cn + "\0").encode("utf-8")
+    assert any(b > 127 for b in encoded)  # 确实有非 ASCII 字节
+    orig = check_secrets.subprocess.check_output
+    check_secrets.subprocess.check_output = lambda *a, **k: encoded
+    try:
+        got = check_secrets.tracked()
+        assert cn in got, got
+    finally:
+        check_secrets.subprocess.check_output = orig
+
+    # git 不可用：降级扫描不得把 .git/、out/、dist/ 里的东西算进来
+    (d / ".git").mkdir(exist_ok=True)
+    (d / ".git" / "config").write_text('token = "sk-' + "z" * 32 + '"\n', encoding="utf-8")
+    (d / "out").mkdir(exist_ok=True)
+    (d / "out" / "模型参数.json").write_text('{"api_key": "' + "y" * 32 + '"}', encoding="utf-8")
+    (d / "dist").mkdir(exist_ok=True)
+    (d / "dist" / "bundle.js").write_text("// built\n", encoding="utf-8")
+    check_secrets.subprocess.check_output = lambda *a, **k: (_ for _ in ()).throw(OSError("no git"))
+    try:
+        got = check_secrets.tracked(root=d)
+        # root 是绝对路径，降级分支返回的是绝对路径，按文件名判断
+        assert any(p.endswith(cn) for p in got), got
+        assert not any(
+            f"{sep}{name}{sep}" in p or p.startswith(f"{name}{sep}")
+            for p in got for sep in ("/", "\\") for name in (".git", "out", "dist")
+        ), got
+    finally:
+        check_secrets.subprocess.check_output = orig

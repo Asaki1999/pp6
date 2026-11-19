@@ -7,6 +7,16 @@
 2026-11-18 排查过一次：用户以为模型 Key 被推到 GitHub，最后确认
 仓库和历史里都没有，明文只在本机被 `.gitignore` 排除的 `out/模型参数-*.json` 里。
 
+为什么要显式 UTF-8
+------------------
+2026-11-19 Windows CI 在「密钥扫描」步骤 exit 1，macOS 同一步却通过。
+根因是本脚本早期版本用 `subprocess.check_output(..., text=True)`：
+text 模式按系统 locale 解码，Windows runner 默认 cp1252，
+而仓库里有 46 个中文路径，UTF-8 字节里的 0x81 在 cp1252 未定义，
+于是抛 UnicodeDecodeError → 掉进 except 的降级分支 → 扫描整个工作区，
+把 `.git/`、本机产物等本不该扫的东西也算进来，造成误报。
+现在用 `-z` 取 NUL 分隔的 bytes，自己按 UTF-8 解码，与 locale 无关。
+
 用法：
     python tools/check_secrets.py
 """
@@ -29,18 +39,40 @@ PATTERNS = {
 ALLOW = ("sk-test", "sk-xxx", "sk-your", "sk-...", "sk-***")
 SKIP_FILES = {"tools/check_secrets.py"}
 
+# 降级扫描（git 不可用）时的目录黑名单：产物、缓存、git 元数据都不该进仓库，
+# 拿它们做扫描只会误报。2026-11-19 的 Windows CI 误报正是降级分支扫到这类目录。
+SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", "out", "dist", "build"}
+# 降级扫描只看可能藏密钥的文本源码；二进制/字体/图片不读
+SCAN_SUFFIXES = {".py", ".js", ".ts", ".jsx", ".tsx", ".json", ".yaml", ".yml",
+                 ".toml", ".ini", ".cfg", ".env", ".md", ".txt", ".xml", ".sh",
+                 ".bat", ".ps1", ".html", ".css"}
 
-def tracked() -> list[str]:
+
+def tracked(root: Path | None = None) -> list[str]:
+    """列出待扫描文件：优先 git ls-files，git 不可用时降级扫源码目录。
+
+    `-z` 让 git 用 NUL 分隔路径，既避开空格/换行，也不做引号转义；
+    返回的是 bytes，自己按 UTF-8 解码，不受 runner locale 影响。
+    """
     try:
-        out = subprocess.check_output(["git", "ls-files"], text=True)
+        raw = subprocess.check_output(["git", "ls-files", "-z"])
+        return [x for x in raw.decode("utf-8", errors="replace").split("\0") if x]
     except Exception:
-        return [str(p) for p in Path(".").rglob("*") if p.is_file()]
-    return [x for x in out.splitlines() if x]
+        pass
+    # 降级：只扫源码后缀，且跳过产物/缓存/git 元数据目录
+    base = root if root is not None else Path(".")
+    return [
+        str(p) for p in base.rglob("*")
+        if p.is_file()
+        and not (set(p.parts) & SKIP_DIRS)
+        and p.suffix.lower() in SCAN_SUFFIXES
+    ]
 
 
 def main() -> int:
+    files = tracked()
     hits: list[tuple[str, int, str, str]] = []
-    for name in tracked():
+    for name in files:
         if name in SKIP_FILES:
             continue
         p = Path(name)
@@ -60,7 +92,7 @@ def main() -> int:
                 line = text[:m.start()].count("\n") + 1
                 hits.append((name, line, label, masked))
     if not hits:
-        print(f"✓ 密钥扫描通过（{len(tracked())} 个跟踪文件）")
+        print(f"✓ 密钥扫描通过（{len(files)} 个文件）")
         return 0
     print("✗ 发现疑似明文密钥：", file=sys.stderr)
     for name, line, label, masked in hits[:20]:
