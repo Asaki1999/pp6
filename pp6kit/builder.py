@@ -369,25 +369,28 @@ def ensure_project_links(project: Project) -> list[str]:
     notices: list[str] = []
     if not any(getattr(bo, "project_link", False) for bo in project.bos):
         return notices
-    snap = projlink.load_snapshot()
+    target = getattr(project, "link_target", None) or projlink.project_target()
+    snap = projlink.load_snapshot(target=target)
     pool = snap.pool()
     for bo in project.bos:
         if not getattr(bo, "project_link", False):
             continue
         if getattr(bo, "skip_link_field", False):
-            # 决策里明确说「只对齐、不补『所属项目』」——尊重它，别硬塞字段
+            # 决策里明确说「只对齐、不补」（所属项目）链接字段——尊重它，别硬塞字段
             continue
-        plan = projlink.plan_link_field(bo, pool)
+        plan = projlink.plan_link_field(bo, pool, target)
         if plan.action == "reject_self":
-            raise ValueError(f"业务对象 {bo.code}: 对象 project 不能关联自己（自关联不允许）")
+            raise ValueError(f"业务对象 {bo.code}: 对象 {target.code} 不能关联自己"
+                             f"（自关联不允许）")
         if plan.action == "conflict":
             raise ValueError(
-                f"业务对象 {bo.code}: 物理列 {projlink.LINK_FIELD_NAME} 已被字段 "
-                f"{plan.code}（{plan.name}）占用且未关联项目，请先改字段名或改用现有字段")
+                f"业务对象 {bo.code}: 物理列 {target.link_field} 已被字段 "
+                f"{plan.code}（{plan.name}）占用且未关联{target.name}，"
+                f"请先改字段名或改用现有字段")
         if plan.action == "reuse":
             # 复用的字段也要有表单控件：已有 object 字段（如 proj）说明用户
             # 已经在用这个关联，但表单里可能压根没放控件——不补的话在建/详情
-            # 表单里选不到项目（复验时抓到的坑）。
+            # 表单里选不到目标对象（复验时抓到的坑）。
             existing = bo.field_by_code(plan.code)
             notices.append(f"业务对象 {bo.code}: {plan.note}")
             if existing is not None:
@@ -396,19 +399,19 @@ def ensure_project_links(project: Project) -> list[str]:
                         f"业务对象 {bo.code}: 已给复用的链接字段 {existing.code}"
                         f"（{existing.name}）补上表单下拉控件")
             continue
-        if bo.field_by_code(projlink.LINK_CODE) is not None:
+        if bo.field_by_code(target.link_code) is not None:
             # 幂等：parse 阶段已经补过一次（同一份 Excel 先预览再出包），
             # 这次只补缺失的表单控件，不再追加第二个同编码字段
-            _ensure_link_control(project, bo, bo.field_by_code(projlink.LINK_CODE))
+            _ensure_link_control(project, bo, bo.field_by_code(target.link_code))
             continue
         sn = max([f.sn for f in bo.fields], default=0) + 1
-        field = projlink.link_field(name=plan.name, sn=sn)
+        field = projlink.link_field(name=plan.name, sn=sn, target=target)
         field.bo_code = bo.code
         bo.fields.append(field)
         notices.append(
-            f"业务对象 {bo.code}: 关联项目，已补链接字段 {field.code}"
+            f"业务对象 {bo.code}: 关联{target.name}，已补链接字段 {field.code}"
             f"（{field.resolved_field_name()} varchar 64，sn={sn}）")
-        # 已有表单也要看得见「所属项目」下拉，否则用户在新建/详情表单里选不到项目
+        # 已有表单也要看得见链接下拉，否则用户在新建/详情表单里选不到目标对象
         _ensure_link_control(project, bo, field)
     # 幂等：把 select 控件的取值来源接到 project_value（命中系统已有则复用）
     notices.extend(blueprint._ensure_value_sources(project))

@@ -15,7 +15,9 @@ from __future__ import annotations
 import contextlib
 import io
 import re
+import tempfile
 import zipfile
+from pathlib import Path
 
 from pp6kit import patch, projlink
 from pp6kit import spec as S
@@ -645,7 +647,7 @@ def _():
             try:
                 call()
             except ValueError as exc:
-                assert "对齐已有字段需要覆盖模式" in str(exc), str(exc)
+                assert "对齐已有字段需要" in str(exc), str(exc)
             else:
                 raise AssertionError("mode=skip + 对齐行应当报错")
 
@@ -972,7 +974,7 @@ def _():
                 try:
                     call()
                 except ValueError as exc:
-                    assert "对齐已有字段需要覆盖模式" in str(exc), str(exc)
+                    assert "对齐已有字段需要" in str(exc), str(exc)
                 else:
                     raise AssertionError(f"{name}：命中已有字段的对齐行在 skip 模式下应当报错")
 
@@ -1099,11 +1101,21 @@ def _():
 # 这 7 条守的是：开关能落模型、能撤销 Excel 的「是」、三条出包路径都带上它。
 
 
-def pl_header(objects: dict) -> str:
-    """造一份 X-Project-Link 决策头（前端 projLinkHeader() 的等价物）。"""
+def pl_header(objects: dict, target: dict | None = None,
+              snapshot: str = "") -> str:
+    """造一份 X-Project-Link 决策头（前端 projLinkHeader() 的等价物）。
+
+    target / snapshot 是「关联其它业务对象」才用的：target 选对象，
+    snapshot 指向上传包解析出来的字段池（没连库那条路）。
+    """
     import json as _json
 
-    return _json.dumps({"version": 1, "objects": objects}, ensure_ascii=False)
+    payload: dict = {"version": 1, "objects": objects}
+    if target:
+        payload["target"] = target
+    if snapshot:
+        payload["snapshot"] = snapshot
+    return _json.dumps(payload, ensure_ascii=False)
 
 
 def _linked_data(关联项目: str = "") -> dict:
@@ -1407,6 +1419,18 @@ def _post(port: int, path: str, body: bytes, headers: dict) -> tuple[int, dict, 
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
     try:
         conn.request("POST", path, body=body, headers=headers)
+        resp = conn.getresponse()
+        return resp.status, {k.lower(): v for k, v in resp.getheaders()}, resp.read()
+    finally:
+        conn.close()
+
+
+def _get(port: int, path: str) -> tuple[int, dict, bytes]:
+    import http.client
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
+    try:
+        conn.request("GET", path)
         resp = conn.getresponse()
         return resp.status, {k.lower(): v for k, v in resp.getheaders()}, resp.read()
     finally:
@@ -2506,3 +2530,389 @@ def _():
     assert not bad.fields, "立项包（project_create）被当成项目字段池了"
     assert bad.source == "unavailable"
     assert any("pp_project" in w for w in bad.warnings), bad.warnings
+
+
+# ---------------------------------------------------------------- PL67–PL71
+# 2026-11-18 用户需求：不再只支持「关联项目」，可以关联**任意其它业务对象**。
+#   - 用户手输对象名称；
+#   - 连了库 → 按 iform_bo_def.name_ **精确**比对，顺带读表说明；
+#   - 没连库 → 让用户上传该对象的 zip，按包里的对象解析；
+#   - 之后的字段对齐/改名/引用重写/补链接字段与「关联项目」完全同一条路。
+# 这五条守的是：链接字段命名、精确匹配不猜、上传包认对象、端到端产物、自关联拦。
+
+@contextlib.contextmanager
+def _home_in(tmp: Path):
+    """把 ~ 指到临时目录再跑：目标快照缓存不许读写真实用户目录，
+    否则「本机跑过一次核对」会让用例结果不一样（用的是别的对象的缓存）。"""
+    import os
+
+    old = os.environ.get("HOME")
+    os.environ["HOME"] = str(tmp)
+    projlink.clear_cache()
+    try:
+        yield tmp
+    finally:
+        if old is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = old
+        projlink.clear_cache()
+
+
+@contextlib.contextmanager
+def _fake_db(rows: list[tuple], suggestions: list[tuple] | None = None):
+    """把 projlink 的库访问换成只会返回预置行的假连接（不联网、不写库）。
+
+    rows 的行序 = find_targets 的 SELECT 列表：
+        (id_, code_, name_, desc_, tbl_, comment_, is_main_)
+    只认三种语句：名称/编码精确匹配、表说明兜底、LIKE 提示。别的语句一律空。
+    """
+    state = {"sql": "", "args": ()}
+
+    class _Cur:
+        def __init__(self):
+            self._rows = []
+
+        def execute(self, sql, args=()):
+            state["sql"], state["args"] = sql, tuple(args or ())
+            if "LIKE" in sql:
+                self._rows = list(suggestions or [])
+            elif "d.name_ = %s" in sql or "d.code_ = %s" in sql:
+                want = set(state["args"])
+                self._rows = [r for r in rows if r[2] in want or r[1] in want]
+            elif "COALESCE(t.comment_, '') = %s" in sql:
+                want = set(state["args"])
+                self._rows = [r for r in rows if r[5] in want or r[3] in want]
+            else:
+                self._rows = []
+
+        def fetchall(self):
+            return list(self._rows)
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def close(self):
+            pass
+
+    old_cfg, old_conn = projlink.db_config, projlink._db_connect
+    projlink.db_config = lambda: {"host": "fake", "user": "fake", "database": "fake"}
+    projlink._db_connect = lambda cfg=None: _Conn()
+    try:
+        yield state
+    finally:
+        projlink.db_config, projlink._db_connect = old_cfg, old_conn
+
+
+@case("PL67", "projlink", "关联其它业务对象：链接字段按目标对象命名（projectId 只属于项目）",
+      "P0", ["contract → contractId / contract_id_ / 关联合同",
+             "多词驼峰 saleOrder → saleOrderId / sale_order_id_",
+             "大写开头也小写首字母", "项目仍走固定范式（不被库里的别名带偏）",
+             "TargetObject ↔ 快照 project 元信息可互转"])
+def _():
+    proj = projlink.target_for("project", "项目", "pp_project")
+    assert (proj.link_code, proj.link_field, proj.link_label) == (
+        "projectId", "project_id_", "所属项目"), proj
+    assert proj.is_project
+
+    con = projlink.target_for("contract", "合同", "pp_contract", "合同信息", "name")
+    assert con.link_code == "contractId", con
+    assert con.link_field == "contract_id_", con
+    assert con.link_label == "关联合同", con
+    assert con.table_label == "合同信息" and con.matched_by == "name", con
+    assert not con.is_project
+
+    so = projlink.target_for("saleOrder", "销售订单", "pp_sale_order")
+    assert (so.link_code, so.link_field, so.link_label) == (
+        "saleOrderId", "sale_order_id_", "关联销售订单"), so
+    # 编码首字母大写（线上有些对象就是大驼峰）→ 链接编码照样小写开头
+    up = projlink.target_for("Contract")
+    assert up.link_code == "contractId", up
+    assert up.name == "Contract", up          # 没给名称就用编码顶上，不编一个中文名
+
+    # to_dict 给前端，target_of 从快照 project 元信息还原（上传 token 走这条）
+    d = con.to_dict()
+    assert (d["linkCode"], d["linkField"], d["linkLabel"], d["isProject"]) == (
+        "contractId", "contract_id_", "关联合同", False), d
+    snap = projlink.Snapshot(project=con.to_dict(), fields=[], source="target_db")
+    back = projlink.target_of(snap)
+    assert (back.code, back.name, back.link_code) == (
+        "contract", "合同", "contractId"), back
+    # 项目快照还原回来仍然是项目范式（不按 code 推 projectId 以外的东西）
+    assert projlink.target_of(projlink.Snapshot(project={"code": "project"})).is_project
+
+
+@case("PL68", "projlink", "手输名称核对：库里按名称**精确**比对，读表说明；查不到只给提示不猜",
+      "P0", ["iform_bo_def.name_ = 精确匹配", "「合同台账」不会被当成「合同」",
+             "名称查不到时用 iform_bo_table.comment_ / desc_ 兜底",
+             "没精确命中 → resolved=false + suggestions，绝不自动选中"])
+def _():
+    rows = [
+        ("11", "contract", "合同", "合同主数据", "pp_contract", "合同信息", "Y"),
+        ("12", "contract_ledger", "合同台账", "", "pp_contract_ledger", "", "N"),
+        ("13", "purchase", "采购申请", "采购申请单", "pp_purchase", "", "N"),
+    ]
+    with _fake_db(rows, suggestions=[("contract_ledger", "合同台账", "")]) as st:
+        # ① 名称精确命中：带出 code / 物理表 / 表说明
+        got = projlink.find_targets(name="合同")
+        assert [m["code"] for m in got] == ["contract"], got
+        assert got[0]["tbl"] == "pp_contract", got[0]
+        assert got[0]["tableLabel"] == "合同信息", got[0]
+        assert got[0]["matchedBy"] == "name", got[0]
+        assert "d.name_ = %s" in st["sql"] and "LIMIT" in st["sql"], st["sql"]
+
+        # ② 只给「合同台」（「合同台账」的前半截）→ 0 命中：
+        #    绝不做包含/前缀匹配，对齐错对象比不对齐更糟
+        assert projlink.find_targets(name="合同台") == [], \
+            "「合同台」命中了「合同台账」：这是前缀/包含匹配，会静默对齐到别的对象"
+        assert projlink.find_targets(name="客户") == []
+
+        # ③ 名称查不到时按「表说明 / 对象说明」兜底（用户可能记的是表标签）
+        label = projlink.find_targets(name="合同信息")
+        assert [m["code"] for m in label] == ["contract"], label
+        assert label[0]["matchedBy"] == "tableLabel", label[0]
+
+        # ④ 界面接口：没精确命中 → resolved=false + 相近提示，target=None
+        st_status = projlink.target_status("合同台")
+        assert st_status["ok"] and st_status["resolved"] is False, st_status
+        assert st_status["target"] is None, st_status
+        assert [s["code"] for s in st_status.get("suggestions") or []] == [
+            "contract_ledger"], st_status.get("suggestions")
+
+    # ⑤ 没连库：find_targets 直接空（不抛异常、更不去连），界面要能区分
+    #   「没连库」和「连了但没这个对象」——两条提示不一样
+    old_cfg = projlink.db_config
+    projlink.db_config = lambda: {}
+    try:
+        assert projlink.db_is_configured() is False, "隔离失败：本机还配着库"
+        assert projlink.find_targets(name="合同") == [], "没连库还在查库"
+        empty = projlink.target_status("合同")
+        assert empty["dbConfigured"] is False and empty["resolved"] is False, empty
+        assert empty.get("suggestions") == [], empty.get("suggestions")
+    finally:
+        projlink.db_config = old_cfg
+
+
+@case("PL69", "projlink", "没连库时上传该对象的 zip：按名称/编码认对象，认不到就把包内对象列出来",
+      "P0", ["resolve_target_from_zip 按名称精确找",
+             "找不到报错并列出包内对象（不让用户猜）",
+             "save_snapshot_upload 落 token 快照，token 能反解出目标",
+             "token 与输入的名称/编码不一致要拦住"])
+def _():
+    pkg = build(sheets([
+        field("contract", "合同名称", "字符串"),
+        field("contract", "合同编号", "字符串"),
+        field("contract", "合同金额", "数字"),
+    ], bos=[bo_row()]))
+    with tempfile.TemporaryDirectory() as td:
+        with _home_in(Path(td)):
+            # ① 按名称认
+            tgt = projlink.resolve_target_from_zip(pkg, "合同")
+            assert (tgt.code, tgt.tbl) == ("contract", "pp_contract"), tgt
+            assert tgt.link_code == "contractId" and tgt.link_label == "关联合同", tgt
+            assert tgt.matched_by == "name", tgt
+            # ② 按编码认（用户从系统里拿到的是编码）
+            assert projlink.resolve_target_from_zip(pkg, "", "contract").matched_by == "code"
+            # ③ 认不到：报错里必须有包内对象清单
+            try:
+                projlink.resolve_target_from_zip(pkg, "客户")
+            except ValueError as exc:
+                assert "客户" in str(exc) and "合同（contract）" in str(exc), str(exc)
+            else:
+                raise AssertionError("包内没有「客户」却认出来了")
+
+            # ④ 落快照：token 20 位十六进制，能反解回目标对象
+            res = projlink.save_snapshot_upload(pkg, tgt)
+            token = res["token"]
+            assert re.match(r"^[0-9a-f]{20}$", token), token
+            assert res["target"]["code"] == "contract", res["target"]
+            assert res["fieldCount"] >= 3, res
+            back = projlink.resolve_target("", "", token)
+            assert (back.code, back.name) == ("contract", "合同"), back
+            # ⑤ token 与用户输入不一致 → 报错，不能拿另一份快照去对齐
+            for bad in ({"name": "客户"}, {"name": "合同", "code": "customer"}):
+                try:
+                    projlink.resolve_target(bad.get("name", ""), bad.get("code", ""), token)
+                except ValueError as exc:
+                    assert "不一致" in str(exc), str(exc)
+                else:
+                    raise AssertionError(f"{bad} 与快照不一致却通过了")
+
+
+@case("PL70", "projlink", "端到端：采购申请 + 关联「合同」（没连库走上传包）→ 补 contractId 出包",
+      "P0", ["linkTarget 报出合同", "字段池来自上传的合同包",
+             "合同编号对齐到合同 code", "合同名称不自动覆盖（防抄快照）",
+             "zip 注释是「合同对齐」不是「项目对齐」"])
+def _():
+    pkg = build(sheets([
+        field("contract", "合同名称", "字符串", 长度=200, **{"字段编码": "name"}),
+        field("contract", "合同编号", "字符串", 长度=64, 建索引="是",
+              **{"字段编码": "code"}),
+        field("contract", "合同金额", "数字", 精度=2, **{"字段编码": "amount"}),
+    ], bos=[bo_row()]))
+    data = sheets([
+        field("purchase", "申请名称", "字符串"),
+        field("purchase", "合同编号", "字符串"),
+        field("purchase", "合同名称", "字符串"),
+    ], bos=[bo_row("采购申请", "purchase", 物理表名="pp_purchase")])
+    with tempfile.TemporaryDirectory() as td:
+        with _home_in(Path(td)):
+            tgt = projlink.resolve_target_from_zip(pkg, "合同")
+            token = projlink.save_snapshot_upload(pkg, tgt)["token"]
+            header = pl_header({"purchase": {"linked": True}},
+                               target={"name": "合同", "code": "contract"},
+                               snapshot=token)
+            res = webui.parse_excel(xlsx(data), header)
+            body = webui.build_zip(xlsx(data), projlink_header=header)[0]
+
+        # ① 目标对象原样回给前端（前端页签/文案都按它切换）
+        got = res["linkTarget"]
+        assert got["code"] == "contract" and got["name"] == "合同", got
+        assert got["linkCode"] == "contractId" and got["linkLabel"] == "关联合同", got
+        assert got["isProject"] is False, got
+
+        # ② 补出来的是 contractId（不是 projectId）
+        codes = {f["code"] for f in res["objects"][0]["fields"]}
+        assert "contractId" in codes, codes
+        assert "projectId" not in codes, f"对象还是被补了 projectId：{codes}"
+        link = next(f for f in res["objects"][0]["fields"] if f["code"] == "contractId")
+        assert link["objectType"] == "contract" and link["name"] == "关联合同", link
+
+        # ③ 字段池来自合同包：合同编号 → code（E0 同名同族，自动）
+        vm = res["projectAlign"]
+        assert vm["target"]["code"] == "contract", vm["target"]
+        rel = {r["fieldName"]: r for r in vm["items"][0]["relations"]}
+        assert rel["合同编号"]["status"] == "auto", rel["合同编号"]
+        assert rel["合同编号"]["target"]["code"] == "code", rel["合同编号"]
+        # ④ 「合同名称」只是抄了合同名称的文本列，不许自动改成对象主标题
+        assert rel["合同名称"]["status"] != "auto", \
+            f"「合同名称」被自动覆盖了（会把对象主标题改掉）：{rel['合同名称']}"
+        assert rel["合同名称"]["status"] == "pending", rel["合同名称"]
+
+        # ⑤ 产物：attribute 是 object/contract，注释小节按目标命名
+        row = attr_row(pick(body, "bo/"), "contractId")
+        assert row["dataTypeNew"] == "object", row
+        assert row["objectType"] == "contract", row
+        assert row["fieldName"] == "contract_id_", row
+        assert row["length"] == "64", row
+        note = comment_of(body)
+        assert "合同对齐:" in note, note[-600:]
+        assert "项目对齐:" not in note, note[-600:]
+        assert "关联合同" in note, note[-600:]
+
+
+@case("PL71", "projlink", "自关联与占用：目标对象本身 / 链接编码或物理列被占 → 明确报错，不硬塞字段",
+      "P0", ["目标=contract 的包里的 contract 对象 → 不能关联自己",
+             "contractId 被别的字段占 → conflict 报错",
+             "contract_id_ 被占 → conflict 报错"])
+def _():
+    con = projlink.target_for("contract", "合同", "pp_contract", "合同信息")
+
+    # ① 对象就是合同本身 → 自关联，分析/出包都要拦住
+    same = sheets([field("contract", "合同名称", "字符串")], bos=[bo_row()])
+    proj, errors = project_of(same)
+    assert not errors, errors
+    plan = projlink.plan_link_field(proj.bo("contract"), [], con)
+    assert plan.action == "reject_self", plan
+    assert "不能关联自己" in plan.note, plan.note
+    try:
+        projlink.apply(proj, {"version": 1, "objects": {"contract": {"linked": True}}},
+                       snap=projlink.Snapshot(project=con.to_dict(), fields=[],
+                                              source="target_db"), target=con)
+    except ValueError as exc:
+        assert "不能关联自己" in str(exc), str(exc)
+    else:
+        raise AssertionError("对象关联自己却通过了")
+
+    # ② 编码被别的字段占着（不是指向合同）→ 冲突，不许再补一个同编码字段
+    taken = sheets([field("purchase", "合同编号", "字符串", **{"字段编码": "contractId"})],
+                   bos=[bo_row("采购申请", "purchase", 物理表名="pp_purchase")])
+    proj2, _ = project_of(taken)
+    plan2 = projlink.plan_link_field(proj2.bo("purchase"), [], con)
+    assert plan2.action == "conflict", plan2
+    assert "contractId" in plan2.note, plan2.note
+    assert "未关联合同" in plan2.note, plan2.note
+
+    # ③ 物理列被占（编码不同、列名撞）→ 同样冲突
+    col_taken = sheets([field("purchase", "合同编号", "字符串",
+                              **{"字段编码": "htId", "物理列名": "contract_id_"})],
+                       bos=[bo_row("采购申请", "purchase", 物理表名="pp_purchase")])
+    proj3, _ = project_of(col_taken)
+    plan3 = projlink.plan_link_field(proj3.bo("purchase"), [], con)
+    assert plan3.action == "conflict", plan3
+    assert "contract_id_" in plan3.note, plan3.note
+
+
+@case("PL72", "projlink", "路由：GET/POST /api/link-target（剥 query、不 404、坏请求 400 且能看懂）",
+      "P0", ["GET 没连库 → dbConfigured=false", "POST 上传 zip → token + 目标",
+             "拿 token 去 /api/parse 真能补 contractId", "空 body 400 不 500"])
+def _():
+    import json as _json
+    import threading
+    import urllib.parse
+
+    pkg = build(sheets([
+        field("contract", "合同编号", "字符串", **{"字段编码": "code"}),
+        field("contract", "合同名称", "字符串", **{"字段编码": "name"}),
+    ], bos=[bo_row()]))
+    data = sheets([field("purchase", "申请名称", "字符串")],
+                  bos=[bo_row("采购申请", "purchase", 物理表名="pp_purchase")])
+
+    httpd, port = webui.make_server(18983)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    old_cfg = projlink.db_config
+    try:
+        with tempfile.TemporaryDirectory() as td, _home_in(Path(td)):
+            # ① GET：没连库要说清「没连库」，不能只回一个 resolved=false 让人猜
+            projlink.db_config = lambda: {}
+            q = urllib.parse.quote("合同")
+            status, _h, body = _get(port, f"/api/link-target?name={q}")
+            got = _json.loads(body)
+            assert status == 200, (status, body[:200])
+            assert got["ok"] is True and got["dbConfigured"] is False, got
+            assert got["resolved"] is False and got["target"] is None, got
+
+            # ② POST：上传目标对象 zip（带中文名称 query，路由要剥 query 再比对）
+            status, _h, body = _post(
+                port, f"/api/link-target?name={q}", pkg,
+                {"Content-Type": "application/octet-stream"})
+            up = _json.loads(body)
+            assert status == 200, (status, body[:300])
+            assert up["ok"] is True, up
+            assert re.match(r"^[0-9a-f]{20}$", up["token"]), up
+            assert up["target"]["code"] == "contract", up["target"]
+            assert up["target"]["linkCode"] == "contractId", up["target"]
+
+            # ③ 拿这个 token 走 /api/parse：预览里就该有 contractId，不用再查库
+            header = _json.dumps({
+                "version": 1, "snapshot": up["token"],
+                "target": {"name": "合同", "code": "contract"},
+                "objects": {"purchase": {"linked": True}},
+            }, ensure_ascii=False).encode("utf-8")
+            status, _h, body = _post(port, "/api/parse", xlsx(data),
+                                     {"Content-Type": "application/octet-stream",
+                                      "X-Project-Link": header})
+            res = _json.loads(body)
+            assert status == 200 and res.get("ok"), (status, body[:300])
+            assert res["linkTarget"]["code"] == "contract", res["linkTarget"]
+            assert "contractId" in {f["code"] for f in res["objects"][0]["fields"]}, \
+                [f["code"] for f in res["objects"][0]["fields"]]
+            assert res["projectAlign"]["target"]["code"] == "contract", \
+                res["projectAlign"]["target"]
+
+            # ④ 空 body / 认不到对象：400 + 能照做的提示（不是 500，也不是静默 200）
+            status, _h, body = _post(port, f"/api/link-target?name={q}", b"",
+                                     {"Content-Type": "application/octet-stream"})
+            bad = _json.loads(body)
+            assert status == 400 and bad["ok"] is False, (status, body[:200])
+            assert bad["error"], bad
+            q2 = urllib.parse.quote("客户")
+            status, _h, body = _post(port, f"/api/link-target?name={q2}", pkg,
+                                     {"Content-Type": "application/octet-stream"})
+            miss = _json.loads(body)
+            assert status == 400 and miss["ok"] is False, (status, body[:300])
+            assert "客户" in miss["error"], miss["error"]
+    finally:
+        projlink.db_config = old_cfg
+        httpd.shutdown()

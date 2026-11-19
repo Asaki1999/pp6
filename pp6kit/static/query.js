@@ -20,10 +20,12 @@ async function qApi(path, body) {
 }
 
 /* ---------------- 功能开关 ---------------- */
-/* 存量包修订：先隐藏入口（按钮、快捷键 3、关于页文案一起收起来）。
-   patch.js、#mode-patch 面板、/api/patch/* 后端全部保留，代码没动；
-   恢复：把 patch 改回 true，其他都不用改。 */
-window.PP6_FEATURES = { patch: false };
+/* 存量包修订：2026-11-18 起对外开放。
+   开放口径：导入已有业务对象后，**已有字段只能改名称**、可以新增字段；
+   类型/选项/长度等定义不给改，也不删字段（后端 patch.py 同样硬拦）。
+   关闭时：把 patch 改回 false，按钮、快捷键 3、关于页文案一起收起来，
+   patch.js、#mode-patch 面板、/api/patch/* 后端都保留。 */
+window.PP6_FEATURES = { patch: true, inspect: false };
 const PATCH_ON = () => window.PP6_FEATURES.patch !== false;
 
 /* 按开关调整导航：隐藏的工作区按钮 / 快捷键说明 / 关于页文案 */
@@ -31,6 +33,11 @@ function applyFeatureFlags() {
   const on = PATCH_ON();
   const btn = document.querySelector('.mode[data-feature="patch"]');
   if (btn) btn.hidden = !on;
+  /* 反解入口：2026-11-18 下线（与存量包修订的「加字段」重叠，且重造包会丢未建模内容）。
+     inspectZip()、反解摘要卡片、/api/inspect、X-Package-Summary 全部保留没删；
+     恢复：把上面 inspect 改成 true，HTML 里那个 hidden 会被这里覆盖掉。 */
+  const inspectBtn = document.getElementById("btnInspect");
+  if (inspectBtn) inspectBtn.hidden = window.PP6_FEATURES.inspect !== true;
   const keys = document.getElementById("keysModes");
   if (keys) {
     keys.innerHTML = on
@@ -52,7 +59,7 @@ applyFeatureFlags();
 /* 上下文栏 / 状态栏跟着工作区走，避免「切了页面但标题还是上一个」 */
 const MODE_META = {
   import:   { title: "普通模式", desc: "普通业务对象 + 表单/列表/数据集，出一个同步包（导入走 发布管理 › 导入同步包）" },
-  patch:    { title: "存量包修订", desc: "在原 zip 的 bo/*.xml 上打最小补丁，除新增字段外字节原样保留；对齐系统管理 › 发布管理 › 导入同步包，变更区非必经；反解会重造包，补字段请用这里" },
+  patch:    { title: "存量包修订", desc: "导入已有业务对象：加字段、改字段名称；类型/选项等定义不改，也不删字段。除改动处字节原样保留，导入走 发布管理 › 导入同步包" },
   query:    { title: "数据查询",   desc: "用一句话查数据库，生成 SQL 并查看结果" },
   workflow: { title: "流程模式",   desc: "和普通模式同一套操作；固定 开始→审核→通过，导出 zip 时额外给一份流程 XML" },
   settings: { title: "系统设置",   desc: "大模型、数据库连接与本地配置" },

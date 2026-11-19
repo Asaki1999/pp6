@@ -71,6 +71,8 @@ const CTRL_LABEL = {
  */
 const PL_PRE_KEY = "pp6.plPre";
 const PL_PRE_PATCH_KEY = "pp6.plPrePatch";
+const PL_TARGET_KEY = "pp6.plTargetKind";
+const PL_TARGET_NAME_KEY = "pp6.plTargetName";
 const PL_PRE_MODES = ["off", "on"];
 const PL_PRE_PATCH_MODES = ["off", "on", "keep"];
 const PL_PRE_LABEL = { off: "不关联", on: "关联" };
@@ -96,6 +98,29 @@ function savePref(key, value) {
   } catch (err) {
     /* 存不了不影响本次会话，只是下次打开回到默认档 */
   }
+}
+
+/* 当前关联目标的显示名（项目 / 手输的业务对象名称）。 */
+function plTargetLabel() {
+  if (state.plTarget && state.plTarget.name) return state.plTarget.name;
+  if (state.plTargetKind === "other" && state.plTargetName) return state.plTargetName;
+  return "项目";
+}
+
+/* 链接字段的默认显示名：项目 = 所属项目；其它对象 = 关联合同（后端同口径）。 */
+function plTargetLinkLabel() {
+  if (state.plTarget && state.plTarget.linkLabel) return state.plTarget.linkLabel;
+  if (state.plTargetKind === "other") return `关联${plTargetLabel()}`;
+  return "所属项目";
+}
+
+/* 目标是否已经核对通过（项目永远算通过）。
+ * 连库解析出来的对象 matchedBy 不是 zip，不依赖 token；上传 zip 的必须有 token。 */
+function plTargetReady() {
+  if (state.plTargetKind === "project") return true;
+  if (!state.plTarget) return false;
+  if (state.plSnapshotToken) return true;
+  return !!state.plTarget.matchedBy && state.plTarget.matchedBy !== "zip";
 }
 
 const state = {
@@ -129,10 +154,21 @@ const state = {
   // 只发勾上的（true）——没勾的就是「保留我方」，服务端不需要知道它们。
   // 换文件时清空（字段编码换了一批），拨开关重解析时保留。
   plAlign: {},
-  // 用户上传的项目 zip 快照 token（没连库时用它代替 pp_project 的字段池）。
+  // 用户上传的目标对象 zip 快照 token（没连库、或库里查不到时用它代替字段池）。
   // 每次 parse/build 都随 X-Project-Link.snapshot 发回服务端。
   plSnapshotToken: "",
   plSnapshotStatus: null,
+  // 「关联到哪个业务对象」：project（默认） / other（手输名称）。
+  // other 时必须先把名称核对通过（库里精确匹配或上传 zip），否则不解析 Excel。
+  plTargetKind: readPref(PL_TARGET_KEY, ["project", "other"], "project"),
+  plTargetName: (() => {
+    try {
+      return (window.localStorage && window.localStorage.getItem(PL_TARGET_NAME_KEY)) || "";
+    } catch (err) { return ""; }
+  })(),
+  // 核对通过后的目标对象：{code,name,tbl,tableLabel,linkCode,linkField,linkLabel,...}
+  plTarget: null,
+  plTargetError: "",
 };
 
 /* 桌面壳（pywebview）会注入 window.pywebview.api，同时置 PP6_DESKTOP 供自检读取 */
@@ -244,6 +280,14 @@ async function handleFile(file, { fromAi = false, quiet = false } = {}) {
     toast("请选择 .xlsx 文件");
     return;
   }
+  // 关联目标是「其他业务对象」时，名称没核对通过就不解析这份 Excel：
+  // 否则会按默认的 project 去对齐字段，用户导入后才发现全错，代价比一次拦截大。
+  if (state.plPre === "on" && !(await ensureLinkTarget())) {
+    toast(state.plTargetKind === "other"
+      ? "关联对象还没核对通过，文件未解析：请先在第 1 步输入名称并点「核对」"
+      : "项目字段池还没准备好，文件未解析：请先导入项目 zip", 9000);
+    return;
+  }
   state.file = file;
   setLoading(true);
   try {
@@ -342,6 +386,31 @@ async function handleFile(file, { fromAi = false, quiet = false } = {}) {
   }
 }
 
+/* 空白模板：14 个页签、表头与每列说明齐全，一条数据都不预填。
+   这个入口以前随「入口改为自然语言生成 / 文件生成」一起下线了，2026-11-18 加回来——
+   想手填的人不该只能从「载入示例」起步（示例会直接进预览，本地拿不到文件）。
+   与「载入示例」的分工：这个只下载，不解析、不进预览。 */
+async function downloadBlankTemplate() {
+  try {
+    const res = await fetch("/api/template?blank=1");
+    if (!res.ok) throw new Error(`请求失败 ${res.status}`);
+    const blob = await res.blob();
+    const name = decodeURIComponent(res.headers.get("X-Filename") || "PP6-填写模板-空白.xlsx");
+    if (await saveBlob(blob, name)) {
+      // 已打包的 App 里 Python 代码是打包那一刻的：旧后端会忽略 ?blank=1，
+      // 返回带示例的模板（文件名里没有「空白」）。别在这儿骗用户说下到的是空白表。
+      if (name.includes("空白")) {
+        toast("已下载空白模板，填好再拖回这里：" + name, 7000);
+      } else {
+        toast("当前 App 后端还是旧版：这次下载的是带「采购申请」示例的模板；"
+              + "空白模板要重新打包后才生效（网页版 ./bin/pp6 ui 已经是新的）", 10000);
+      }
+    }
+  } catch (err) {
+    toast("下载模板失败：" + err.message, 6000);
+  }
+}
+
 async function loadDemo() {
   state.entryMode = "excel";
   try {
@@ -379,15 +448,15 @@ function plPreDecisions(objects) {
   return Object.keys(map).length ? map : null;
 }
 
-/* AI 预览的「下一步」按钮：只有选了关联项目才需要核对字段；
-   不关联时就是生成预览，别让用户以为还要做项目字段确认。 */
+/* AI 预览的「下一步」按钮：只有选了关联才需要核对字段；
+   不关联时就是生成预览，别让用户以为还要做字段确认。 */
 function syncAiNextLabel() {
   const btn = $("#btnToPack");
   if (!btn) return;
   const check = state.plPre === "on";
   btn.textContent = check ? "下一步：核对字段 →" : "下一步：生成预览 →";
   btn.title = check
-    ? "先核对项目字段；确认后才下载导入包"
+    ? `先核对${plTargetLabel()}字段；确认后才下载导入包`
     : "生成预览后，在结果页下载导入包";
 }
 
@@ -400,6 +469,211 @@ function syncPlPreInputs() {
   $$('input[name="plPrePatch"]').forEach((el) => {
     el.checked = el.value === state.plPrePatch;
   });
+  syncPlTargetUI();
+}
+
+/* 第 1 步的「关联目标」控件同步：只在选了「关联」时展开；选其他对象时
+ * 露出手输名称 + 核对按钮。状态、提示、已核对 chip 全部从 state 投影。 */
+function syncPlTargetUI() {
+  const box = $("#plTargetBox");
+  if (box) box.hidden = state.plPre !== "on";
+  // 页签标题跟着目标走：关联合同时还写「项目对齐」会让人以为对错了对象
+  const tabTitle = $("#plTabTitle");
+  if (tabTitle) tabTitle.textContent = `${plTargetLabel()}对齐`;
+  const kind = $("#plTargetKind");
+  if (kind) kind.value = state.plTargetKind;
+  const other = $("#plTargetOther");
+  if (other) other.hidden = state.plTargetKind !== "other";
+  const input = $("#plTargetName");
+  if (input && input.value !== state.plTargetName) input.value = state.plTargetName;
+
+  const info = $("#plTargetInfo");
+  if (info) {
+    const t = state.plTarget;
+    if (state.plTargetKind === "other" && t && plTargetReady()) {
+      const bits = [t.tbl, t.tableLabel].filter(Boolean);
+      info.hidden = false;
+      info.classList.remove("bad");
+      info.textContent = `已核对：${t.name}（${t.code}${bits.length ? " · " + bits.join(" · ") : ""}）`;
+    } else if (state.plTargetKind === "other" && state.plTargetError) {
+      info.hidden = false;
+      info.classList.add("bad");
+      info.textContent = state.plTargetError;
+    } else {
+      info.hidden = true;
+      info.textContent = "";
+    }
+  }
+
+  const hint = $("#plPreHint");
+  if (hint) {
+    hint.textContent = state.plPre !== "on"
+      ? "导入前先选：关联=这份 Excel 里的对象都关联到所选业务对象；不关联=一个都不关联。"
+      : (state.plTargetKind === "project"
+        ? "关联=这份 Excel 里的对象都关联项目；项目字段池优先用库里快照，没连库时上传项目 zip。"
+        : `关联=这份 Excel 里的对象都关联「${plTargetLabel()}」；先输名称点「核对」，没连库时上传该对象的 zip。`);
+  }
+  syncAiNextLabel();
+}
+
+function plTargetReadyText(t) {
+  const bits = [t.tbl, t.tableLabel].filter(Boolean);
+  return `${t.name}（${t.code}${bits.length ? " · " + bits.join(" · ") : ""}）`;
+}
+
+/* 把核对通过的目标对象落进 state。token 只有上传 zip 的路径才有；
+ * DB 解析出来的对象用库快照（parse/build 时服务端会再核对一次）。 */
+function applyPlTarget(t, token = "") {
+  state.plTarget = t || null;
+  state.plTargetError = "";
+  if (t && t.name) {
+    state.plTargetName = t.name;
+    savePref(PL_TARGET_NAME_KEY, state.plTargetName);
+  }
+  state.plSnapshotToken = token || "";
+  state.plSnapshotStatus = null;
+  syncPlTargetUI();
+}
+
+/* 核对用户在「其他业务对象」里输入的名称。
+ *   连库 → GET /api/link-target 精确比对（读 iform_bo_def.name_ / 表说明）
+ *   没连库 → 弹 zip 上传，POST /api/link-target 解析同名对象
+ * 返回 true 表示目标可用；false 时 state.plTargetError 已写明原因。 */
+async function resolvePlTarget({ silent = false } = {}) {
+  if (state.plTargetKind === "project") {
+    state.plTarget = null;
+    state.plTargetError = "";
+    state.plSnapshotToken = "";
+    state.plSnapshotStatus = null;
+    syncPlTargetUI();
+    return true;
+  }
+  const name = String(state.plTargetName || "").trim();
+  if (!name) {
+    state.plTargetError = "请先输入业务对象名称";
+    syncPlTargetUI();
+    if (!silent) toast("请先输入业务对象名称，再点「核对」");
+    return false;
+  }
+  state.plTargetError = "";
+  syncPlTargetUI();
+  let d = null;
+  try {
+    const res = await fetch(`/api/link-target?name=${encodeURIComponent(name)}`,
+                            { cache: "no-store" });
+    d = await res.json().catch(() => ({}));
+    if (!res.ok || d.ok === false) throw new Error(d.error || `核对失败 ${res.status}`);
+  } catch (err) {
+    state.plTargetError = `核对失败：${err.message}`;
+    syncPlTargetUI();
+    if (!silent) toast(state.plTargetError, 8000);
+    return false;
+  }
+
+  if (d.resolved && d.target) {
+    applyPlTarget(d.target);
+    if (!silent) {
+      toast(`已核对「${plTargetReadyText(d.target)}」：${d.fieldCount || 0} 个字段`, 6000);
+    }
+    if (state.file && state.data) await reparseForTarget();
+    return true;
+  }
+
+  if (!d.dbConfigured) {
+    if (silent) return false;
+    return await askProjectZip(d, name);
+  }
+
+  // 连了库但名称没有精确命中：按用户口径不自动改用 zip，直接把候选报出来，
+  // 让用户改名或改用对象编码；绝不猜一个相似对象去对齐。
+  const sugg = (d.suggestions || [])
+    .map((x) => `${x.name}（${x.code}）`).join("、");
+  state.plTargetError = `数据库里没有名称完全一致的「${name}」`
+    + (sugg ? `；相近的有：${sugg}` : "");
+  syncPlTargetUI();
+  if (!silent) toast(state.plTargetError, 9000);
+  return false;
+}
+
+/* 关联目标的统一入口：项目走原有的项目快照（库/随包/上传 zip），
+ * 其他对象走名称核对。任何一条路径没准备好都不允许继续解析。 */
+async function ensureLinkTarget() {
+  if (state.plTargetKind === "project") return await ensureProjectSnapshot();
+  if (plTargetReady()) return true;
+  return await resolvePlTarget();
+}
+
+/* 目标对象变了而 Excel 已经解析过：带新决策头重新解析，保证预览=产物。 */
+async function reparseForTarget() {
+  if (!state.file || !state.data) return;
+  if (!Object.keys(state.plLinked || {}).length) {
+    state.plLinked = plPreDecisions(state.data.objects) || {};
+  }
+  const header = projLinkHeader();
+  if (!header) return;
+  setLoading(true, `正在按「${plTargetLabel()}」重新分析…`);
+  try {
+    const buf = await state.file.arrayBuffer();
+    const res = await fetch("/api/parse", {
+      method: "POST", body: buf,
+      headers: { "Content-Type": "application/octet-stream", "X-Project-Link": header },
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "解析失败");
+    state.data = data;
+    state.plModalShown = false;
+    resetParseArtifacts();
+    renderAll();
+    goStep(3);
+    toast(`已按「${plTargetLabel()}」重新分析`, 5000);
+  } catch (err) {
+    toast(`按「${plTargetLabel()}」重新分析失败：${err.message}`, 8000);
+  } finally {
+    setLoading(false);
+  }
+}
+
+/* 绑定「项目 / 其他业务对象」选择、名称输入与核对按钮。 */
+function bindPlTarget() {
+  const kind = $("#plTargetKind");
+  const input = $("#plTargetName");
+  const check = $("#plTargetCheck");
+  if (kind) {
+    kind.onchange = async () => {
+      state.plTargetKind = kind.value === "other" ? "other" : "project";
+      savePref(PL_TARGET_KEY, state.plTargetKind);
+      state.plTarget = null;
+      state.plTargetError = "";
+      state.plSnapshotToken = "";
+      state.plSnapshotStatus = null;
+      syncPlTargetUI();
+      if (state.plTargetKind === "other") {
+        if (input) input.focus();
+      } else if (state.file && state.data) {
+        await reparseForTarget();
+      }
+    };
+  }
+  if (input) {
+    input.oninput = () => {
+      state.plTargetName = input.value;
+      savePref(PL_TARGET_NAME_KEY, state.plTargetName);
+      if (state.plTarget && state.plTarget.name !== input.value.trim()) {
+        state.plTarget = null;
+        state.plSnapshotToken = "";
+      }
+      state.plTargetError = "";
+      syncPlTargetUI();
+    };
+    input.onkeydown = (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        resolvePlTarget();
+      }
+    };
+  }
+  if (check) check.onclick = () => resolvePlTarget();
+  syncPlTargetUI();
 }
 
 /* 绑定单选控件：点了就写 state + localStorage，并把另一个菜单的同名字段刷成一致。
@@ -415,11 +689,13 @@ function bindPlPre() {
       el.onchange = async () => {
         if (!el.checked) return;
         const value = g.allowed.indexOf(el.value) >= 0 ? el.value : g.fallback;
-        // 选「关联项目」时先确认有没有项目字段池：没连库就弹「导入项目 zip」。
+        // 选「关联」时先确认目标对象可用：项目看项目字段池，其他对象看名称核对。
         // 用户取消 → 保持原来那档，不要留下一个勾着但没法对齐的状态。
-        if (value === "on" && !(await ensureProjectSnapshot())) {
+        if (value === "on" && !(await ensureLinkTarget())) {
           syncPlPreInputs();
-          toast("未导入项目包，已保持原来的关联项目设置");
+          toast(state.plTargetKind === "other"
+            ? "关联对象还没核对通过，已保持原来的设置"
+            : "未导入项目包，已保持原来的关联项目设置");
           return;
         }
         if (g.patch) state.plPrePatch = value;
@@ -665,11 +941,14 @@ function renderPlEntry() {
   }
 
   if (txt) {
+    const head = state.plTargetKind === "other"
+      ? `业务对象关联「${plTargetLabel()}」` : "业务对象关联项目";
+    const link = plTargetLinkLabel();
     txt.textContent = on === 0
-      ? `业务对象关联项目：${total} 个对象都未关联 —— 勾选后自动补「所属项目」，同名同族字段按项目定义覆盖，相近字段会逐条问你`
+      ? `${head}：${total} 个对象都未关联 —— 勾选后自动补「${link}」，同名同族字段按${plTargetLabel()}定义覆盖，相近字段会逐条问你`
       : off === 0
-        ? `业务对象关联项目：${total} 个对象已全部关联`
-        : `业务对象关联项目：已关联 ${on} 个，还有 ${off} 个未关联`;
+        ? `${head}：${total} 个对象已全部关联`
+        : `${head}：已关联 ${on} 个，还有 ${off} 个未关联`;
   }
   if (go) {
     go.textContent = off > 0 ? "去设置" : "查看";
@@ -724,11 +1003,32 @@ function closeProjectZipModal(ok) {
   if (done) done(!!ok);
 }
 
-function askProjectZip(st) {
+function askProjectZip(st, targetName = "") {
   return new Promise((resolve) => {
     const mask = $("#psMask");
     if (!mask) { resolve(true); return; }   // 老页面没有这个弹窗：不拦主流程
     psPending = resolve;
+    const isProject = state.plTargetKind === "project";
+    const name = String(targetName || "").trim() || plTargetLabel();
+    const target = isProject ? "项目" : `「${name}」`;
+    const title = $("#psTitle");
+    const sub = $("#psSub");
+    const lead1 = $("#psLead1");
+    const lead2 = $("#psLead2");
+    const pick = $("#psPick");
+    if (title) title.textContent = isProject ? "导入项目 zip" : `导入${target}业务对象 zip`;
+    if (sub) sub.textContent = `关联${target}需要该对象的字段定义`;
+    if (lead1) {
+      lead1.innerHTML = (st && st.dbConfigured)
+        ? `数据库里没有名称完全一致的${esc(target)}业务对象，读不到它的字段定义。`
+        : `当前 App 没有配置数据库连接，读不到系统里${esc(target)}对象的字段。`;
+    }
+    if (lead2) {
+      lead2.innerHTML = isProject
+        ? `请导入一份<strong>项目 zip</strong>（包里 <code>bo/*.xml</code> 有 <code>code="project"</code> 的同步包；项目对象、项目列表/表单导出的包都可以）。导入后用它和你的 Excel 对比，找出同名与相似字段。`
+        : `请导入一份<strong>${esc(target)}对象 zip</strong>（包里 <code>bo/*.xml</code> 的名称与「${esc(name)}」完全一致）。导入后用它和你的 Excel 对比，找出同名与相似字段。`;
+    }
+    if (pick) pick.textContent = isProject ? "选择项目 zip" : `选择${target} zip`;
     const status = $("#psStatus");
     if (status) {
       status.classList.remove("bad");
@@ -738,11 +1038,10 @@ function askProjectZip(st) {
       if (st && st.generatedAt) bits.push(String(st.generatedAt).slice(0, 10));
       status.textContent = bits.length
         ? bits.join(" · ")
-        : "当前没有可用的项目字段快照。";
+        : (isProject ? "当前没有可用的项目字段快照。" : `当前没有「${name}」的字段快照。`);
     }
     mask.hidden = false;
     document.body.classList.add("pl-modal-open");
-    const pick = $("#psPick");
     if (pick) pick.focus();
   });
 }
@@ -780,16 +1079,29 @@ function bindProjectSnapshotModal() {
       if (btn) { btn.disabled = true; btn.textContent = "正在读取…"; }
       try {
         const buf = await f.arrayBuffer();
-        const res = await fetch("/api/project-snapshot", {
+        const isProject = state.plTargetKind === "project";
+        const name = String(state.plTargetName || "").trim();
+        const url = isProject
+          ? "/api/project-snapshot"
+          : `/api/link-target?name=${encodeURIComponent(name)}`;
+        const res = await fetch(url, {
           method: "POST", body: buf,
           headers: { "Content-Type": "application/octet-stream" },
         });
         const d = await res.json().catch(() => ({}));
         if (!res.ok || d.ok === false) throw new Error(d.error || `读取失败 ${res.status}`);
-        state.plSnapshotToken = d.token || "";
-        state.plSnapshotStatus = null;    // 下次重新问服务端
-        closeProjectZipModal(true);
-        toast(`已读取项目对象：${d.fieldCount || 0} 个字段，将用它对比字段`, 6000);
+        if (isProject) {
+          state.plSnapshotToken = d.token || "";
+          state.plSnapshotStatus = null;    // 下次重新问服务端
+          closeProjectZipModal(true);
+          toast(`已读取项目对象：${d.fieldCount || 0} 个字段，将用它对比字段`, 6000);
+        } else {
+          if (!d.target) throw new Error("服务端没有返回目标对象信息");
+          applyPlTarget(d.target, d.token || "");
+          closeProjectZipModal(true);
+          toast(`已读取「${d.target.name}」：${d.fieldCount || 0} 个字段，将用它对比字段`, 6000);
+          if (state.file && state.data) await reparseForTarget();
+        }
       } catch (err) {
         const status = $("#psStatus");
         if (status) {
@@ -797,7 +1109,11 @@ function bindProjectSnapshotModal() {
           status.classList.add("bad");
         }
       } finally {
-        if (btn) { btn.disabled = false; btn.textContent = "选择项目 zip"; }
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = state.plTargetKind === "project"
+            ? "选择项目 zip" : `选择「${plTargetLabel()}」zip`;
+        }
       }
     };
   }
@@ -845,7 +1161,12 @@ function projLinkHeader() {
   });
   if (!Object.keys(objects).length) return null;
   const payload = { version: 1, objects };
-  // 没连库时用的是用户上传的项目包快照；预览和出包都认这个 token
+  // 关联「其他业务对象」：把目标名称/编码带上；服务端会重新在库里核对，
+  // 不信任前端给的目标（与字段决策同一个原则）。
+  if (state.plTargetKind === "other" && state.plTarget && state.plTarget.code) {
+    payload.target = { name: state.plTarget.name, code: state.plTarget.code };
+  }
+  // 没连库时用的是用户上传的对象包快照；预览和出包都认这个 token
   if (state.plSnapshotToken) payload.snapshot = state.plSnapshotToken;
   return JSON.stringify(payload);
 }
@@ -894,7 +1215,7 @@ async function applyProjectPicks() {
     if (wasDeferred) goStep(3);           // 弹窗确认完才真正出预览/结果页
     toast(n
       ? `已按勾选覆盖 ${n} 个字段，预览与下载的包都已更新`
-      : "已保留全部字段：没有勾选任何「按项目覆盖」", 6000);
+      : `已保留全部字段：没有勾选任何「按${plTargetLabel()}覆盖」`, 6000);
   } catch (err) {
     // 保持弹窗开着：勾选还在（state.plAlign 已在请求前合并），用户可以直接重试
     toast("按勾选覆盖失败：" + err.message, 6000);
@@ -909,13 +1230,13 @@ async function applyProjectPicks() {
 async function toggleProjLink(code, checked, input) {
   if (!state.file) {
     if (input) input.checked = !checked;
-    toast("示例数据请先上传 Excel，再在对象卡片上勾「关联项目」");
+    toast(`示例数据请先上传 Excel，再在对象卡片上勾「关联${plTargetLabel()}」`);
     return;
   }
-  // 没连库、也没传过项目包 → 先让用户导入一份，再继续重新解析
-  if (checked && !(await ensureProjectSnapshot())) {
+  // 没连库、也没传过目标包 → 先让用户导入一份，再继续重新解析
+  if (checked && !(await ensureLinkTarget())) {
     if (input) input.checked = false;
-    toast("未导入项目包，关联项目没有打开");
+    toast(`关联对象没准备好，「关联${plTargetLabel()}」没有打开`);
     return;
   }
   const had = Object.prototype.hasOwnProperty.call(state.plLinked, code);
@@ -926,7 +1247,7 @@ async function toggleProjLink(code, checked, input) {
   const label = found ? `${found.name}（${code}）` : code;
   state.plLinked[code] = !!checked;
   if (input) input.disabled = true;
-  setLoading(true, "正在按「关联项目」重新分析…");
+  setLoading(true, `正在按「关联${plTargetLabel()}」重新分析…`);
   try {
     const buf = await state.file.arrayBuffer();
     const headers = { "Content-Type": "application/octet-stream" };
@@ -948,13 +1269,13 @@ async function toggleProjLink(code, checked, input) {
     const staleInspect = $("#pp6zipInspectCard");
     if (staleInspect) { staleInspect.hidden = true; staleInspect.innerHTML = ""; }
     renderAll();
-    toast(`对象 ${label}：关联项目=${checked ? "是" : "否"}，已重新分析`, 4000);
+    toast(`对象 ${label}：关联${plTargetLabel()}=${checked ? "是" : "否"}，已重新分析`, 4000);
   } catch (err) {
     // 回滚到拨之前的那一次决策（不是无条件 true/false：之前可能压根没决策）
     if (had) state.plLinked[code] = prev;
     else delete state.plLinked[code];
     if (input) { input.checked = !checked; input.disabled = false; }
-    toast("按「关联项目」重新分析失败：" + err.message, 6000);
+    toast(`按「关联${plTargetLabel()}」重新分析失败：` + err.message, 6000);
   } finally {
     setLoading(false);
   }
@@ -1110,23 +1431,25 @@ function renderObjects() {
   // 开关是「拨了就重新解析」，所以没有文件（理论上不会发生，示例也走 handleFile）
   // 时禁用并说清原因，而不是让人点了没反应
   const canToggle = !!state.file;
+  const tName = plTargetLabel();
+  const linkLabel = plTargetLinkLabel();
   const linkTip = canToggle
-    ? "勾选后自动补「所属项目」链接字段，并把与项目对象同名/近义/相似的字段照项目定义覆盖（差异会汇总成一个对照弹窗）"
-    : "示例数据请先上传 Excel，再在对象卡片上勾「关联项目」";
+    ? `勾选后自动补「${linkLabel}」链接字段，并把与${tName}对象同名/近义/相似的字段照${tName}定义覆盖（差异会汇总成一个对照弹窗）`
+    : `示例数据请先上传 Excel，再在对象卡片上勾「关联${tName}」`;
   panel.innerHTML = `<div class="obj-tip">这里勾选即可，不用改 Excel；
-      Excel 的「关联项目」列仍然有效（以勾选为准）。</div>`
+      Excel 的关联列仍然有效（以勾选为准）。</div>`
     + objects.map((bo) => `
     <div class="card">
       <div class="card-head">
         <div>
-          <h3>${esc(bo.name)} <span class="chip accent">${esc(bo.code)}</span>${bo.flowDriven ? ' <span class="chip">流程模式</span>' : ""}${bo.projectLink ? ' <span class="chip accent">关联项目</span>' : ""}</h3>
-          <div class="sub">表名 ${esc(bo.tbl)} · ${bo.fields.length} 个字段${bo.withLog ? " · 记录变更日志" : ""}${bo.flowDriven ? " · 流程对象：流程模式导出时随 zip 一起出" : ""}${bo.projectLink ? " · 已补「所属项目」链接字段，并已对齐与项目同名的字段" : ""}</div>
+          <h3>${esc(bo.name)} <span class="chip accent">${esc(bo.code)}</span>${bo.flowDriven ? ' <span class="chip">流程模式</span>' : ""}${bo.projectLink ? ` <span class="chip accent">关联${esc(tName)}</span>` : ""}</h3>
+          <div class="sub">表名 ${esc(bo.tbl)} · ${bo.fields.length} 个字段${bo.withLog ? " · 记录变更日志" : ""}${bo.flowDriven ? " · 流程对象：流程模式导出时随 zip 一起出" : ""}${bo.projectLink ? ` · 已补「${esc(linkLabel)}」链接字段，并已对齐与${esc(tName)}同名的字段` : ""}</div>
         </div>
         <div class="obj-side">
           <label class="pl-switch" title="${esc(linkTip)}">
             <input type="checkbox" data-pl-link="${esc(bo.code)}"
                    ${bo.projectLink ? "checked" : ""} ${canToggle ? "" : "disabled"}>
-            <span>关联项目</span>
+            <span>关联${esc(tName)}</span>
           </label>
           <span class="sub">${esc(bo.moduleId || "未指定模块")}</span>
         </div>
@@ -3148,6 +3471,7 @@ function bind() {
   // 第 1 步「业务对象关联项目」：初始页两档控件（导入前就定），
   // 普通模式 / 流程模式共享同一档，存量包页「按包内」独立一档
   bindPlPre();
+  bindPlTarget();
   bindProjectSnapshotModal();
 
   $("#modAll").onclick = () => {
@@ -3160,6 +3484,8 @@ function bind() {
   };
 
   $("#btnDemo").onclick = loadDemo;
+  const blankTplBtn = $("#btnBlankTpl");
+  if (blankTplBtn) blankTplBtn.onclick = downloadBlankTemplate;
   const packBtn = $("#btnPack") || $("#btnBuild");
   if (packBtn) packBtn.onclick = () => buildZip();
   const xmlBtn = $("#btnFlowXml");

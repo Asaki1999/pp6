@@ -1,10 +1,26 @@
-"""patch：在一份**已有**同步包 zip 上做最小差异补丁（加字段 / 改已有字段）。
+"""patch：在一份**已有**同步包 zip 上做最小差异补丁（加字段 / 改已有字段的名称）。
 
 两条腿
 ------
 1. **加字段**：编码在包里没有 → 追加 ``<attribute/>``，必要时补字典。
-2. **改已有字段**：编码和包里已有的一样 + ``mode="replace"`` → 只改这个字段：
-   类型、选项值、名称、必填…；物理列名 ``fieldName`` 永远不动。
+2. **改已有字段的名称**：编码和包里已有的一样 + ``mode="rename"`` → **只改
+   ``name`` 属性**，其余属性（类型/长度/选项/必填/索引/默认值/说明）一个字节
+   都不动；物理列名 ``fieldName`` 更不会动。
+
+为什么只放名称（2026-11-18 产品口径）
+-------------------------------------
+这个工作区现在对外开放，用户会拿线上**已存在**的业务对象来补东西。导入端对
+已有对象的字段是「改元数据」，类型/选项/必填一改，线上表单、列表、数据集、
+历史数据全跟着变，且不可回滚。所以把可改面收窄到「显示名」这一件低风险的事：
+
+  · 已有字段：只能改 ``name``（显示名）；类型/选项/长度/必填/索引/说明一律忽略，
+    并在报告里逐条说明「已忽略」；
+  · 已有字段：**不能删除**（这个工具从来没有删字段的能力，收到删除意图直接报错，
+    免得用户以为删掉一行就删了字段）；
+  · 新增字段：不受影响，走完整定义。
+
+「关联项目」的自动对齐不在这条限制里（``align=True`` 分支）：那是给
+**系统里还不存在的新对象**按项目侧母版落地定义用的，覆盖本来就是要的结果。
 
 用户真正在意的场景是「导入前把包改对」——导进去表结构就落库了，线上再改
 字段类型只是改元数据、不会 ALTER，所以改包必须发生在导入之前。
@@ -62,7 +78,7 @@ _RESERVED_CODES = {
 
 # 增量字段表的列（前端表格 / 粘贴 / 模板 Excel 共用一套口径）
 FIELD_COLUMNS = [
-    ("字段编码", "code", 20, "英文小驼峰，如 riskLevel；必填，不能与包里已有字段重名"),
+    ("字段编码", "code", 20, "英文小驼峰，如 riskLevel；必填。新编码=加字段；填已有字段的编码=只改它的名称"),
     ("字段名称", "name", 18, "界面显示名，留空用字段编码"),
     ("数据类型", "type", 18, "字符串 / 数字 / 日期时间 / 大文本 / 用户 / 部门 / 选项 / 对象 / 自动编号 …"),
     ("选项值", "choices", 30, "仅「选项」类型：逗号或换行分隔，顺序即界面顺序"),
@@ -418,9 +434,75 @@ def _attr_line_for(field: BoField, prefix: str) -> str:
     return line
 
 
+# 删除意图：任何形态都不接受（这个工具本来也没有删字段的能力）
+_DELETE_KEYS = ("delete", "deleted", "_deleted", "remove", "drop", "isDelete")
+
+
+def _ignored_defs(raw: dict, old: dict) -> list[str]:
+    """已有字段上「用户想改、但按新口径被忽略」的定义项。
+
+    只报**真的和原值不一样**的项：前端表格永远会带 ``type`` / ``required`` /
+    ``index``，照单全报会变成每行都挂三条噪音，用户就再也不看提示了。
+    """
+    out: list[str] = []
+    typ = str(raw.get("type") or "").strip()
+    if typ and _ft.resolve(typ) != str(old.get("dataTypeNew") or ""):
+        out.append("数据类型")
+    for key, label in (("length", "长度"), ("precision", "精度")):
+        v = _as_int(raw.get(key))
+        if v is not None and str(v) != str(old.get(key) or ""):
+            out.append(label)
+    dv = raw.get("default", raw.get("default_value"))
+    if dv not in (None, "") and str(dv) != str(old.get("defaultvalue") or ""):
+        out.append("默认值")
+    if _truthy(raw.get("required")) and str(old.get("isnull") or "").upper() != "N":
+        out.append("必填")
+    if _truthy(raw.get("index")) and str(old.get("isindex") or "").upper() != "Y":
+        out.append("建索引")
+    desc = str(raw.get("desc") or "").strip()
+    if desc and desc != str(old.get("desc") or ""):
+        out.append("字段说明")
+    ot = str(raw.get("objectType") or "").strip()
+    if ot and ot != str(old.get("objectType") or ""):
+        out.append("关联对象/字典")
+    if _split_choices(raw.get("choices")) or raw.get("options") or raw.get("columns"):
+        out.append("选项值/扩展参数")
+    return out
+
+
+def _rename_in_line(frag: str, new_name: str) -> str:
+    """只替换 attribute 片段里的 ``name="…"``，其余字节原样保留。
+
+    为什么不复用 ``_merge_attr_line`` 整行重生成：那条路会把属性重新排序、
+    重新转义、丢掉我们没建模的属性。改名要的是「除 name 外零变化」，
+    字符串定点替换是唯一能保证这一点的做法（回归里逐字节比对）。
+    """
+    m = re.search(r'\bname="[^"]*"', frag)
+    if m:
+        return frag[:m.start()] + f'name="{esc_attr(new_name)}"' + frag[m.end():]
+    # 极少见：attribute 上没有 name（原生包里都有），插在标签名后面
+    m = re.match(r"<([\w:.-]+)", frag)
+    if not m:
+        raise ValueError(f"无法识别的 attribute 片段：{frag[:80]}")
+    return f'<{m.group(1)} name="{esc_attr(new_name)}"' + frag[m.end():]
+
+
+def _reject_delete(raw: dict) -> None:
+    hit = [k for k in _DELETE_KEYS if _truthy(raw.get(k))]
+    if hit:
+        raise ValueError(
+            f"不支持删除已有字段（{raw.get('code') or '未填编码'}）："
+            "本工具只在原包上加字段、给已有字段改名称，永远不会删字段。"
+            "确实要删，请到系统里删，或重新出一份不含该字段的包。")
+
+
 def _merge_attr_line(old: dict, raw: dict, field: BoField, prefix: str,
-                     align: bool = False) -> tuple[str, list[str], list[str]]:
-    """改写一个**已有** attribute：新定义为准，但原有属性一个都不许丢。
+                     align: bool = True) -> tuple[str, list[str], list[str]]:
+    """按**项目侧定义**改写一个已有 attribute；原有属性一个都不许丢。
+
+    只服务「关联项目」对齐这一条路径（``align=True``）。手工改已有字段的入口
+    已经收窄成「只改 name」，走 ``_rename_in_line`` 做定点替换，不经过这里——
+    传 ``align=False`` 会直接报错，避免以后有人又接出一条整行覆盖的路。
 
     为什么不像新增字段那样直接 ``_attr_line_for``
     ---------------------------------------------
@@ -434,125 +516,49 @@ def _merge_attr_line(old: dict, raw: dict, field: BoField, prefix: str,
         sn         行序号，保持原位
         type       角色列（base / role…），不由字段类型决定
 
-    ``align=True``（项目字段对齐）时放开「定义类」键：类型/长度/精度/必填/
-    索引/默认值/options/objectType/name 一律取新值（含清空）。这是架构 F-E
-    指出的必要开关——默认逻辑只在用户显式给了或物理类型变了时才覆盖，
-    对齐要的是「跟项目侧完全一致」，包括把 isindex 从 N 改成 Y。
+    对齐要的是「跟项目侧完全一致」，所以定义类键（类型/长度/精度/必填/索引/
+    默认值/options/objectType/name）一律取新值，包括把 isindex 从 N 改成 Y。
 
     返回 (新行文本, 改动的键, 原来的类型)。
     """
+    if not align:
+        raise ValueError(
+            "已有字段只允许改名称（_rename_in_line）；按新定义整行覆盖只留给"
+            "「关联项目」对齐（align=True）")
     p = field.resolved()
     old_type = str(old.get("dataTypeNew") or "")
-    if align:
-        merged: dict[str, object] = dict(old)
-        for key in ("code", "fieldName", "sn", "type"):
-            merged.pop(key, None)          # 下面单独塞回去
-        merged["code"] = old.get("code") or field.code
-        merged["fieldName"] = old.get("fieldName") or p["fieldName"]
-        merged["sn"] = old.get("sn") or p["sn"]
-        if "type" in old:
-            merged["type"] = old["type"]
-        merged["dataTypeNew"] = p["dataTypeNew"]
-        if p.get("datatype"):
-            merged["datatype"] = p["datatype"]
-        if str(field.name or "").strip():
-            merged["name"] = field.name
-        for key in ("isnull", "isindex", "defaultvalue", "format",
-                    "length", "precision", "objectType"):
-            val = p.get(key)
-            if val in (None, ""):
-                merged.pop(key, None)
-            else:
-                merged[key] = val
-        opts = p.get("options")
-        if opts:
-            merged["options"] = gen_bo.json_attr(opts)
-        else:
-            merged.pop("options", None)
-        order = [k for k in old if k in merged]
-        order += [k for k in merged if k not in old]
-        astr = "".join(f' {k}="{esc_attr(merged[k])}"' for k in order)
-        line = f"<{prefix}attribute{astr}/>"
-        changed = [k for k in order if str(merged.get(k, "")) != str(old.get(k, ""))]
-        return line, changed, old_type
-
-    # 物理类型没变（varchar 族互改：字符串↔用户↔部门↔选项…）就不动物理列参数，
-    # 这和线上「7 类可互改、不 ALTER」的行为对齐
-    phys_changed = str(p.get("datatype") or "") != str(old.get("datatype") or "")
-    given = {k for k, v in raw.items() if v is not None and str(v).strip() != ""}
-
     merged: dict[str, object] = dict(old)
-    if phys_changed:
-        # 换了物理类型，原类型的专属参数不能带过去
-        for key in ("format", "length", "precision", "defaultvalue", "options", "objectType"):
-            merged.pop(key, None)
     for key in ("code", "fieldName", "sn", "type"):
         merged.pop(key, None)          # 下面单独塞回去
-
     merged["code"] = old.get("code") or field.code
     merged["fieldName"] = old.get("fieldName") or p["fieldName"]
     merged["sn"] = old.get("sn") or p["sn"]
     if "type" in old:
-        merged["type"] = old["type"]        # 可能本来就是空串，别当成「没有」
+        merged["type"] = old["type"]
     merged["dataTypeNew"] = p["dataTypeNew"]
     if p.get("datatype"):
         merged["datatype"] = p["datatype"]
-
-    # 名称/说明：只有用户真填了才动，避免前端「只改类型」时用 code 顶掉原名
-    if "name" in given or "desc" in given:
-        if str(raw.get("name") or "").strip():
-            merged["name"] = field.name
-        if str(raw.get("desc") or "").strip():
-            merged["desc"] = field.desc
-
-    # 必填/索引/默认值：前端表格永远会带 required=false / index=false，
-    # 所以只在**勾上**时才认作显式声明（勾上=设为必填/索引；不勾=不动原值），
-    # 否则「只改类型」会顺手把原字段的必填和索引清掉
-    for key in ("isnull", "isindex", "defaultvalue"):
-        if key in given or key not in merged:
-            val = p.get(key)
-            if val in (None, ""):
-                merged.pop(key, None)
-            else:
-                merged[key] = val
-    if _truthy(raw.get("required")):
-        merged["isnull"] = "N"
-    elif raw.get("isnull") is not None and str(raw.get("isnull")).strip():
-        merged["isnull"] = "Y" if _truthy(raw.get("isnull")) else "N"
-    if _truthy(raw.get("index")):
-        merged["isindex"] = "Y"
-    # 物理参数（长度/精度/格式）只在用户给了或物理类型变了时写；
-    # 同族互改时原包里没有就别硬补 —— 原生 dic 字段本来就不带 format
-    for key in ("format", "length", "precision"):
-        if key in given or phys_changed:
-            val = p.get(key)
-            if val in (None, ""):
-                merged.pop(key, None)
-            else:
-                merged[key] = val
-    # options：只有显式给了、或物理类型变了才重建
-    if "options" in given or phys_changed or "options" not in merged:
-        opts = p.get("options")
-        if opts:
-            merged["options"] = gen_bo.json_attr(opts)
-        elif "options" in given:
-            merged.pop("options", None)
-    # 关联对象/字典 key：dic 必须写成「对象编码_字段编码」，其余类型不留残留
-    if field.type_new in ("dic", "object") and p.get("objectType"):
-        merged["objectType"] = p["objectType"]
-    elif field.type_new not in ("dic", "object") and phys_changed:
-        merged.pop("objectType", None)
-
-    for key in ("options", "format", "objectType", "length", "precision", "defaultvalue"):
-        if merged.get(key) in (None, ""):
+    if str(field.name or "").strip():
+        merged["name"] = field.name
+    for key in ("isnull", "isindex", "defaultvalue", "format",
+                "length", "precision", "objectType"):
+        val = p.get(key)
+        if val in (None, ""):
             merged.pop(key, None)
-
+        else:
+            merged[key] = val
+    opts = p.get("options")
+    if opts:
+        merged["options"] = gen_bo.json_attr(opts)
+    else:
+        merged.pop("options", None)
     order = [k for k in old if k in merged]
     order += [k for k in merged if k not in old]
     astr = "".join(f' {k}="{esc_attr(merged[k])}"' for k in order)
     line = f"<{prefix}attribute{astr}/>"
     changed = [k for k in order if str(merged.get(k, "")) != str(old.get(k, ""))]
     return line, changed, old_type
+
 
 
 def _rewrite_dict_items(text: str, prefix: str, items: list[tuple[str, str, list[str]]],
@@ -799,44 +805,79 @@ def _patch_bo_xml(text: str, info: dict, raw_fields: list[dict], mode: str,
     replacements: dict[tuple[int, int], str] = {}
 
     for raw in raw_fields:
-        # sn 先占位，真正的值在下面按「新增 or 替换」分别定
+        code = str(raw.get("code") or "").strip()
+        if not code:
+            raise ValueError("字段编码不能为空")
+        if code in seen:
+            raise ValueError(f"新增字段里 {code!r} 重复了")
+        seen.add(code)
+        _reject_delete(raw)
+
         is_align = bool(raw.get("align"))
-        if is_align and raw.get("code") in align_fields:
-            f = deepcopy(align_fields[raw["code"]])
+        aligned = is_align and code in align_fields
+
+        # ---- 已有字段且不是「项目对齐」行：只允许改名称 ----
+        # 走字符串定点替换（_rename_in_line），除 name 外零字节变化；
+        # 类型/选项/长度/必填等一概不认，逐条进报告说明「已忽略」。
+        if code in existing and not aligned:
+            s, e, old = next(x for x in spans if x[2].get("code") == code)
+            old_name = str(old.get("name") or "")
+            new_name = str(raw.get("name") or "").strip()
+            touched = _ignored_defs(raw, old)
+            if mode == "skip":
+                skipped.append({"code": code, "name": old_name or new_name,
+                                "reason": "包里已有同名字段（当前模式只加新字段）"})
+                continue
+            if touched:
+                warns.append(
+                    f"{code}: 已有字段只支持改名称，{'/'.join(touched)} 的改动已忽略"
+                    "（要改定义请用「关联项目」按项目侧对齐，或重新出包）")
+            if not new_name or new_name == old_name:
+                skipped.append({
+                    "code": code, "name": old_name or new_name,
+                    "reason": "名称没变（已有字段只支持改名称）" if new_name else
+                              "已有字段只支持改名称，没填新名称"})
+                continue
+            replacements[(s, e)] = _rename_in_line(text[s:e], new_name)
+            replaced.append({
+                "code": code, "name": old_name or new_name, "rename": True,
+                "fromName": old_name, "toName": new_name,
+                "sn": int(old["sn"]) if str(old.get("sn", "")).isdigit() else None,
+                "attrs": ["name"], "aligned": False,
+            })
+            continue
+
+        # ---- 新增字段 / 项目对齐行 ----
+        if aligned:
+            f = deepcopy(align_fields[code])
         else:
             f = normalize_field(raw, info["code"], 0)
-        if f.code in seen:
-            raise ValueError(f"新增字段里 {f.code!r} 重复了")
-        seen.add(f.code)
         if f.type_new == "dic" and not f.choices:
             warns.append(f"{f.code}: 选项类型没填候选值，导入后下拉会是空的")
         if f.type_new == "object" and not f.object_type:
             warns.append(f"{f.code}: 对象类型没填关联对象，导入后可能取不到数据")
 
         if f.code in existing:
-            if mode == "replace":
-                s, e, old = next(x for x in spans if x[2].get("code") == f.code)
-                f.sn = int(old.get("sn", max_sn + 1)) if str(old.get("sn", "")).isdigit() else max_sn + 1
-                # 替换时保留原物理列名，避免线上表被要求改列
-                if old.get("fieldName") and not f.field_name:
-                    f.field_name = old["fieldName"]
-                line, keys, old_type = _merge_attr_line(old, raw, f, prefix, align=is_align)
-                replacements[(s, e)] = line
-                replaced.append({"code": f.code, "name": old.get("name") or f.name, "sn": f.sn,
-                                 "from": old_type, "to": f.type_new, "attrs": keys,
-                                 "aligned": is_align})
-                # 选项值改了就重写这个字段的字典项，否则包变了、选项还是老的
-                if f.type_new == "dic" and (f.choices or f.dict_items):
-                    if f.dict_ref:
-                        # GLOBAL：不造新 key，只声明/复用项目侧 typeKey 与固定候选码
-                        global_rewrites.append(
-                            (f.dict_ref, f.dict_name, f.dict_stru or "1",
-                             [dict(i) for i in (f.dict_items or [])]))
-                    else:
-                        dict_rewrites.append((f.dict_key(), f.name, list(f.choices)))
-            else:
-                skipped.append({"code": f.code, "name": f.name,
-                                "reason": "包里已有同名字段"})
+            # 只可能是对齐行（上面已把非对齐的已有字段挡掉了）
+            s, e, old = next(x for x in spans if x[2].get("code") == f.code)
+            f.sn = int(old.get("sn", max_sn + 1)) if str(old.get("sn", "")).isdigit() else max_sn + 1
+            # 替换时保留原物理列名，避免线上表被要求改列
+            if old.get("fieldName") and not f.field_name:
+                f.field_name = old["fieldName"]
+            line, keys, old_type = _merge_attr_line(old, raw, f, prefix, align=True)
+            replacements[(s, e)] = line
+            replaced.append({"code": f.code, "name": old.get("name") or f.name, "sn": f.sn,
+                             "from": old_type, "to": f.type_new, "attrs": keys,
+                             "aligned": True})
+            # 选项值改了就重写这个字段的字典项，否则包变了、选项还是老的
+            if f.type_new == "dic" and (f.choices or f.dict_items):
+                if f.dict_ref:
+                    # GLOBAL：不造新 key，只声明/复用项目侧 typeKey 与固定候选码
+                    global_rewrites.append(
+                        (f.dict_ref, f.dict_name, f.dict_stru or "1",
+                         [dict(i) for i in (f.dict_items or [])]))
+                else:
+                    dict_rewrites.append((f.dict_key(), f.name, list(f.choices)))
             continue
 
         col = f.resolved_field_name()
@@ -987,7 +1028,8 @@ def _report_text(spec: dict, changed: dict, kept: int, dropped: int,
         "PP6 包补丁报告",
         f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"原始条目 {kept + dropped} 个：保留 {kept}，按 bo-only 丢弃 {dropped}",
-        f"范围: {spec.get('scope') or 'full'}   重名处理: {spec.get('mode') or 'skip'}",
+        f"范围: {spec.get('scope') or 'full'}   "
+        f"已有字段: {'只改名称' if (spec.get('mode') or 'skip') != 'skip' else '不动'}",
         "",
         "【改动的文件】",
     ]
@@ -996,17 +1038,22 @@ def _report_text(spec: dict, changed: dict, kept: int, dropped: int,
         for a in d["added"]:
             lines.append(f"      + {a['code']}（{a['name']}）  {a['type']}  sn={a['sn']}")
         for a in d["replaced"]:
-            span = f"{a['from']}→{a['to']}" if a.get("from") and a.get("from") != a.get("to") else a.get("to") or ""
             # 对齐行与用户手填行分开列（PRD P0-5 要求），用户一眼能看出
-            # 「这条是勾了关联项目自动做的」还是「我自己要改的」
+            # 「这条是勾了关联项目自动做的」还是「我自己改的名字」
+            if a.get("rename"):
+                lines.append(f"      ~ 改名 {a['code']}  「{a.get('fromName') or ''}」"
+                             f" → 「{a.get('toName') or ''}」")
+                continue
             mark = "~ 对齐" if a.get("aligned") else "~"
+            span = (f"{a['from']}→{a['to']}"
+                    if a.get("from") and a.get("from") != a.get("to") else a.get("to") or "")
             lines.append(f"      {mark} {a['code']}（{a['name']}）  "
                          f"{'按新定义覆盖' if not a.get('aligned') else '按项目侧定义覆盖'}  "
                          f"{span}  sn={a['sn']}")
             if a.get("attrs"):
                 lines.append(f"          改写属性：{' / '.join(a['attrs'])}")
         for a in d["skipped"]:
-            lines.append(f"      = {a['code']}  已存在，跳过")
+            lines.append(f"      = {a['code']}  {a.get('reason') or '已存在，跳过'}")
         if d["dictTypes"] or d["dictItems"]:
             lines.append(f"      字典类型 +{d['dictTypes']}，选项 +{d['dictItems']}")
         if d.get("globalDictTypes") or d.get("globalDictItems"):
@@ -1024,6 +1071,8 @@ def _report_text(spec: dict, changed: dict, kept: int, dropped: int,
     lines += [
         "",
         "未改动的条目均为原包字节原样复制（含 ZipInfo 元数据）。",
+        "已有字段只改 name（显示名），类型/选项/长度/必填/索引/说明一律不动；"
+        "本工具不会删除任何字段。",
         "新字段只进业务对象；表单/列表控件请用「导出带新字段的 Excel」走主流程重新出包。",
     ]
     return "\n".join(lines)
@@ -1033,8 +1082,20 @@ def build_patch(data: bytes, spec: dict) -> tuple[bytes, str, dict]:
     """在原 zip 上打补丁，返回 (zip 字节, 下载文件名, 报告)。"""
     spec = spec or {}
     mode = str(spec.get("mode") or "skip").lower()
-    if mode not in ("skip", "replace"):
-        raise ValueError("mode 只能是 skip 或 replace")
+    if mode not in ("skip", "rename", "replace"):
+        raise ValueError("mode 只能是 skip 或 rename（replace 为旧名，等价于 rename）")
+    # replace 是旧前端/旧脚本的叫法，语义已收窄成「只改名称」，别名直接归一
+    if mode == "replace":
+        mode = "rename"
+        spec = {**spec, "mode": "rename"}
+    _reject_delete(spec)
+    if spec.get("deleteFields") or spec.get("deletedFields"):
+        raise ValueError(
+            "不支持删除已有字段：本工具只加字段、给已有字段改名称，永远不会删字段。"
+            "确实要删，请到系统里删，或重新出一份不含该字段的包。")
+    for field in spec.get("fields") or []:
+        if isinstance(field, dict):
+            _reject_delete(field)
     scope = str(spec.get("scope") or "full").lower()
     if scope not in ("full", "bo-only"):
         raise ValueError("scope 只能是 full 或 bo-only")
@@ -1054,8 +1115,8 @@ def build_patch(data: bytes, spec: dict) -> tuple[bytes, str, dict]:
 
     if mode == "skip" and any(_hits_existing(f) for f in chosen):
         raise ValueError(
-            "对齐已有字段需要覆盖模式：请把「重名字段」选成「按新定义覆盖原字段」"
-            "（勾了「关联项目」时，对齐行会改写包里已有字段的类型/长度/选项）")
+            "对齐已有字段需要应用模式（mode=rename/replace）：勾了「关联项目」时，"
+            "对齐行会改写包里已有字段的类型/长度/选项")
 
     if not any(_fields_for(spec, f, o) or align_rows.get(f) or link_rows.get(f)
                for f, o in chosen.items()):
@@ -1094,13 +1155,14 @@ def build_patch(data: bytes, spec: dict) -> tuple[bytes, str, dict]:
 
     if not changed:
         reason = "、".join(
-            f"{d['code']}（包里已有同名字段）"
+            f"{d['code']}（{d.get('reason') or '包里已有同名字段'}）"
             for det in untouched.values() for d in det.get("skipped") or []) \
             or "没有产生任何字节变化"
         raise ValueError(
             f"没有产生任何改动：{reason}。"
-            "这段字段按新定义改写已有字段时，请把「重名字段」选成「按新定义覆盖原字段」；"
-            "只想加字段就换一个没被占用的字段编码。")
+            "已有字段只能改名称（填一个新名称即可）；"
+            "想加字段请换一个包里没用过的字段编码。"
+            "类型/选项/长度等定义不支持在这里改，也永远不支持删除字段。")
 
     kept = dropped = 0
     buf = io.BytesIO()
@@ -1132,8 +1194,8 @@ def build_patch(data: bytes, spec: dict) -> tuple[bytes, str, dict]:
     verbs = []
     if any(d["added"] for d in changed.values()):
         verbs.append("加字段")
-    if any(d["replaced"] for d in changed.values()):
-        verbs.append("改字段")
+    if any(a.get("rename") for d in changed.values() for a in d["replaced"]):
+        verbs.append("改名称")
     if not align_report.get("noop", True):
         verbs.append("对齐项目")
     name = package_name(labels or "业务对象", "+".join(verbs) or "补丁", stamp)
@@ -1200,17 +1262,22 @@ def _project_with_fields(data: bytes, spec: dict):
             return max_sn
 
         for raw in raws:
-            f = normalize_field(raw, bo.code, 0)
-            hit = bo.field_by_code(f.code)
+            _reject_delete(raw)
+            code = str(raw.get("code") or "").strip()
+            hit = bo.field_by_code(code) if code else None
             if hit is not None:
-                if mode != "replace":
+                # 已有字段：只把显示名带进 Excel，定义（类型/选项/长度…）保持原样
+                new_name = str(raw.get("name") or "").strip()
+                if mode == "skip" or not new_name or new_name == hit.name:
                     continue
-                f.sn = hit.sn
-                f.field_name = f.field_name or hit.field_name
-                bo.fields[bo.fields.index(hit)] = f
-            else:
-                f.sn = alloc_sn()
-                bo.fields.append(f)
+                renamed = copy(hit)
+                renamed.name = new_name
+                bo.fields[bo.fields.index(hit)] = renamed
+                touched.add(bo.code)
+                continue
+            f = normalize_field(raw, bo.code, 0)
+            f.sn = alloc_sn()
+            bo.fields.append(f)
             touched.add(bo.code)
             if _truthy(spec.get("syncForm")):
                 for form in proj.forms:

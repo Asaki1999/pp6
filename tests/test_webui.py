@@ -556,15 +556,25 @@ def _():
 
     for mark in ('id="psMask"', 'id="psFile"', 'id="psPick"', 'id="psCancel"'):
         assert mark in html, f"弹窗缺 {mark}"
-    assert "未检测到已连接的数据库" in html
+    # 弹窗文案是 JS 按目标对象/是否连库改写的（2026-11-18 起）：
+    # 没连库说「没有配置数据库连接」，连了但查不到这个对象要说「库里没有名称完全一致的」。
+    assert "当前 App 没有配置数据库连接" in js
+    assert "数据库里没有名称完全一致的" in js
+    for mark in ('id="psTitle"', 'id="psSub"', 'id="psLead1"', 'id="psLead2"'):
+        assert mark in html, f"弹窗文案没有可改写的锚点 {mark}"
     assert "function ensureProjectSnapshot(" in js
     assert "function askProjectZip(" in js
     assert '"/api/project-snapshot"' in js
     # 决策头必须带 snapshot token
     assert "payload.snapshot = state.plSnapshotToken" in js
-    # 两个入口都要先走 ensure：导入前两档 + 对象卡片开关
-    assert "value === \"on\" && !(await ensureProjectSnapshot())" in js
-    assert "checked && !(await ensureProjectSnapshot())" in js
+    # 两个入口都要先走 ensure：导入前两档 + 对象卡片开关。
+    # 2026-11-18 起两个入口统一走 ensureLinkTarget()：项目分派给
+    # ensureProjectSnapshot()，其它业务对象走名称核对 / 上传该对象的 zip。
+    assert "function ensureLinkTarget(" in js
+    assert 'if (state.plTargetKind === "project") return await ensureProjectSnapshot();' in js
+    assert '/api/link-target' in js, "其它业务对象没接口可调"
+    assert 'value === "on" && !(await ensureLinkTarget())' in js
+    assert "checked && !(await ensureLinkTarget())" in js
     # 取消要回退勾选
     assert "syncPlPreInputs();" in js
 
@@ -648,3 +658,60 @@ def _():
     assert "口径" in js and "已验证" in js
     assert ".q-clarify" in css and ".src-verified" in css
     assert '"/api/nlq/verify"' in py
+
+
+@case("WEB34", "webui", "空白填写模板可下载：表头齐全、一条数据都没有", "P1",
+      ["手填的用户不该只能从「载入示例」起步（示例会直接进预览，本地拿不到文件）",
+       "页签与列顺序必须和带示例的模板完全一致，只差有没有数据",
+       "下载的空表要能被自己的解析器认成「标准模板」"])
+def _():
+    import io
+
+    from openpyxl import load_workbook
+
+    from pp6kit import webui
+
+    status, headers, body = req("/api/template?blank=1")
+    assert status == 200, status
+    assert body[:2] == b"PK", body[:20]
+    assert "spreadsheet" in headers.get("content-type", "")
+    name = urllib.parse.unquote(headers.get("x-filename", ""))
+    assert "空白" in name, f"文件名没标明是空白模板：{headers.get('x-filename')}"
+
+    wb = load_workbook(io.BytesIO(body))
+    assert wb.sheetnames == S.SHEET_ORDER, wb.sheetnames
+    # 表头 + 紧跟的说明行 = 2 行；再往下有任何一行都说明预填了示例数据
+    for sheet in (S.S_BO, S.S_FIELD, S.S_FORM, S.S_FORMFIELD):
+        assert wb[sheet].max_row == 2, f"{sheet} 不是空白模板（max_row={wb[sheet].max_row}）"
+    assert wb[S.S_BO]["A1"].value == "对象编码", wb[S.S_BO]["A1"].value
+
+    # 空表也是标准模板：页签名在，但解析出 0 个对象（不能当成陌生表格丢给 AI）
+    parsed = webui.parse_excel(body)
+    assert parsed["looksTemplate"] is True, "下载的空白模板被当成陌生表格"
+    assert not parsed["objects"], "空白模板里解析出了对象"
+
+
+@case("WEB35", "webui", "入口：空白模板按钮真下载，反解入口默认下线", "P1",
+      ["模板按钮必须下载文件，不能退化成「载入示例」",
+       "反解下线只关入口：inspectZip 与 /api/inspect 保留，开关注释写明怎么恢复"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "pp6kit" / "static" / "app.js").read_text(encoding="utf-8")
+    qjs = (root / "pp6kit" / "static" / "query.js").read_text(encoding="utf-8")
+    py = (root / "pp6kit" / "webui.py").read_text(encoding="utf-8")
+
+    assert 'id="btnBlankTpl"' in html, "文件生成入口没有「下载空白模板」"
+    assert "function downloadBlankTemplate(" in js
+    assert "/api/template?blank=1" in js, "按钮没请求空白模板"
+    assert "blankTplBtn.onclick = downloadBlankTemplate" in js, "按钮没绑上下载"
+
+    # 反解：HTML 直接带 hidden（无 JS 也不露），query.js 开关默认 false
+    assert 'id="btnInspect" data-feature="inspect" hidden' in html
+    assert "inspect: false" in qjs
+    assert "PP6_FEATURES.inspect !== true" in qjs
+    # 只关入口，能力不删
+    assert "async function inspectZip(" in js
+    assert '"/api/inspect"' in py

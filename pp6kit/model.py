@@ -452,6 +452,12 @@ class BoField:
             length, fmt = None, None
         if type_new == "datetime":
             length = None
+        if type_new == "attachment":
+            # 平台 BO 的附件类型叫 file（iform_bo_attr 实测），不是 attachment；
+            # attachment 只是**表单控件**的 fieldType。写错会导入成空类型。
+            # 多附件要存多个文件 id，长度按平台真实值 1000，不用 200。
+            if self.length is None:
+                length = 1000
         if self.is_system and type_new != "datetime":
             # 平台自建的系统字段（文本类）不带 format
             fmt = None
@@ -655,7 +661,8 @@ class BoField:
             # 「生成的 zip 包表格类型没导入进去」）。
             "type": "" if type_new == "table" else "base",
             "datatype": datatype,
-            "dataTypeNew": type_new,
+            # 附件：BO 侧 dataTypeNew=file，表单控件仍用 attachment
+            "dataTypeNew": "file" if type_new == "attachment" else type_new,
             "objectType": object_type,
             "options": opts or None,
             "isnull": "Y" if self.is_null else "N",
@@ -1003,6 +1010,9 @@ class Project:
     # 读到的原始工作表名。用来区分「标准模板但一个字没填」和「压根不是模板」——
     # 两者都是 0 个对象，前者该提示去 1_业务对象 填，后者该交给 AI 识别。
     sheet_names: list[str] = field(default_factory=list)
+    # 本次解析/出包要对齐的目标业务对象（projlink.TargetObject）。
+    # 用 Any 避免 model ↔ projlink 循环导入；None = 项目（保持老行为）。
+    link_target: Any = None
 
     def bo(self, code: str) -> Bo | None:
         for b in self.bos:

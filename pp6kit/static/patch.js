@@ -1,8 +1,15 @@
-/* 存量包修订：上传 zip → 选对象 → 填字段 → 在原包上打补丁下载新 zip。
-   复用 app.js 的 saveBlob / toast / humanSize；本文件在 app.js 之后加载。 */
+/* 存量包修订：上传 zip → 选对象 → 改已有字段名称 / 加新字段 → 在原包上打补丁下载新 zip。
+   复用 app.js 的 saveBlob / toast / humanSize；本文件在 app.js 之后加载。
+
+   产品红线（2026-11-18）：这个工作区对用户开放后，已有业务对象只允许改「名称」。
+   类型 / 选项值 / 长度 / 必填 / 索引 / 说明都是只读，且**不能删除字段**——
+   后端 patch.py 同样硬拦，前端只是不把口子露出来。 */
 const P = {
   snap: null,
   fields: [],
+  // 已有字段的改名草稿：{ file: { 字段编码: 新名称 } }。
+  // 按 file 分开存：不同对象可以有同名字段（name 几乎每个对象都有）。
+  renames: {},
   selected: new Set(),
   fileName: "",
   // 勾了「关联项目」的对象（file 集合）与逐字段对齐决策
@@ -11,6 +18,7 @@ const P = {
   align: {},
   alignReport: null,
 };
+
 
 const pEsc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => (
   { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
@@ -86,7 +94,7 @@ function pBusy(btn, on, text) {
   }
 }
 
-// 当前填的字段编码里，哪些在选中对象的包里已经存在 —— 这些就是「改已有字段」
+// 当前填的字段编码里，哪些在选中对象的包里已经存在 —— 这些只会应用「名称」
 function pDupCodes() {
   if (!P.snap) return [];
   const have = new Set();
@@ -96,10 +104,34 @@ function pDupCodes() {
   return P.fields.map((f) => String(f.code || "").trim()).filter((c) => c && have.has(c));
 }
 
+// 选中对象上实际改了几个名称（和原名称不同才算）
+function pRenamePairs() {
+  if (!P.snap) return [];
+  const out = [];
+  (P.snap.objects || []).forEach((o) => {
+    if (!P.selected.has(o.file)) return;
+    const ren = P.renames[o.file] || {};
+    (o.fields || []).forEach((f) => {
+      const name = String(ren[f.code] || "").trim();
+      if (name && name !== String(f.name || "").trim()) {
+        out.push({ file: o.file, code: f.code, from: f.name || "", to: name,
+                   object: o.name || o.code });
+      }
+    });
+  });
+  return out;
+}
+
 function pHint() {
   const el = pId("patchHint");
   const n = P.selected.size;
-  const f = P.fields.filter((x) => (x.code || "").trim()).length;
+  const dup = pDupCodes();
+  // 编码和已有字段重名的行不算「新字段」——它只会被当成改名
+  const f = P.fields.filter((x) => {
+    const c = (x.code || "").trim();
+    return c && !dup.includes(c);
+  }).length;
+  const renames = pRenamePairs();
   // 空态分支并入这里作单点真相：pEmptyState() 不改 hint，避免两处互相覆盖。
   const empty = P.snap && (P.snap.objects || []).length === 0;
   el.style.color = "";
@@ -111,22 +143,18 @@ function pHint() {
     el.textContent = "先上传 zip，再选对象和字段";
     return;
   }
-  const dup = pDupCodes();
-  const mode = pId("patchMode").value;
-  if (dup.length && mode === "skip") {
-    // 最容易踩的坑：填了同名编码、模式还是「跳过」，出来的包和原包一模一样
+  const kinds = [];
+  if (renames.length) kinds.push(`<b>改 ${renames.length} 个字段名称</b>`);
+  if (f) kinds.push(`${f} 个新字段`);
+  el.innerHTML = `已选 ${n} 个对象${kinds.length ? " · " + kinds.join(" · ") : ""}`
+    + (n && kinds.length ? " · 可以出包了" : "");
+  if (dup.length) {
+    // 最容易踩的坑：以为填了编码就能改类型/选项 —— 其实只会应用名称
     el.style.color = "var(--warn)";
-    el.innerHTML = `⚠ ${dup.length} 个字段包里已有（${dup.slice(0, 4).map(pEsc).join("、")}`
-      + `${dup.length > 4 ? "…" : ""}），当前是「跳过」→ 不会生效。`
-      + `要改已有字段，请把 ④ 的「重名字段」选成「按新定义覆盖原字段」`;
-    return;
+    el.innerHTML += ` <span style="color:var(--warn)">· ${dup.length} 个编码包里已有`
+      + `（${dup.slice(0, 4).map(pEsc).join("、")}${dup.length > 4 ? "…" : ""}）：`
+      + `只应用「名称」，类型/选项等改动会被忽略</span>`;
   }
-  if (dup.length && mode === "replace") {
-    el.innerHTML = `已选 ${n} 个对象 · ${f} 个字段 · `
-      + `<b>其中 ${dup.length} 个按新定义覆盖已有字段</b>（物理列名不变）`;
-    return;
-  }
-  el.textContent = `已选 ${n} 个对象 · ${f} 个新字段${n && f ? " · 可以出包了" : ""}`;
 }
 
 /* ---------------- ① 上传原包 ---------------- */
@@ -141,6 +169,8 @@ async function pUploadZip(file) {
     P.snap = await res.json();
     P.fileName = file.name;
     P.selected = new Set();
+    P.renames = {};
+
     // 换包就清掉上一包的对齐勾选，否则会给新包里同名 file 算出奇怪的决策。
     // 再按初始页那一档预置「关联项目」：on = 每个对象卡片都勾上，off = 全不勾，
     // keep = 保持现状（不预置）。只是预置勾选，不强制跑对齐分析。
@@ -164,9 +194,10 @@ async function pUploadZip(file) {
     box.hidden = notes.length === 0;
     box.innerHTML = notes.map((n) => `<div>· ${pEsc(n)}</div>`).join("");
 
-    ["patchObjectsCard", "patchFieldsCard", "patchBuildCard"].forEach(
+    ["patchObjectsCard", "patchExistingCard", "patchFieldsCard", "patchBuildCard"].forEach(
       (id) => { pId(id).hidden = false; });
     pRenderObjects();
+    pRenderExisting();
     pRenderFields();
     pId("patchReport").hidden = true;
     pHint();
@@ -204,7 +235,7 @@ function pRenderObjects() {
                ${P.link.has(o.file) ? "checked" : ""}>
         关联项目
         <span class="muted">勾选后按项目对象定义对齐字段；已有字段只改类型/选项/长度/必填/索引，
-          编码与物理列名不动</span>
+          编码与物理列名不动（给系统里还没有的新对象用）</span>
       </label>
       <details><summary>查看已有字段（${o.fieldCount}）</summary>
         <div class="patch-chips">${chips || "<span class=sub>无</span>"}</div></details>
@@ -218,6 +249,7 @@ function pRenderObjects() {
       const file = box.dataset.pick;
       if (box.checked) P.selected.add(file); else P.selected.delete(file);
       box.closest(".patch-obj").classList.toggle("on", box.checked);
+      pRenderExisting();
       pHint();
     };
   });
@@ -239,7 +271,65 @@ function pRenderObjects() {
   });
 }
 
-/* ---------------- ③ 字段表格 ---------------- */
+/* ---------------- ③ 已有字段：只允许改名称 ----------------
+   每行只给一个可编辑输入框（新名称），其余列是纯展示。
+   为什么不直接在下方字段表里「填编码 + 填名称」：那张表是给新字段用的完整定义，
+   放进来用户就会顺手改类型/选项，正是这次要收掉的口子。 */
+
+function pRenameOf(file, code) {
+  const row = P.renames[file] || {};
+  return row[code] === undefined ? "" : row[code];
+}
+
+function pRenderExisting() {
+  const card = pId("patchExistingCard");
+  const box = pId("patchExistingBox");
+  if (!card || !box) return;
+  const files = ((P.snap && P.snap.objects) || []).filter((o) => P.selected.has(o.file));
+  card.hidden = !P.snap || files.length === 0;
+  if (!files.length) {
+    box.innerHTML = '<div class="sub">先在上一步勾至少一个业务对象。</div>';
+    return;
+  }
+  box.innerHTML = files.map((o) => {
+    const changed = Object.keys(P.renames[o.file] || {}).length;
+    const rows = (o.fields || []).map((f) => {
+      const val = pRenameOf(o.file, f.code);
+      return `<tr class="${val.trim() ? "on" : ""}">
+        <td><code>${pEsc(f.code)}</code></td>
+        <td class="muted">${pEsc(f.type || "")}</td>
+        <td class="muted"><code>${pEsc(f.fieldName || "")}</code></td>
+        <td>${pEsc(f.name || "")}</td>
+        <td><input data-rf="${pEsc(o.file)}" data-rc="${pEsc(f.code)}"
+              value="${pEsc(val)}" placeholder="${pEsc(f.name || "（未命名）")}"
+              spellcheck="false" autocomplete="off"></td>
+      </tr>`;
+    }).join("");
+    return `<details open class="patch-exist">
+      <summary><b>${pEsc(o.name || o.code)}</b> <code>${pEsc(o.file)}</code>
+        <span class="muted">${(o.fields || []).length} 个字段</span>
+        ${changed ? `<span class="patch-tag">已改 ${changed}</span>` : ""}</summary>
+      <div class="tbl-wrap"><table class="patch-table patch-exist-table">
+        <thead><tr><th>字段编码</th><th>类型</th><th>物理列名</th>
+          <th>原名称</th><th>新名称（可改）</th></tr></thead>
+        <tbody>${rows}</tbody></table></div></details>`;
+  }).join("");
+  // 边打边存，不重渲染（重渲染会丢焦点）
+  box.querySelectorAll("input[data-rf]").forEach((el) => {
+    el.addEventListener("input", () => {
+      const file = el.dataset.rf;
+      const code = el.dataset.rc;
+      const val = el.value;
+      P.renames[file] = P.renames[file] || {};
+      if (!val.trim()) delete P.renames[file][code];
+      else P.renames[file][code] = val;
+      el.closest("tr").classList.toggle("on", !!val.trim());
+      pHint();
+    });
+  });
+}
+
+/* ---------------- ④ 字段表格（只放新字段） ---------------- */
 
 function pEmptyField() {
   return { code: "", name: "", type: "varchar", choices: "", objectType: "",
@@ -268,7 +358,7 @@ function pRenderFields() {
       <td class="center"><input type="checkbox" data-k="required" ${f.required ? "checked" : ""}></td>
       <td class="center"><input type="checkbox" data-k="index" ${f.index ? "checked" : ""}></td>
       <td><input data-k="desc" value="${pEsc(f.desc)}"></td>
-      <td><button class="link" data-del="${i}" title="删掉这行">×</button></td>
+      <td><button class="link" data-del="${i}" title="删掉这行（只影响这次填写，不会删包里的字段）">×</button></td>
     </tr>`).join("");
   let dl = pId("patchTypes");
   if (!dl) {
@@ -325,12 +415,37 @@ function pSpec(targets) {
   if (!P.snap) throw new Error("请先上传原来的 zip 包");
   const picked = targets || Array.from(P.selected);
   if (!picked.length) throw new Error("请勾选至少一个业务对象");
-  const fields = pCollectFields();
+  const newFields = pCollectFields();
+  const renames = pRenamePairs();
   // 勾了「关联项目」时允许一个字段都不填：纯对齐（覆盖已有字段定义 + 补链接字段）
   const linkProject = picked.filter((f) => P.link.has(f));
-  if (!fields.length && !linkProject.length) {
-    throw new Error("请至少填一个字段编码，或勾选「关联项目」");
+  if (!newFields.length && !renames.length && !linkProject.length) {
+    throw new Error("请至少改一个字段名称、填一个新字段，或勾选「关联项目」");
   }
+  // 已有字段改名按 file 分开传（不同对象可以有同名字段：name 几乎每个对象都有）。
+  // byTarget 里同时带上新字段：后端 _fields_for 优先读 byTarget，漏掉就等于新字段丢了。
+  const byTarget = {};
+  picked.forEach((file) => {
+    const obj = (P.snap.objects || []).find((o) => o.file === file) || {};
+    const have = new Set((obj.fields || []).map((f) => f.code));
+    const rows = [];
+    const seen = new Set();
+    pRenamePairs().filter((r) => r.file === file).forEach((r) => {
+      rows.push({ code: r.code, name: r.to, rename: true });
+      seen.add(r.code);
+    });
+    newFields.forEach((f) => {
+      if (have.has(f.code)) {
+        // 已经有这个字段：只认名称；定义照原样带上，让后端在报告里写明「已忽略」
+        if (!f.name || seen.has(f.code)) return;
+        rows.push({ ...f, name: f.name, rename: true });
+        seen.add(f.code);
+        return;
+      }
+      rows.push(f);
+    });
+    byTarget[file] = rows;
+  });
   // 对齐决策只传布尔许可，服务端会重新分析（不信任前端给的 code/定义）
   const align = {};
   linkProject.forEach((file) => {
@@ -340,8 +455,10 @@ function pSpec(targets) {
   return {
     token: P.snap.token,
     targets: picked,
-    fields,
-    mode: pId("patchMode").value,
+    fields: [],
+    byTarget,
+    // 已有字段只允许改名称，语义固定为 rename（skip 会让改名整批失效）
+    mode: "rename",
     scope: pId("patchScope").value,
     allCopies: pId("patchAllCopies").checked,
     syncForm: pId("patchSyncForm").checked,
@@ -392,17 +509,12 @@ async function pAlign() {
   box.innerHTML = '<div class="sub">正在分析…</div>';
   try {
     const spec = pSpec();
-    // 只预览对齐：把用户手填字段清空，报告里就只剩「项目对齐」一节
-    const res = await pApi("/api/patch/dry-run", { ...spec, fields: [], linkProject: Array.from(P.link) });
+    // 只预览对齐：把用户手填字段与改名清空，报告里就只剩「项目对齐」一节
+    const res = await pApi("/api/patch/dry-run",
+      { ...spec, fields: [], byTarget: {}, linkProject: Array.from(P.link) });
     const data = await res.json();
     P.alignReport = data.projectAlign || null;
-    const mode = pId("patchMode").value;
-    const hasAlign = (P.alignReport && (P.alignReport.aligned || []).length) > 0;
-    box.innerHTML = pAlignRows(P.alignReport)
-      + (hasAlign && mode === "skip"
-        ? '<div class="patch-tag warn">对齐已有字段需要覆盖模式：请把 ④ 的「重名字段」'
-          + '选成「按新定义覆盖原字段」，否则出包会被拦下</div>'
-        : "");
+    box.innerHTML = pAlignRows(P.alignReport);
   } catch (err) {
     P.alignReport = null;
     box.innerHTML = `<div class="patch-tag warn">${pEsc(err.message || String(err))}</div>`;
@@ -473,12 +585,6 @@ async function pPreview(btn) {
 async function pBuild(btn) {
   const spec = (() => { try { return pSpec(); } catch (e) { pFail(e); return null; } })();
   if (!spec) return;
-  // 双保险：mode=skip 且存在对齐行 → 先说清楚（后端同样会拦）
-  const hasAlign = (P.alignReport && (P.alignReport.aligned || []).length) > 0;
-  if (hasAlign && spec.mode === "skip") {
-    toast("对齐已有字段需要覆盖模式：请把「重名字段」选成「按新定义覆盖原字段」", 6500);
-    return;
-  }
   const split = pId("patchSplit").checked;
   const jobs = split ? spec.targets.map((t) => [t]) : [spec.targets];
   pBusy(btn, true, "正在生成…");
@@ -627,16 +733,21 @@ function pBind() {
     if (file) pUploadZip(file);
   });
 
-  // 「重名字段」切换直接影响同名字段是跳过还是覆盖，必须立刻刷新提示
-  const modeSel = pId("patchMode");
-  if (modeSel) modeSel.onchange = pHint;
+  // 「重名字段」下拉已随「已有字段只改名」一起下线：模式固定 rename，
+  // 这里不再有需要监听的模式控件。
 
   pId("patchObjAll").onclick = () => {
     P.selected = new Set(P.snap.objects.map((o) => o.file));
-    pRenderObjects(); pHint();
+    pRenderObjects(); pRenderExisting(); pHint();
   };
   pId("patchObjNone").onclick = () => {
-    P.selected = new Set(); pRenderObjects(); pHint();
+    P.selected = new Set(); pRenderObjects(); pRenderExisting(); pHint();
+  };
+  const reset = pId("patchExistingReset");
+  if (reset) reset.onclick = () => {
+    P.renames = {};
+    pRenderExisting(); pHint();
+    toast("已还原全部改名", 3000);
   };
 
   pId("patchAddRow").onclick = () => {
@@ -663,10 +774,6 @@ function pBind() {
   // 对齐分析：勾了「关联项目」后自动跑（pRenderObjects 里触发），这里给个手动重算入口
   const reAlign = pId("btnPatchAlign");
   if (reAlign) reAlign.onclick = () => pAlign();
-  // 模式改了要重新提示「对齐行必须覆盖」，避免用户切回「跳过」还不自知
-  if (modeSel) {
-    modeSel.onchange = () => { pHint(); if (P.link.size) pAlign(); };
-  }
 }
 
 pBind();

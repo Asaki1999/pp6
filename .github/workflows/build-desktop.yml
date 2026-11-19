@@ -35,6 +35,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 挡住误提交的明文 Key（2026-11-18 排查过一次“以为推到 GitHub”）
+      - name: 密钥扫描
+        run: python tools/check_secrets.py
+
       - uses: actions/setup-python@v5
         with:
           # 与本机已验证的打包环境一致（本机 .venv: Python 3.13.12）

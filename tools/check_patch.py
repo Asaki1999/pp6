@@ -6,8 +6,9 @@
 
 验收口径（2026-11-11 逆向系统推送工作区产物时定下）：
     1. 没被点名的 zip 条目**字节**完全一致，条目顺序 / 时间戳 / 压缩方式不变；
-    2. 被改的 bo XML 只允许插入（或按 replace 模式替换那一行），
-       不能出现意外删除、不能把单行原生 XML 重新格式化；
+    2. 被改的 bo XML 只允许插入新字段，或把已有字段的 name 定点替换
+       （rename 模式：除 name 外零字节变化），不能出现意外删除、
+       不能把单行原生 XML 重新格式化；
     3. 补丁后 XML 可解析、字段 code 不重复、新 sn 不撞已有 sn；
     4. 选项字段的字典类型 / 候选值 / attrs 样式一并就位；
     5. comment 仍是 CONFIG_SYNC_NOTE: 格式；
@@ -172,19 +173,29 @@ def run(path: Path) -> None:
             ok("没有产生任何改动" in str(exc),
                "纯同名 + skip 明确报「没有产生任何改动」")
         replaced, _, rep4 = patch.build_patch(
-            raw, {**spec, "fields": [{**dup[0], "type": "clob"}], "mode": "replace"})
+            raw, {**spec, "fields": [{**dup[0], "name": "改名后的字段", "type": "clob"}],
+                  "mode": "rename"})
         with zipfile.ZipFile(io.BytesIO(raw)) as a, \
                 zipfile.ZipFile(io.BytesIO(replaced)) as b:
             old = a.read(target["file"]).decode("utf-8")
             new = b.read(target["file"]).decode("utf-8")
             by_code = {x["code"]: x for x in attrs_of(new)}
             old_row = {x["code"]: x for x in attrs_of(old)}[dup[0]["code"]]
-            ok(by_code[dup[0]["code"]]["dataTypeNew"] == "clob",
-               "replace 模式：同名行按新定义覆盖")
+            ok(by_code[dup[0]["code"]]["name"] == "改名后的字段",
+               "rename 模式：已有字段名称生效")
+            ok(by_code[dup[0]["code"]]["dataTypeNew"] == old_row.get("dataTypeNew"),
+               "rename 模式：类型等定义改动被忽略")
             ok(by_code[dup[0]["code"]]["fieldName"] == old_row.get("fieldName"),
-               "replace 不改物理列名 fieldName")
-            ok(len(attrs_of(new)) == len(attrs_of(old)), "replace 不会多出字段")
-        ok(bool(rep4["changed"][target["file"]]["replaced"]), "报告里记了覆盖")
+               "rename 不改物理列名 fieldName")
+            ok(len(attrs_of(new)) == len(attrs_of(old)), "rename 不会多出/少掉字段")
+        ok(any(a.get("rename") for a in rep4["changed"][target["file"]]["replaced"]),
+           "报告里记了改名")
+        try:
+            patch.build_patch(raw, {**spec, "mode": "rename",
+                                    "deleteFields": [existing_code]})
+            ok(False, "删除已有字段应当报错")
+        except ValueError as exc:
+            ok("删除" in str(exc), "删除已有字段被拒绝")
 
     # ---- 4. 多副本
     dup_files = [o["file"] for o in snap["objects"] if o["code"] == target["code"]]

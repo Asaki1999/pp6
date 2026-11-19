@@ -43,12 +43,30 @@ window.ProjLink = (function () {
   /* 多候选下拉的选择："对象编码.字段编码" → 项目字段编码（为空 = 最匹配） */
   const _candChoice = new Map();
 
-  const SOURCE_LABEL = {
-    target_db: "目标库",
-    package_snapshot: "随包快照",
-    package_upload: "上传的项目包",
-    unavailable: "无",
-  };
+  /* 对齐目标（项目 / 其他业务对象）。文案一律从这里取：组件本身不假设
+   * 「关联的一定是项目」。老包（后端还没带 target）按项目兜底，保证存量
+   * JSON 也能画出来。 */
+  function tgtOf(vm) {
+    const v = (vm || _vm || {}).target;
+    if (v && (v.name || v.code)) return v;
+    const p = (vm || _vm || {}).project || {};
+    return { name: "项目", code: p.code || "project", tbl: p.tbl || "pp_project",
+      link_label: "所属项目", is_project: true };
+  }
+  /* 目标名（原样，用于已经会被再转义一次的文本流，如差异摘要） */
+  function tName(vm) { return String(tgtOf(vm).name || "项目"); }
+  /* 目标名 / 物理表 / 链接字段中文名（已转义，直接拼进 HTML） */
+  const TN = () => esc(tName());
+  const TTBL = () => esc(tgtOf().tbl || "");
+  const TLINK = () => esc(tgtOf().link_label || "所属项目");
+
+  /* 快照来源兜底文案（正常走后端 snapshotSourceLabel）。做成函数：上传包那档
+   * 要写「上传的合同包」，常量表会在模块加载时把「项目」写死。 */
+  function sourceLabel(code) {
+    if (code === "package_upload") return `上传的${tName()}包`;
+    return { target_db: "目标库", package_snapshot: "随包快照",
+      unavailable: "无" }[code] || code || "无";
+  }
 
   /* 关系状态 → 显示文案（后端给 status，前端只翻译） */
   const STATUS = {
@@ -207,7 +225,7 @@ window.ProjLink = (function () {
       const mine = o.mineKey || o.mineName || "";
       const theirs = o.projectKey || o.projectName || "";
       const state = { changed: "", only_project: "（你没有）",
-        only_mine: "（项目没有）" }[o.state] || "";
+        only_mine: `（${tName()}没有）` }[o.state] || "";
       out.push(`选项 ${o.name} ${short(mine)}→${short(theirs)}${state}`);
     });
     return out;
@@ -260,14 +278,14 @@ window.ProjLink = (function () {
     const note = r.note
       ? `<div class="pl-rel-note">⚠ ${esc(r.note)}</div>` : "";
     const pick = auto
-      ? '<span class="pl-rel-locked muted" title="字段名完全一致，已按项目定义自动覆盖">已自动覆盖</span>'
+      ? `<span class="pl-rel-locked muted" title="字段名完全一致，已按${TN()}定义自动覆盖">已自动覆盖</span>`
       : disabled
-        ? '<span class="pl-rel-locked muted" title="冲突：项目字段已被别的字段认领">保留我的</span>'
+        ? `<span class="pl-rel-locked muted" title="冲突：${TN()}字段已被别的字段认领">保留我的</span>`
         : `<label class="pl-rel-pick">
              <input type="checkbox" data-pl-pick="${esc(key)}"
                     data-pl-obj="${esc(objCode)}" data-pl-field="${esc(r.fieldCode)}"
                     ${checked ? "checked" : ""}>
-             <span>按项目覆盖</span>
+             <span>按${TN()}覆盖</span>
            </label>`;
     return `
       <div class="pl-rel-row ${esc(st.cls)}" data-pl-rel="${esc(key)}">
@@ -278,7 +296,7 @@ window.ProjLink = (function () {
             <span class="pl-rel-chip ${esc(st.cls)}">${esc(RULE_LABEL[r.rule] || st.text)}
               ${r.rule ? `<i>${esc(r.rule)}</i>` : ""}</span>
             <span class="pl-rel-arrow">→</span>
-            <span class="pl-rel-target">项目字段 ${targetLabel(r.target)}</span>
+            <span class="pl-rel-target">${TN()}字段 ${targetLabel(r.target)}</span>
             <span class="pl-rel-status ${esc(st.cls)}">${esc(st.text)}</span>
           </div>
           <div class="pl-rel-basis">
@@ -308,7 +326,7 @@ window.ProjLink = (function () {
       .join("");
     return `
       <details class="pl-rel-unrelated" data-pl-unrelated="${rows.length}">
-        <summary>无关字段（${rows.length}）—— 项目里没有对应字段，将按原规则生成</summary>
+        <summary>无关字段（${rows.length}）—— ${TN()}里没有对应字段，将按原规则生成</summary>
         <div class="pl-rel-unrelated-list">${names}</div>
       </details>`;
   }
@@ -330,7 +348,7 @@ window.ProjLink = (function () {
     }).join("");
     return `
       <table class="pl-rel-table">
-        <thead><tr><th>字段</th><th>状态</th><th>项目字段</th><th>依据</th><th>处理</th></tr></thead>
+        <thead><tr><th>字段</th><th>状态</th><th>${TN()}字段</th><th>依据</th><th>处理</th></tr></thead>
         <tbody>${body}</tbody>
       </table>`;
   }
@@ -342,12 +360,16 @@ window.ProjLink = (function () {
     return chip + mode;
   }
 
-  /* 选项值差异的三种状态（后端给 state，前端只翻译成人话） */
-  const OPT_STATE = {
-    changed: { cls: "warn", text: "码不同" },
-    only_project: { cls: "add", text: "项目新增" },
-    only_mine: { cls: "mine", text: "将被替换" },
-  };
+  /* 选项值差异的三种状态（后端给 state，前端只翻译成人话）。
+   * 做成函数而不是常量表：「项目新增」在关联其他对象时要变成「合同新增」，
+   * 常量会在模块加载时（_vm 还是 null）把「项目」写死。 */
+  function optState() {
+    return {
+      changed: { cls: "warn", text: "码不同" },
+      only_project: { cls: "add", text: `${tName()}新增` },
+      only_mine: { cls: "mine", text: "将被替换" },
+    };
+  }
 
   /* 选项值一格：「名称 业务码」；只有一侧有的值直接写清「你没有 / 项目没有」 */
   function optionCell(side, row) {
@@ -360,7 +382,7 @@ window.ProjLink = (function () {
       return esc(name + key);
     }
     if (row.mineName === null && row.mineKey === null) {
-      return '<span class="pl-none project">（项目没有）</span>';
+      return `<span class="pl-none project">（${TN()}没有）</span>`;
     }
     const name = row.mineName || row.mineKey || "";
     const key = row.mineKey && row.mineName ? ` ${row.mineKey}` : "";
@@ -368,7 +390,7 @@ window.ProjLink = (function () {
   }
 
   function optionRow(row) {
-    const meta = OPT_STATE[row.state] || { cls: "warn", text: row.state || "" };
+    const meta = optState()[row.state] || { cls: "warn", text: row.state || "" };
     return `
       <tr class="pl-opt ${esc(meta.cls)}">
         <th>选项值<span class="pl-opt-tag ${esc(meta.cls)}">${esc(meta.text)}</span></th>
@@ -391,7 +413,7 @@ window.ProjLink = (function () {
       <div class="pl-dtable-wrap">
         <table class="pl-dtable">
           <thead>
-            <tr><th>项</th><th>pp_project</th><th>你的 Excel</th></tr>
+            <tr><th>项</th><th>${TTBL()}</th><th>你的 Excel</th></tr>
           </thead>
           <tbody>${changes}${options}</tbody>
         </table>
@@ -439,7 +461,7 @@ window.ProjLink = (function () {
     return links.map((l) => `
       <div class="pl-line ok">+ 自动补「${esc(l.fieldName)}」<code>${esc(l.code)}</code>
         ${esc(l.objectName || l.objectCode)}
-        <span class="muted">（Excel 里没有这一列，按项目对象范式补的）</span>
+        <span class="muted">（Excel 里没有这一列，按${TN()}对象范式补的）</span>
       </div>`).join("");
   }
 
@@ -447,15 +469,15 @@ window.ProjLink = (function () {
     const links = addedLinkHtml(vm);
     if (links) {
       return `<div class="pl-card">${links}
-        <div class="pl-line muted">字段与项目定义一致，没有需要覆盖的差异</div></div>`;
+        <div class="pl-line muted">字段与${TN()}定义一致，没有需要覆盖的差异</div></div>`;
     }
-    return '<div class="pl-card"><div class="pl-line muted">字段与项目一致，无需对齐</div></div>';
+    return `<div class="pl-card"><div class="pl-line muted">字段与${TN()}一致，无需对齐</div></div>`;
   }
 
   function headLine(vm, items) {
     const s = summaryOf(vm);
     const head = (vm && vm.summary) || {};
-    return `关联项目 ${esc(head.linkedObjects || items.length)} 个对象`
+    return `关联${TN()} ${esc(head.linkedObjects || items.length)} 个对象`
       + ` · 直接对应 ${esc(s.auto)} 个已自动覆盖`
       + ` · 待确认 ${esc(s.needsConfirm)} 个`
       + ` · 无关 ${esc(s.unrelated)} 个按原规则生成`
@@ -474,8 +496,8 @@ window.ProjLink = (function () {
       return;
     }
     box.hidden = false;
-    const src = (vm && (vm.snapshotSourceLabel || SOURCE_LABEL[vm.snapshotSource]))
-      || (vm && vm.snapshotSource) || "无";
+    const src = (vm && vm.snapshotSourceLabel)
+      || sourceLabel(vm && vm.snapshotSource);
     const when = vm && vm.snapshotGeneratedAt
       ? ` ${String(vm.snapshotGeneratedAt).slice(0, 10)}` : "";
     const rows = diffsOf(vm);
@@ -497,14 +519,14 @@ window.ProjLink = (function () {
           ${relTableHtml(it)}
           ${unrelatedHtml(unrelated)}
           ${unknown ? `<div class="pl-line muted">另有 ${esc(unknown)} 个字段不参与对齐
-            （系统字段 / 本对象自身的名称·标题 / 已是「所属项目」）</div>` : ""}
+            （系统字段 / 本对象自身的名称·标题 / 已是「${TLINK()}」）</div>` : ""}
         </div>`;
     }).join("");
     const conflicts = items.reduce((acc, it) => acc.concat((it.conflicts || []).map(
       (c) => `<div class="pl-line bad">✗ ${esc(it.objectName)} ${esc(c.message)}</div>`)), []);
     box.innerHTML = `
       <div class="pl-head">
-        <strong>项目字段对齐</strong>
+        <strong>${TN()}字段对齐</strong>
         <span class="chip muted">字段快照：${esc(src)}${esc(when)}</span>
         <span class="muted pl-head-tip">${headLine(vm, items)}</span>
       </div>
@@ -542,8 +564,8 @@ window.ProjLink = (function () {
     _candChoice.clear();                   // 多候选下拉也回到「最匹配」
     if (head) {
       head.textContent = rows.length
-        ? "这些字段和项目相近，要按项目定义覆盖吗？"
-        : "项目字段已自动对齐，下面是改动明细";
+        ? `这些字段和${tName()}相近，要按${tName()}定义覆盖吗？`
+        : `${tName()}字段已自动对齐，下面是改动明细`;
     }
     body.innerHTML = bodyHtml(_vm);
     mask.hidden = false;
@@ -637,12 +659,12 @@ window.ProjLink = (function () {
     const links = addedLinkHtml(vm);
     const newCount = (vm && vm.newFieldCount) || 0;
     const meta = `
-      <div class="muted">勾了「关联项目」的对象，只有<b>直接对应</b>（字段名完全一致 +
-        类型同族）的字段会照 pp_project 的定义自动覆盖。下面这些是「相近」或「需确认」的：
-        <b>默认保留你的定义</b>，勾上「按项目覆盖」才会改。</div>
+      <div class="muted">勾了「关联${TN()}」的对象，只有<b>直接对应</b>（字段名完全一致 +
+        类型同族）的字段会照 ${TTBL()} 的定义自动覆盖。下面这些是「相近」或「需确认」的：
+        <b>默认保留你的定义</b>，勾上「按${TN()}覆盖」才会改。</div>
       <div class="pl-modal-meta muted">
-        项目对象：${esc((vm && vm.project && vm.project.code) || "project")}
-        （${esc((vm && vm.project && vm.project.tbl) || "pp_project")}）·
+        ${TN()}对象：${esc(tgtOf(vm).code || "project")}
+        （${esc((vm && vm.project && vm.project.tbl) || tgtOf(vm).tbl || "pp_project")}）·
         字段快照来源：${esc((vm && (vm.snapshotSourceLabel || vm.snapshotSource)) || "无")}
         ${vm && vm.snapshotGeneratedAt
     ? " " + esc(String(vm.snapshotGeneratedAt).slice(0, 10)) : ""}
@@ -670,7 +692,7 @@ window.ProjLink = (function () {
         <div class="pl-rel-group-head">
           <strong>直接对应（已自动覆盖）</strong>
           <span class="chip muted">${autoRows.length}</span>
-          <span class="muted">字段名完全一致；下面是项目定义改了什么，只读</span>
+          <span class="muted">字段名完全一致；下面是${TN()}定义改了什么，只读</span>
         </div>
         ${autoRows.map((r) => rowHtml(
           r.objectCode || objOf(vm, r.fieldCode), r, true)).join("")}
@@ -679,7 +701,7 @@ window.ProjLink = (function () {
     return `${meta}${links}${autoGroup}${groups}
       ${unrelatedHtml(unrelated)}
       ${newCount ? `<div class="pl-modal-meta muted">其余 ${esc(newCount)} 个新字段
-        （项目对象里没有）按原规则生成，不参与覆盖。</div>` : ""}`;
+        （${TN()}对象里没有）按原规则生成，不参与覆盖。</div>` : ""}`;
   }
 
   /* 扁平 relations 里没有 objectCode（后端按对象给 items 时才有）：
@@ -738,7 +760,7 @@ window.ProjLink = (function () {
   function summary(vm) {
     const got = vm || _vm;
     const s = summaryOf(got);
-    return `关联项目 ${((got && got.summary) || {}).linkedObjects || 0} 个对象`
+    return `关联${tName(got)} ${((got && got.summary) || {}).linkedObjects || 0} 个对象`
       + ` / 自动覆盖 ${s.auto} 个 / 待确认 ${s.needsConfirm} 个 / 无关 ${s.unrelated} 个`;
   }
 

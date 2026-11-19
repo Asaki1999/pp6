@@ -365,11 +365,17 @@ def demo_project() -> Project:
         code="demo_purchase",
         name="采购申请",
         tbl_name="pp_demo_purchase",
-        module_id="",
-        type_id="",
+        # 平台导入需要对象归属模块/类型；取线上 project 样本的 ID（同一套 8112 环境）。
+        # 留空时系统可能直接判「缺少模块/类型」，示例就失去验证导入的意义。
+        module_id="1489649312991281152",
+        type_id="1372668127854247936",
         desc="示例业务对象",
         with_log=True,
-        flow_driven=True,          # 示例演示默认三步流程：开始 → 部门审批 → 通过
+        # 示例默认必须是**普通对象**：流程对象要配流程 XML 才能导入，
+        # 而「载入示例」的用户是拿它验证「zip 能不能进系统」的。
+        # 2026-11-18 用户实测：示例导出的包导入失败，根因就是这里默认成了流程模式，
+        # 同步包里却没有流程定义（本工具不生成流程 XML）。
+        flow_driven=False,
     )
     base = [
         ("title", "申请标题", "varchar", 200, None, []),
@@ -405,7 +411,9 @@ def demo_project() -> Project:
     ))
 
     form = Form(key="create_demo_purchase", name="新建采购申请", bo_code=bo.code,
-                layout=2, kind="bundle")
+                layout=2, kind="bundle",
+                # 表单分类 ID：线上 project 表单样本；留空导入端可能不认
+                type_id="1448359670107344896")
     # 控件类型要和业务对象字段对得上（列在 _CONTROL_BY_TYPE 里）：
     # 这里以前手写成 text/editor，和展开出来的详情表单（number/textarea/datePicker）
     # 对不上，表单体检会报「同一字段控件类型不一致」，而且示例本身就是错的。
@@ -419,6 +427,8 @@ def demo_project() -> Project:
         ("urgency", "紧急程度", "dictionary", False, False, "demo_purchase_urgency", "金额与时间"),
         ("applyDate", "申请日期", "datePicker", False, False, "", "金额与时间"),
         ("applyReason", "申请事由", "textarea", False, True, "", "补充说明"),
+        # 附件控件：BO 侧类型是 file，表单控件是 attachment（两个名字不能混）
+        ("attachments", "附件列表", "attachment", False, True, "", "补充说明"),
         # 子表控件：字段类型=表格，控件自动出 tableField（这里显式写出来当范例）
         ("lineItems", "采购明细", "tableField", False, True, "", "采购明细"),
     ]:

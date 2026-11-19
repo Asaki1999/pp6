@@ -393,12 +393,19 @@ def parse_excel(data: bytes, projlink_header: str | None = None) -> dict:
     # 这里刻意不传 project 做 code 校验：Excel 里的对象可能刚被改名/删掉，一个过期
     # code 不该让整次解析 400 —— apply_linked 会把它降级成一条「已忽略」提示。
     decisions = None
+    target = _projlink.project_target()
     if projlink_header:
         decisions = _projlink.parse_decisions(projlink_header)
-        notices.extend(_projlink.apply_linked(proj, decisions))
+        # 目标对象解析放在 apply_linked 之前：它可能连库核对名称/抽快照，
+        # 解析不了要让整个请求明确报错，不能静默退回「项目」去对齐错对象。
+        target = _resolve_link_target(decisions)
+        proj.link_target = target
+        notices.extend(_projlink.apply_linked(proj, decisions, target))
+    else:
+        proj.link_target = target
 
     try:
-        project_align = _projlink.analyze(proj, decisions=decisions)
+        project_align = _projlink.analyze(proj, decisions=decisions, target=target)
     except Exception as exc:                     # noqa: BLE001
         project_align = {"status": "unavailable", "notice": f"项目对齐分析失败：{exc}",
                          "snapshotSource": "unavailable", "snapshotSourceLabel": "无",
@@ -440,7 +447,7 @@ def parse_excel(data: bytes, projlink_header: str | None = None) -> dict:
     try:
         # 带 decisions：与出包走同一个函数，预览里看到的编码/长度就是包里那份。
         # 开关只改 project_link（已在上面 apply_linked 落过），这里不会重复加字段。
-        _projlink.apply(proj, decisions)
+        _projlink.apply(proj, decisions, target=proj.link_target or target)
     except ValueError as exc:
         # 对齐失败不能把整个解析变成 500——用户还要看别的校验结果去修表
         _report_align_failure(str(exc))
@@ -487,6 +494,10 @@ def parse_excel(data: bytes, projlink_header: str | None = None) -> dict:
 
     return {
         "ok": True,
+        # 本次对齐的目标对象（项目 / 用户手输的其它业务对象）：前端据此换文案、
+        # 决定要不要继续追问「上传对象 zip」。
+        "linkTarget": (proj.link_target.to_dict()
+                       if getattr(proj, "link_target", None) is not None else None),
         # 是不是本工具的填写模板（看页签名，不看有没有填内容）：
         # 「模板但空着」要在界面上提示去 1_业务对象 填；「不是模板」交给 AI 识别。
         "looksTemplate": any(name in proj.sheet_names for name in spec.COLUMNS),
@@ -590,10 +601,14 @@ def build_zip(data: bytes, codes: list[str] | None = None,
         # （切片是浅拷贝，Bo 实例共享）、build 之前（生成器读最终模型）。
         from . import projlink as _projlink
         align_report: dict = {}
+        target = _projlink.project_target()
+        proj.link_target = target
         if projlink_header is not None or any(
                 getattr(b, "project_link", False) for b in proj.bos):
             align_decisions = _projlink.parse_decisions(projlink_header, proj)
-            align_report = _projlink.apply(proj, align_decisions)
+            target = _resolve_link_target(align_decisions)
+            proj.link_target = target
+            align_report = _projlink.apply(proj, align_decisions, target=target)
 
         # 流程页没有勾「流程驱动」时，后端按固定三步把全部对象纳入流程对象包；
         # 必须在 validate 之前改，后面的流程字段/字典/校验才按流程对象走。
@@ -649,7 +664,8 @@ def build_zip(data: bytes, codes: list[str] | None = None,
         if align_report and not align_report.get("noop", True):
             _s = align_report.get("summary") or {}
             # 一行汇总（PRD P1-2 要求 zip comment 里能一眼看到做过对齐）
-            lines.insert(4, f"项目对齐: 新增 {_s.get('linkFields', 0)} / "
+            _title = "项目对齐" if target.is_project else f"{target.name}对齐"
+            lines.insert(4, f"{_title}: 新增 {_s.get('linkFields', 0)} / "
                             f"对齐 {_s.get('aligned', 0)} / 跳过 {_s.get('skipped', 0)}")
         if scope == "workflow":
             # 这一包是从「流程模式」工作区导出的：只有流程模式的对象，
@@ -697,8 +713,8 @@ def build_zip(data: bytes, codes: list[str] | None = None,
             lines += ["", "提示:"] + [f"  - {n}" for n in dict.fromkeys(res.notices)]
         if align_report and not align_report.get("noop", True):
             # 独立小节：用户要能从报告里逐条看到「哪个字段对齐成了什么、哪些跳过了」
-            lines += ["", "项目对齐:"] + [f"  {x}"
-                                         for x in _projlink.report_lines(align_report)[1:]]
+            lines += ["", ("项目对齐:" if target.is_project else f"{target.name}对齐:")] + [
+                f"  {x}" for x in _projlink.report_lines(align_report, target)[1:]]
         warns = [i for i in issues if i.level == "warn"]
         if warns:
             lines += ["", "警告:"] + [f"  - {i}" for i in warns]
@@ -777,10 +793,14 @@ def confirmed_excel(data: bytes, relations_header: str | None = None,
         # 确认版里必须有这条字段行/控件行，否则用户下次打开看不到「所属项目」，
         # 再上传又会被当成「没关联项目」跑一遍。
         from . import projlink as _projlink
+        target = _projlink.project_target()
+        proj.link_target = target
         if projlink_header is not None or any(
                 getattr(b, "project_link", False) for b in proj.bos):
             align_decisions = _projlink.parse_decisions(projlink_header, proj)
-            _projlink.apply(proj, align_decisions)
+            target = _resolve_link_target(align_decisions)
+            proj.link_target = target
+            _projlink.apply(proj, align_decisions, target=target)
         for note in ensure_project_links(proj):
             if note not in rel_notices:
                 rel_notices.append(note)
@@ -951,7 +971,9 @@ def import_module(data: bytes, code: str,
         from . import projlink as _projlink
 
         decisions = _projlink.parse_decisions(projlink_header)
-        _projlink.apply(proj, decisions)
+        target = _resolve_link_target(decisions)
+        proj.link_target = target
+        _projlink.apply(proj, decisions, target=target)
     work = _tmp_dir("import-build")
     try:
         res = build(proj, _snippets(), work, codes=[code], db_align=True)
@@ -1081,6 +1103,8 @@ def nlq_config() -> dict:
         # 内置免费平台预设：前端拿它渲染下拉框，用户选完自动填地址和模型
         "providers": nlq_providers.as_list(),
         "examples": len(nlq_store.all_examples()),
+        # 只回传路径，不回传 Key；让用户知道「已记住」是本机文件，不是安装包自带
+        "config_path": "~/.pp6kit/nlq.json",
     }
 
 
@@ -1090,6 +1114,45 @@ def nlq_config() -> dict:
 #   ② 随包 assets/project_fields.json
 #   ③ 用户上传的项目对象 zip（save_snapshot_upload → token）
 # 客户端没连库时 ① 没有、② 可能过期，所以界面上要提示用户传 ③。
+#
+# 2026-11-18 起还支持「其它业务对象」：target={name,code} 由决策头带上来，
+# 连库时按名称精确解析（并缓存该对象字段快照），没连库时用上传 zip 的 token。
+
+
+def _resolve_link_target(decisions: dict | None):
+    """把 X-Project-Link.target 解析成 TargetObject（缺省 = 项目）。"""
+    from . import projlink as _pl
+
+    target = (decisions or {}).get("target") or {}
+    return _pl.resolve_target(
+        target.get("name") or "",
+        target.get("code") or "",
+        (decisions or {}).get("snapshot") or "")
+
+
+def link_target_status(name: str = "", code: str = "") -> dict:
+    """界面「核对业务对象名称」用：库精确匹配 + 快照可用性。"""
+    from . import projlink as _pl
+
+    try:
+        return _pl.target_status(name, code)
+    except Exception as exc:                       # noqa: BLE001
+        return {"ok": False, "error": str(exc), "dbConfigured": _pl.db_is_configured(),
+                "name": name, "matches": [], "resolved": False, "target": None,
+                "fieldCount": 0, "status": "unavailable", "warnings": []}
+
+
+def link_target_upload(data: bytes, name: str = "", code: str = "") -> dict:
+    """上传「其它业务对象」的 zip，解析成该对象的字段池。"""
+    from . import projlink as _pl
+
+    # 上传的 zip 本身就是字段池的权威来源：按用户输入的名称/编码从包里认对象，
+    # 不再查库（库里没这个对象、或用户就是想用包里的版本时也要能继续）。
+    target = _pl.resolve_target_from_zip(data, name, code)
+    res = _pl.save_snapshot_upload(data, target)
+    res["ok"] = True
+    return res
+
 
 def project_snapshot_status() -> dict:
     """当前「项目字段」从哪来、要不要让用户传项目包。"""
@@ -2000,8 +2063,15 @@ def nlq_save_correction(payload: dict) -> dict:
             "note": "已记下你的改法" + ("和原因" if note else "") + "，下次同样的问题会直接用这条"}
 
 
-def template_bytes() -> bytes:
-    wb = build_workbook(demo_project())
+def template_bytes(blank: bool = False) -> bytes:
+    """填写模板 xlsx。
+
+    ``blank=True`` 出**空白模板**：14 个页签、表头与说明行齐全，一条数据都不预填，
+    给「先下模板手填」的用户（2026-11-18 恢复这个入口，之前随入口改版一起下线过）。
+    默认仍是带「采购申请」示例的版本，「载入示例看效果」继续用它。
+    两者页签、列顺序、说明行完全一致，只差有没有示例数据。
+    """
+    wb = build_workbook(Project() if blank else demo_project())
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -2255,6 +2325,14 @@ class Handler(BaseHTTPRequestHandler):
             # 关联项目要用「项目对象字段」：优先库、其次随包、再次用户上传的项目 zip。
             # 前端拿 dbConfigured 判断要不要弹「导入项目包」。
             self._json(project_snapshot_status())
+        elif path == "/api/link-target":
+            # 关联「其它业务对象」：按用户输入的名称在库里精确核对，
+            # 顺带回物理表名与表说明（iform_bo_table.comment_）。
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            self._json({"ok": True, **link_target_status(
+                (qs.get("name") or [""])[0],
+                (qs.get("code") or [""])[0])})
         elif path == "/api/objects/lookup":
             # 用户填了名字 → 查库里有没有：有就返回 id 和已有模板 key
             from urllib.parse import parse_qs, urlparse
@@ -2262,9 +2340,14 @@ class Handler(BaseHTTPRequestHandler):
             name = (qs.get("name") or [""])[0]
             self._json({"ok": True, "query": name, **objects.lookup(name)})
         elif path == "/api/template":
-            self._send(200, template_bytes(),
+            # ?blank=1 给空白模板（只有表头 + 说明行），默认给带示例的填写模板。
+            # 两个入口并存：手填走空白，想先看长什么样走「载入示例看效果」。
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            blank = (qs.get("blank") or [""])[0].lower() in ("1", "true", "yes")
+            self._send(200, template_bytes(blank),
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                       "PP6-填写模板.xlsx")
+                       "PP6-填写模板-空白.xlsx" if blank else "PP6-填写模板.xlsx")
         elif path == "/api/patch/fields-template":
             self._send(200, bo_patch.fields_template_bytes(),
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2388,6 +2471,17 @@ class Handler(BaseHTTPRequestHandler):
                 # 之后 parse/build 的 X-Project-Link 里带 snapshot=token 就会用它。
                 try:
                     self._json(project_snapshot_upload(self._body()))
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc)}, 400)
+            elif self.path.split("?")[0] == "/api/link-target":
+                # 没连库 / 库里查不到时，用户上传目标业务对象的 zip。
+                from urllib.parse import parse_qs, urlparse
+                qs = parse_qs(urlparse(self.path).query)
+                try:
+                    self._json(link_target_upload(
+                        self._body(),
+                        (qs.get("name") or [""])[0],
+                        (qs.get("code") or [""])[0]))
                 except Exception as exc:
                     self._json({"ok": False, "error": str(exc)}, 400)
             elif self.path == "/api/objects/refresh":

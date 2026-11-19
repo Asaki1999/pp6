@@ -11,6 +11,7 @@ import re
 import ssl
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -82,6 +83,31 @@ def _endpoint(base_url: str) -> str:
     return base + "/v1/chat/completions"
 
 
+def _is_internal(url: str) -> bool:
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    return (host.endswith(".powerproject.cn") or host.endswith(".local")
+            or host in ("localhost", "127.0.0.1")
+            or host.startswith("111.15."))
+
+
+def _open(req, timeout: int):
+    """内网地址优先直连，绕开本机代理的中间人证书。
+
+    FlClash/Clash 这类代理开了 MITM 后，Python 的证书库不一定认它的根证书，
+    表现就是 `CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate`。
+    内网网关本来就不需要代理，直连最稳；直连失败再回退到系统代理。
+    """
+    if _is_internal(req.full_url):
+        try:
+            return urllib.request.build_opener(
+                urllib.request.ProxyHandler({})).open(req, timeout=timeout)
+        except urllib.error.HTTPError:
+            raise         # 401/429 是应用层响应，不要因为“直连失败”再走代理重发
+        except Exception:
+            pass          # 直连不通，回退到环境里的代理
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def chat(base_url: str, api_key: str, model: str, messages: list[dict],
          temperature: float = 0.0, timeout: int = 60,
          max_tokens: int | None = None) -> str:
@@ -106,7 +132,7 @@ def chat(base_url: str, api_key: str, model: str, messages: list[dict],
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _open(req, timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "ignore")[:400]
@@ -122,6 +148,12 @@ def chat(base_url: str, api_key: str, model: str, messages: list[dict],
         if exc.code >= 500:
             raise TransientError(f"服务端 {exc.code}：{body[:80]}") from exc
         raise LlmError(f"接口返回 {exc.code}：{body}") from exc
+    except ssl.SSLCertVerificationError as exc:
+        raise TransientError(
+            "证书校验失败：通常是本机代理/VPN 的中间人证书未被信任，"
+            "或代理节点证书链不完整。请把代理设为直连/关闭 MITM，"
+            "或把代理根证书装进系统钥匙串；内网地址可直接访问。"
+            f"（{exc}）") from exc
     except (ssl.SSLError, urllib.error.URLError, TimeoutError,
             ConnectionError, http.client.RemoteDisconnected) as exc:
         # SSL EOF / 连接被重置 / 读取超时：属于网络抖动，交给上层重试

@@ -365,4 +365,69 @@ if (HTML) {
   out.B_title = page.indexOf("要按项目定义覆盖吗") >= 0;
 }
 
+/* ⑥ 目标不是项目（关联其他业务对象）：所有「项目」文案都要换成目标名。
+ * 这一节防的是「后端算对了、前端还写死项目」——用户在关联合同时看到
+ * 「按项目覆盖 / pp_project / 关联项目」，会以为对错了对象。 */
+const TGT = { code: "contract", name: "合同", tbl: "pp_contract",
+  link_label: "关联合同", table_label: "合同信息", is_project: false };
+const vmOther = vmOf(RELS, {
+  target: TGT,
+  snapshotSource: "package_upload",
+  snapshotSourceLabel: "",                  // 走前端兜底文案
+  project: { code: "contract", name: "合同", tbl: "pp_contract", fieldCount: 12 },
+  addedLinks: [{ objectCode: "contract", objectName: "合同", fieldName: "关联合同",
+    code: "contractId" }],
+});
+mask.hidden = true;
+PL.closeModal();
+PL.openModal(vmOther);
+const otherBody = body.innerHTML;
+out.T_opened = mask.hidden === false;
+out.T_title = el("plModalTitle").textContent;
+out.T_titleOk = out.T_title === "这些字段和合同相近，要按合同定义覆盖吗？";
+out.T_cover = otherBody.indexOf("按合同覆盖") >= 0;
+out.T_metaTarget = otherBody.indexOf("合同对象：contract") >= 0;
+out.T_metaTable = otherBody.indexOf("pp_contract") >= 0;
+/* 选项差异两处渲染都要换名字：页签里的差异卡（optionRow →「合同新增」）
+ * 与弹窗行内差异摘要（diffText →「（合同没有）」）。
+ * 只放 options、不放 changes：diffText 只取前 3 行，混着 changes 会把
+ * 选项那几行截掉，断言就成了假阳性。 */
+const OPT_DIFF = {
+  objectCode: "contract", objectName: "合同", fieldCode: "leibie", fieldName: "类别",
+  targetCode: "category", targetName: "类别", rule: "S4", updateMode: false, count: 2,
+  changes: [],
+  options: [
+    { name: "检修", mineKey: null, mineName: null, projectKey: "3",
+      projectName: "检修", state: "only_project" },
+    { name: "大修", mineKey: "04", mineName: "大修", projectKey: null,
+      projectName: null, state: "only_mine" },
+  ],
+};
+const REL_OPT = Object.assign({}, REL_AUTO_DIFF, { diff: OPT_DIFF });
+const vmOtherOpt = vmOf([REL_OPT, REL_UNRELATED], {
+  target: TGT, diffs: [OPT_DIFF], diffCount: 1,
+});
+PL.render(box, vmOtherOpt);
+out.T_optNew = box.innerHTML.indexOf("合同新增") >= 0;
+mask.hidden = true;
+PL.closeModal();
+PL.openModal(vmOtherOpt);
+out.T_optNoMine = body.innerHTML.indexOf("（合同没有）") >= 0;
+out.T_optNoProject = body.innerHTML.indexOf("（项目没有）") < 0
+  && box.innerHTML.indexOf("项目新增") < 0;
+out.T_linkField = otherBody.indexOf("关联合同") >= 0;
+out.T_noProjectWord = otherBody.indexOf("按项目覆盖") < 0
+  && otherBody.indexOf("pp_project") < 0
+  && otherBody.indexOf("项目对象：") < 0;
+
+PL.render(box, vmOther);
+const otherTab = box.innerHTML;
+out.T_tabHead = otherTab.indexOf("关联合同 1 个对象") >= 0;
+out.T_tabTitle = otherTab.indexOf("合同字段对齐") >= 0;
+out.T_tabHeader = otherTab.indexOf("<th>合同字段</th>") >= 0;
+out.T_tabNoProject = otherTab.indexOf("pp_project") < 0
+  && otherTab.indexOf("关联项目") < 0;
+out.T_uploadLabel = otherTab.indexOf("上传的合同包") >= 0;
+out.T_summary = PL.summary(vmOther);
+
 console.log(JSON.stringify(out));

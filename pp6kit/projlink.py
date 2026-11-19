@@ -29,7 +29,7 @@ from __future__ import annotations
 import copy
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import fieldtypes as _ft
@@ -106,6 +106,89 @@ _SNAPSHOT_VERSION = 1
 _EXTRA_NON_BUSINESS = {"pinyin"}
 
 
+# ---------------------------------------------------------------- 目标业务对象
+# 「关联项目」原来只认 code=project / pp_project。2026-11-18 起用户可以选择
+# 「其他业务对象」：手输对象名称 → 连库时按 iform_bo_def.name_ 精确匹配（并读取
+# iform_bo_table.comment_ 的表说明）；没连库时上传该对象的 zip 解析。
+# 除了链接字段的命名与文案，后续「字段对齐 / 改名 / 引用重写」与关联项目完全同构，
+# 所以这里只把「目标对象是谁」抽成一个值对象，其余逻辑继续复用。
+@dataclass(frozen=True)
+class TargetObject:
+    """要对齐的目标业务对象（默认项目）。
+
+    link_code / link_field / link_label 是**新增链接字段**的范式：
+      项目 → projectId / project_id_ / 所属项目（线上 project_create.projectId 实测）
+      其它 → {code}Id / {code}_id_ / 关联{name}（线上 customerId / contractId 等同族）
+    """
+
+    code: str = PROJECT_CODE
+    name: str = "项目"
+    tbl: str = PROJECT_TBL
+    link_code: str = LINK_CODE
+    link_field: str = LINK_FIELD_NAME
+    link_label: str = LINK_DEFAULT_NAME
+    table_label: str = ""          # 物理表说明（iform_bo_table.comment_）
+    matched_by: str = ""           # name / code / tableLabel / snapshot / default
+
+    @property
+    def is_project(self) -> bool:
+        return self.code == PROJECT_CODE
+
+    def to_dict(self) -> dict:
+        return {
+            "code": self.code,
+            "name": self.name,
+            "tbl": self.tbl,
+            "tableLabel": self.table_label,
+            "linkCode": self.link_code,
+            "linkField": self.link_field,
+            "linkLabel": self.link_label,
+            "matchedBy": self.matched_by,
+            "isProject": self.is_project,
+        }
+
+
+def project_target() -> TargetObject:
+    """项目对象的固定范式（保持 2026-11-14 的行为逐字节不变）。"""
+    return TargetObject()
+
+
+def target_for(code: str, name: str = "", tbl: str = "",
+               table_label: str = "", matched_by: str = "") -> TargetObject:
+    """按真实对象编码/名称构造目标。项目永远走固定范式，避免被库里的别名带偏。"""
+    code = str(code or "").strip()
+    if not code or code == PROJECT_CODE:
+        got = project_target()
+        if table_label or matched_by:
+            return replace(got, table_label=table_label,
+                           matched_by=matched_by or "default")
+        return got
+    name = str(name or "").strip() or code
+    tbl = str(tbl or "").strip() or f"pp_{code}"
+    link_code = code[:1].lower() + code[1:] + "Id"
+    link_field = camel_to_snake(code) + "_id_"
+    return TargetObject(
+        code=code, name=name, tbl=tbl,
+        link_code=link_code, link_field=link_field,
+        link_label=f"关联{name}", table_label=str(table_label or "").strip(),
+        matched_by=str(matched_by or "").strip(),
+    )
+
+
+def target_of(snap: "Snapshot | None") -> TargetObject:
+    """从快照的 project 元信息还原目标对象（上传 token 的路径用）。"""
+    if snap is None:
+        return project_target()
+    meta = dict(snap.project or {})
+    return target_for(
+        str(meta.get("code") or PROJECT_CODE),
+        str(meta.get("name") or "项目"),
+        str(meta.get("tbl") or ""),
+        str(meta.get("tableLabel") or meta.get("table_label") or ""),
+        "snapshot",
+    )
+
+
 # ---------------------------------------------------------------- 数据结构
 
 
@@ -154,7 +237,7 @@ class ProjectField:
 
 @dataclass
 class Snapshot:
-    """项目字段快照。三档来源：目标库 / 随包 / 上传的项目 zip。"""
+    """目标对象字段快照。三档来源：目标库 / 随包 / 上传的 zip。"""
 
     source: str = "unavailable"
     generated_at: str = ""
@@ -164,6 +247,9 @@ class Snapshot:
     warnings: list[str] = field(default_factory=list)
     # 快照文件里声明的字段总数（用来判断「解析到的比预期少」）
     declared_total: int = 0
+    # 字段数下限：项目对象要求 30+；其它业务对象可能只有 3~10 个字段，
+    # 拿项目的 30 去卡会把正常快照误判成 degraded。
+    min_fields: int = MIN_SNAPSHOT_FIELDS
 
     @property
     def status(self) -> str:
@@ -171,7 +257,7 @@ class Snapshot:
         if self.source == "unavailable" or not self.fields:
             return "unavailable"
         total = self.declared_total or len(self.fields)
-        if len(self.fields) < MIN_SNAPSHOT_FIELDS or total > len(self.fields):
+        if len(self.fields) < self.min_fields or total > len(self.fields):
             return "degraded"
         return "ok"
 
@@ -186,6 +272,15 @@ class Snapshot:
         return sorted(self.fields, key=lambda f: f.sn)
 
     def label(self) -> str:
+        """快照来源的人话说明。
+
+        上传包这一档要带上目标名：关联合同时还写「上传的项目包」会误导用户
+        以为是项目——文案跟项目一样就没法判断这份快照是谁的。
+        """
+        if self.source == "package_upload":
+            name = (target_of(self).name or "").strip()
+            if name and name != "项目":
+                return f"上传的{name}包"
         return _SOURCE_LABEL.get(self.source, self.source)
 
 
@@ -523,6 +618,27 @@ def is_project_code(code: str) -> bool:
     return str(code or "") in project_field_codes()
 
 
+def is_target_code(code: str, target: TargetObject | None = None) -> bool:
+    """编码是不是「当前目标对象」里本来就有的（含本轮新增的链接字段）。
+
+    和 is_project_code 的区别：这里只认**本次选中的对象**，不把库里的
+    contractId 全局加白——自建的 contractId 在关联项目时仍应提示去掉 Id 后缀。
+    """
+    code = str(code or "")
+    if not code:
+        return False
+    target = target or project_target()
+    if code == target.link_code:
+        return True
+    if target.is_project:
+        return is_project_code(code)
+    try:
+        snap = load_snapshot(target=target)
+    except Exception:                      # noqa: BLE001
+        return False
+    return any(f.code == code for f in snap.fields)
+
+
 def clear_code_cache() -> None:
     """快照刷新后调用，否则新加的字段名永远进不了白名单。"""
     global _PROJECT_CODES_CACHE
@@ -538,6 +654,19 @@ def _data_home() -> Path:
 
 def snapshot_cache_path() -> Path:
     return _data_home() / "project_fields.json"
+
+
+def target_cache_path(target: TargetObject | None = None) -> Path:
+    """目标对象快照的落盘位置。
+
+    项目继续用 ``~/.pp6kit/project_fields.json``（兼容老版本与 objects.refresh）；
+    其它对象放在 ``~/.pp6kit/target_fields/<code>.json``，互不覆盖。
+    """
+    target = target or project_target()
+    if target.is_project:
+        return snapshot_cache_path()
+    safe = re.sub(r"[^0-9A-Za-z_.-]+", "_", target.code).strip("_") or "object"
+    return _data_home() / "target_fields" / f"{safe}.json"
 
 
 def upload_dir() -> Path:
@@ -666,15 +795,18 @@ def _snapshot_from_payload(data: dict, source: str, where: str) -> Snapshot | No
     if not fields:
         return None
     declared = _as_int((data.get("project") or {}).get("attributeCount")) or 0
+    project = data.get("project") if isinstance(data.get("project"), dict) else {}
+    obj_code = str(project.get("code") or PROJECT_CODE)
+    obj_name = str(project.get("name") or ("项目" if obj_code == PROJECT_CODE else obj_code))
+    min_fields = MIN_SNAPSHOT_FIELDS if obj_code == PROJECT_CODE else 1
     warnings: list[str] = []
-    if len(fields) < MIN_SNAPSHOT_FIELDS:
+    if len(fields) < min_fields:
         warnings.append(
-            f"⚠ 项目字段快照只解析到 {len(fields)} 个字段（预期 {MIN_SNAPSHOT_FIELDS}+），"
+            f"⚠ {obj_name}字段快照只解析到 {len(fields)} 个字段（预期 {min_fields}+），"
             f"对齐结果可能不完整")
     elif declared and declared > len(fields):
         warnings.append(
-            f"⚠ 项目字段快照声明 {declared} 个字段，实际解析到 {len(fields)} 个，对齐结果可能不完整")
-    project = data.get("project") if isinstance(data.get("project"), dict) else {}
+            f"⚠ {obj_name}字段快照声明 {declared} 个字段，实际解析到 {len(fields)} 个，对齐结果可能不完整")
     system = data.get("systemCodes")
     return Snapshot(
         source=str(data.get("source") or source),
@@ -684,6 +816,7 @@ def _snapshot_from_payload(data: dict, source: str, where: str) -> Snapshot | No
         system_codes=set(system) if isinstance(system, list) and system else set(SYSTEM_CODES),
         warnings=warnings,
         declared_total=declared,
+        min_fields=min_fields,
     )
 
 
@@ -719,32 +852,62 @@ def clear_cache() -> None:
     _CACHE.clear()
 
 
-def load_snapshot(upload_token: str | None = None, force: bool = False) -> Snapshot:
-    """三档优先级：上传 token → ~/.pp6kit → 随包 assets → unavailable。"""
+def load_snapshot_file(upload_token: str, force: bool = False) -> Snapshot:
+    """只按 token 读快照文件（不校验目标对象），供 resolve_target 还原目标用。"""
+    token = str(upload_token or "").strip()
+    if not _TOKEN_RE.match(token):
+        raise ValueError("字段快照标识无效，请重新上传业务对象 zip")
+    path = upload_dir() / f"{token}.json"
+    if not path.is_file():
+        raise ValueError("字段快照标识无效，请重新上传业务对象 zip")
+    snap = _load_file(path, "package_upload", force)
+    if snap is None:
+        raise ValueError("字段快照文件读不出来，请重新上传业务对象 zip")
+    return snap
+
+
+def _snapshot_mismatch(snap: Snapshot, target: TargetObject) -> str:
+    meta = dict(snap.project or {})
+    code = str(meta.get("code") or PROJECT_CODE)
+    name = str(meta.get("name") or ("项目" if code == PROJECT_CODE else code))
+    if code == target.code:
+        return ""
+    return (f"这份快照是「{name}」（{code}），不是「{target.name}」"
+            f"（{target.code}）；请上传对应业务对象的 zip")
+
+
+def load_snapshot(upload_token: str | None = None, force: bool = False,
+                  target: TargetObject | None = None) -> Snapshot:
+    """三档优先级：上传 token → 目标库缓存 → 随包（仅项目）→ unavailable。"""
+    target = target or project_target()
     if force:
         clear_cache()
     token = str(upload_token or "").strip()
     if token:
-        if not _TOKEN_RE.match(token):
-            raise ValueError("项目快照标识无效，请重新上传项目 zip")
-        path = upload_dir() / f"{token}.json"
-        if not path.is_file():
-            raise ValueError("项目快照标识无效，请重新上传项目 zip")
-        snap = _load_file(path, "package_upload", force)
+        snap = load_snapshot_file(token, force)
+        bad = _snapshot_mismatch(snap, target)
+        if bad:
+            raise ValueError(bad)
+        return snap
+    snap = _load_file(target_cache_path(target), "target_db", force)
+    if snap is not None:
+        bad = _snapshot_mismatch(snap, target)
+        if not bad:
+            return snap
+    if target.is_project:
+        snap = _load_file(resource_root() / "assets" / "project_fields.json",
+                          "package_snapshot", force)
         if snap is not None:
             return snap
-    snap = _load_file(snapshot_cache_path(), "target_db", force)
-    if snap is not None:
-        return snap
-    snap = _load_file(resource_root() / "assets" / "project_fields.json",
-                      "package_snapshot", force)
-    if snap is not None:
-        return snap
+    label = "项目" if target.is_project else target.name
     return Snapshot(
         source="unavailable",
         fields=[],
-        warnings=["项目字段快照不可用（未连库刷新、无随包快照、未上传项目包），"
-                  "本次只补「所属项目」链接字段、不做字段对齐"],
+        project={"code": target.code, "name": target.name, "tbl": target.tbl,
+                 "tableLabel": target.table_label},
+        warnings=[f"{label}字段快照不可用（未连库刷新、无随包快照、未上传{label}包），"
+                  f"本次只补「{target.link_label}」链接字段、不做字段对齐"],
+        min_fields=1 if not target.is_project else MIN_SNAPSHOT_FIELDS,
     )
 
 
@@ -761,20 +924,62 @@ def save_snapshot(snap: Snapshot, path: Path | None = None) -> Path:
     return target
 
 
-def save_snapshot_upload(data: bytes) -> dict:
-    """把一份「项目对象包」zip 存成第③档快照，返回 token 与摘要。"""
+def resolve_target_from_zip(data: bytes, name: str = "",
+                            code: str = "") -> TargetObject:
+    """没连库时：先从上传的 zip 里按名称/编码认出目标对象（不落快照）。
+
+    用户只输入了名称、库里又查不到时走这里；找到对象后用它的真实 code/tbl
+    作为字段池。找不到就抛 ValueError，并列出包里有哪些对象。
+    """
+    import tempfile
+
+    from .inspect import inspect_path
+
+    name = str(name or "").strip()
+    code = str(code or "").strip()
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / "target.zip"
+        src.write_bytes(bytes(data))
+        proj, _notes = inspect_path(src)
+    bo = proj.bo(code) if code else None
+    if bo is None and code:
+        bo = next((b for b in proj.bos if (b.code or "") == code), None)
+    if bo is None and not code:
+        exact = [b for b in proj.bos if (b.name or "").strip() == name]
+        if len(exact) == 1:
+            bo = exact[0]
+        elif len(exact) > 1:
+            raise ValueError(
+                "包里同名对象不止一个：" +
+                "、".join(f"{b.name}（{b.code}）" for b in exact[:6]) +
+                "；请改用对象编码")
+    if bo is None:
+        names = "、".join(f"{b.name or b.code}（{b.code}）" for b in proj.bos[:8])
+        raise ValueError(
+            f"这份 zip 里没有名称完全一致的业务对象「{name or code}」"
+            + (f"；包内对象：{names}" if names else ""))
+    return target_for(bo.code, bo.name, bo.tbl_name, "",
+                      "code" if code else "name")
+
+
+def save_snapshot_upload(data: bytes, target: TargetObject | None = None) -> dict:
+    """把一份「目标业务对象包」zip 存成第③档快照，返回 token 与摘要。"""
     import hashlib
 
-    snap = snapshot_from_zip(data, source="package_upload")
+    target = target or project_target()
+    snap = snapshot_from_zip(data, source="package_upload", target=target)
     if not snap.fields:
+        label = "项目" if target.is_project else target.name
         raise ValueError(
-            "这份 zip 里找不到项目对象（bo/*.xml 里 code=project 或物理表 pp_project）。"
-            "请上传「业务对象 › 项目」导出的包；项目立项（project_create）不能当项目字段池")
-    token = hashlib.sha1(data).hexdigest()[:20]
+            f"这份 zip 里找不到「{label}」业务对象。请上传该对象导出的包"
+            f"（bo/*.xml 里 code={target.code} 或物理表 {target.tbl}）")
+    token = hashlib.sha1(target.code.encode("utf-8") + data).hexdigest()[:20]
     upload_dir().mkdir(parents=True, exist_ok=True)
     save_snapshot(snap, upload_dir() / f"{token}.json")
+    got = target_of(snap)
     return {"ok": True, "token": token, "source": snap.source,
-            "project": snap.project, "fieldCount": len(snap.fields)}
+            "project": snap.project, "fieldCount": len(snap.fields),
+            "target": got.to_dict()}
 
 
 # ---------------------------------------------------------------- 从包 / 从库抽快照
@@ -812,51 +1017,98 @@ def _field_from_bo_field(f: BoField, sn: int) -> ProjectField:
     )
 
 
-def snapshot_from_zip(path_or_bytes, source: str = "package_snapshot") -> Snapshot:
-    """从一份「项目对象包」解析快照。**纯函数**，供 tools 与测试使用。"""
+def _pick_target_bo(proj, target: TargetObject) -> tuple[Bo | None, str]:
+    """在一份导出包里找到目标对象：编码 → 物理表 → 名称完全一致。"""
+    bo = proj.bo(target.code)
+    if bo is not None:
+        return bo, "code"
+    bo = next((b for b in proj.bos
+               if target.tbl and (b.tbl_name or "").lower() == target.tbl.lower()), None)
+    if bo is not None:
+        return bo, "table"
+    exact = [b for b in proj.bos if (b.name or "").strip() == target.name]
+    if len(exact) == 1:
+        return exact[0], "name"
+    if len(exact) > 1:
+        # 同名对象不止一个：只有编码能区分，别猜
+        return None, "ambiguous:" + "、".join(f"{b.name}({b.code})" for b in exact[:6])
+    return None, ""
+
+
+def snapshot_from_zip(path_or_bytes, source: str = "package_snapshot",
+                      target: TargetObject | None = None) -> Snapshot:
+    """从一份业务对象导出包解析快照。**纯函数**，供 tools 与测试使用。
+
+    target 默认项目对象；其它对象按 code → 物理表 → 名称完全一致 找。
+    """
     import tempfile
 
     from .inspect import inspect_path
 
+    target = target or project_target()
     data: bytes | None = path_or_bytes if isinstance(path_or_bytes, (bytes, bytearray)) else None
     with tempfile.TemporaryDirectory() as td:
         if data is not None:
-            src = Path(td) / "project.zip"
+            src = Path(td) / "target.zip"
             src.write_bytes(bytes(data))
         else:
             src = Path(path_or_bytes)
         proj, notes = inspect_path(src)
-    bo = proj.bo(PROJECT_CODE)
-    if bo is None:
-        # 编码被改过：按物理表名认（项目对象永远是 pp_project）。
-        bo = next((b for b in proj.bos if (b.tbl_name or "").lower() == PROJECT_TBL), None)
-    if bo is None and len(proj.bos) == 1:
-        # 单对象包：只有这一个对象，基本可断定是用户要的项目包。
-        # 但「项目立项（project_create）」也是单对象包，它的表是 pp_project_create，
-        # 不能当项目字段池用——名字里带「立项」的直接排除。
-        only = proj.bos[0]
-        if "立项" not in (only.name or "") and "project_create" not in (only.code or ""):
-            bo = only
-    if bo is None:
-        # 以前这里取「字段最多」的对象，结果一份项目立项包会被当成项目对象，
-        # 拿 88 个立项字段去对齐——比不可用更糟。宁可报错让用户换包。
-        return Snapshot(
-            source="unavailable",
-            warnings=["这份 zip 里没有「项目」对象（bo/*.xml 里 code=project "
-                      "或物理表 pp_project），无法当作项目字段池"])
-    if (bo.tbl_name or "").lower() != PROJECT_TBL and bo.code != PROJECT_CODE:
-        return Snapshot(
-            source="unavailable",
-            warnings=[f"这份 zip 里最像项目的是「{bo.name or bo.code}」"
-                      f"（{bo.tbl_name or '无表名'}），不是项目对象 pp_project；"
-                      f"请上传「业务对象 › 项目」导出的包"])
+
+    if target.is_project:
+        bo = proj.bo(PROJECT_CODE)
+        if bo is None:
+            # 编码被改过：按物理表名认（项目对象永远是 pp_project）。
+            bo = next((b for b in proj.bos if (b.tbl_name or "").lower() == PROJECT_TBL), None)
+        if bo is None and len(proj.bos) == 1:
+            # 单对象包：只有这一个对象，基本可断定是用户要的项目包。
+            # 但「项目立项（project_create）」也是单对象包，它的表是 pp_project_create，
+            # 不能当项目字段池用——名字里带「立项」的直接排除。
+            only = proj.bos[0]
+            if "立项" not in (only.name or "") and "project_create" not in (only.code or ""):
+                bo = only
+        if bo is None:
+            # 以前这里取「字段最多」的对象，结果一份项目立项包会被当成项目对象，
+            # 拿 88 个立项字段去对齐——比不可用更糟。宁可报错让用户换包。
+            return Snapshot(
+                source="unavailable",
+                warnings=["这份 zip 里没有「项目」对象（bo/*.xml 里 code=project "
+                          "或物理表 pp_project），无法当作项目字段池"])
+        if (bo.tbl_name or "").lower() != PROJECT_TBL and bo.code != PROJECT_CODE:
+            return Snapshot(
+                source="unavailable",
+                warnings=[f"这份 zip 里最像项目的是「{bo.name or bo.code}」"
+                          f"（{bo.tbl_name or '无表名'}），不是项目对象 pp_project；"
+                          f"请上传「业务对象 › 项目」导出的包"])
+    else:
+        bo, how = _pick_target_bo(proj, target)
+        if bo is None:
+            detail = ("包里同名对象不止一个：" + how.split(":", 1)[1]
+                      if how.startswith("ambiguous:") else
+                      "包里没有 code=" + target.code +
+                      ("、物理表 " + target.tbl if target.tbl else "") +
+                      "、名称「" + target.name + "」完全一致的对象")
+            names = "、".join(f"{b.name or b.code}（{b.code}）" for b in proj.bos[:8])
+            return Snapshot(
+                source="unavailable",
+                project={"code": target.code, "name": target.name, "tbl": target.tbl},
+                warnings=[f"这份 zip 不能作为「{target.name}」的字段池：{detail}"
+                          + (f"；包内对象：{names}" if names else "")],
+                min_fields=1)
+        if target.name and (bo.name or "").strip() != target.name:
+            notes = list(notes) + [
+                f"⚠ 包里的对象名称是「{bo.name or bo.code}」，与输入的「{target.name}」"
+                f"不完全一致；已按编码 {bo.code} 继续"]
+
     fields = [_field_from_bo_field(f, i) for i, f in enumerate(bo.fields, start=1)]
     business = [f for f in fields
                 if f.code not in SYSTEM_CODES and f.code not in _EXTRA_NON_BUSINESS]
+    min_fields = MIN_SNAPSHOT_FIELDS if target.is_project else 1
+    label = "项目" if target.is_project else target.name
     warnings: list[str] = []
-    if len(fields) < MIN_SNAPSHOT_FIELDS:
+    if len(fields) < min_fields:
         warnings.append(
-            f"⚠ 项目字段快照只解析到 {len(fields)} 个字段（预期 {MIN_SNAPSHOT_FIELDS}+），"
+            f"⚠ {label}字段快照只解析到 {len(fields)} 个字段（预期 {min_fields}+），"
             f"对齐结果可能不完整")
     import datetime
 
@@ -864,36 +1116,55 @@ def snapshot_from_zip(path_or_bytes, source: str = "package_snapshot") -> Snapsh
         source=source,
         generated_at=datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
         project={"code": bo.code, "name": bo.name,
-                 "tbl": bo.tbl_name or PROJECT_TBL,
+                 "tbl": bo.tbl_name or target.tbl or f"pp_{bo.code}",
+                 "tableLabel": target.table_label,
                  "attributeCount": len(fields),
                  "businessFieldCount": len(business)},
         fields=fields,
         system_codes=set(SYSTEM_CODES),
         warnings=warnings + [n for n in notes if "失败" in n][:3],
         declared_total=len(fields),
+        min_fields=min_fields,
     )
 
 
-def snapshot_from_cursor(cur) -> Snapshot:
-    """用一个**只读** cursor 抽项目字段快照（SELECT only，绝不写库）。
+def snapshot_from_cursor(cur, target: TargetObject | None = None) -> Snapshot:
+    """用一个**只读** cursor 抽目标对象字段快照（SELECT only，绝不写库）。
 
     由 objects.refresh() 复用同一个连接调用，避免「刷新对象清单」和
     「刷新项目字段」各开一次连接。表结构见 docs/数据库结构图谱.md：
         iform_bo_def         对象（code_ / name_ / id_）
         iform_bo_attr        属性（data_type_new_ / object_type_ / is_null_ …）
         iform_bo_attr_column 属性 → 物理列（field_name_）
+        iform_bo_table       物理表（def_code_ = 对象编码，name_ = 表名，comment_ = 表说明）
         iform_cat_type/dic   字典（type_key_ / type_scope_ / key_ / name_ / sn_）
     """
     import datetime
 
+    target = target or project_target()
     cur.execute("SELECT id_, code_, name_ FROM iform_bo_def "
                 "WHERE code_ = %s AND COALESCE(state_, '') <> 'deleted' LIMIT 1",
-                (PROJECT_CODE,))
+                (target.code,))
     row = cur.fetchone()
     if not row:
-        return Snapshot(source="unavailable",
-                        warnings=["目标库里没有 code=project 的业务对象，无法刷新项目字段快照"])
-    def_id, code, name = str(row[0] or ""), str(row[1] or PROJECT_CODE), str(row[2] or "项目")
+        label = "项目" if target.is_project else target.name
+        return Snapshot(
+            source="unavailable",
+            project={"code": target.code, "name": target.name, "tbl": target.tbl},
+            warnings=[f"目标库里没有 code={target.code} 的业务对象（{label}），"
+                      f"无法刷新字段快照"],
+            min_fields=1 if not target.is_project else MIN_SNAPSHOT_FIELDS)
+    def_id, code, name = str(row[0] or ""), str(row[1] or target.code), str(row[2] or target.name)
+    tbl, table_label = target.tbl, target.table_label
+    try:
+        cur.execute("SELECT name_, COALESCE(comment_, '') FROM iform_bo_table "
+                    "WHERE def_code_ = %s LIMIT 1", (code,))
+        got = cur.fetchone()
+        if got:
+            tbl = str(got[0] or tbl)
+            table_label = str(got[1] or table_label)
+    except Exception:
+        pass          # 老库没有 iform_bo_table 时退回 pp_{code}
 
     cur.execute(
         "SELECT code_, name_, COALESCE(desc_, ''), data_type_new_, COALESCE(data_type_, ''), "
@@ -978,61 +1249,297 @@ def snapshot_from_cursor(cur) -> Snapshot:
 
     business = [f for f in fields
                 if f.code not in SYSTEM_CODES and f.code not in _EXTRA_NON_BUSINESS]
+    min_fields = MIN_SNAPSHOT_FIELDS if target.is_project else 1
+    label = "项目" if target.is_project else (name or target.name)
     warnings: list[str] = []
-    if len(fields) < MIN_SNAPSHOT_FIELDS:
+    if len(fields) < min_fields:
         warnings.append(
-            f"⚠ 项目字段快照只解析到 {len(fields)} 个字段（预期 {MIN_SNAPSHOT_FIELDS}+），"
+            f"⚠ {label}字段快照只解析到 {len(fields)} 个字段（预期 {min_fields}+），"
             f"对齐结果可能不完整")
     return Snapshot(
         source="target_db",
         generated_at=datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
-        project={"code": code, "name": name, "tbl": PROJECT_TBL,
+        project={"code": code, "name": name, "tbl": tbl,
+                 "tableLabel": table_label,
                  "attributeCount": len(fields),
                  "businessFieldCount": len(business)},
         fields=fields,
         system_codes=set(SYSTEM_CODES),
         warnings=warnings,
         declared_total=len(fields),
+        min_fields=min_fields,
     )
 
 
-def save_snapshot_from_cursor(cur) -> dict:
-    """抽快照并写到 ``~/.pp6kit/project_fields.json``，返回摘要 dict。
+def save_snapshot_from_cursor(cur, target: TargetObject | None = None) -> dict:
+    """抽快照并写到目标对象的缓存文件，返回摘要 dict。
 
     失败**不要**往外抛得太狠：调用方是 objects.refresh()，它只把这里当附带动作。
     """
-    snap = snapshot_from_cursor(cur)
+    target = target or project_target()
+    snap = snapshot_from_cursor(cur, target)
     if snap.source == "unavailable":
         return {"ok": False, "reason": snap.warnings[0] if snap.warnings else "不可用"}
-    path = save_snapshot(snap)
+    path = save_snapshot(snap, target_cache_path(target))
     return {"ok": True, "path": str(path), "source": snap.source,
             "fieldCount": len(snap.fields),
-            "generatedAt": snap.generated_at, "project": snap.project}
+            "generatedAt": snap.generated_at, "project": snap.project,
+            "target": target_of(snap).to_dict()}
+
+
+# ---------------------------------------------------------------- 目标对象解析
+# 用户手输业务对象名称后：
+#   连了库 → iform_bo_def.name_ 精确匹配（code_ 也认），顺带读 iform_bo_table
+#            的 name_（物理表）与 comment_（表说明）；
+#   没连库 → 由调用方让用户上传该对象的 zip，再按 code/表名/名称解析。
+# 只做**精确**匹配：模糊匹配会把「合同台账」绑到「合同」上，对齐错对象比不对齐更糟。
+
+
+def db_config() -> dict:
+    try:
+        from .nlq import store
+        return dict(store.load().get("db") or {})
+    except Exception:                      # noqa: BLE001
+        return {}
+
+
+def db_is_configured(cfg: dict | None = None) -> bool:
+    cfg = cfg if cfg is not None else db_config()
+    return bool(str(cfg.get("host") or "").strip()
+                and str(cfg.get("user") or "").strip()
+                and str(cfg.get("database") or "").strip())
+
+
+def _db_connect(cfg: dict | None = None):
+    from .nlq import introspect
+    cfg = cfg or db_config()
+    return introspect.connect(cfg.get("host"), cfg.get("port"), cfg.get("user"),
+                              cfg.get("password"), cfg.get("database"))
+
+
+def find_targets(name: str = "", code: str = "") -> list[dict]:
+    """按名称/编码精确查业务对象，返回 [{id,code,name,desc,tbl,tableLabel,...}]。
+
+    名称匹配失败时再按「物理表说明 / 对象说明」精确兜底（用户可能记的是表标签）。
+    **不做包含匹配**。没连库返回空列表。
+    """
+    name = str(name or "").strip()
+    code = str(code or "").strip()
+    if not (name or code):
+        return []
+    cfg = db_config()
+    if not db_is_configured(cfg):
+        return []
+    conn = _db_connect(cfg)
+    try:
+        cur = conn.cursor()
+        base = (
+            "SELECT d.id_, d.code_, d.name_, COALESCE(d.desc_, ''), "
+            "       COALESCE(t.name_, ''), COALESCE(t.comment_, ''), "
+            "       COALESCE(d.is_main_, 'N') "
+            "FROM iform_bo_def d "
+            "LEFT JOIN iform_bo_table t ON t.def_code_ = d.code_ "
+            "WHERE COALESCE(d.state_, '') <> 'deleted' AND ({where}) "
+            "ORDER BY (COALESCE(d.is_main_, 'N') = 'Y') DESC, d.code_ LIMIT 20"
+        )
+        where: list[str] = []
+        args: list = []
+        if name:
+            where.append("d.name_ = %s")
+            args.append(name)
+        if code:
+            where.append("d.code_ = %s")
+            args.append(code)
+        cur.execute(base.format(where=" OR ".join(where)), tuple(args))
+        rows = cur.fetchall()
+        matched_by = "name" if name else "code"
+        if not rows and name:
+            cur.execute(base.format(where="COALESCE(t.comment_, '') = %s "
+                                          "OR COALESCE(d.desc_, '') = %s"),
+                        (name, name))
+            rows = cur.fetchall()
+            matched_by = "tableLabel"
+        return [{
+            "id": str(r[0] or ""),
+            "code": str(r[1] or ""),
+            "name": str(r[2] or r[1] or ""),
+            "desc": str(r[3] or ""),
+            "tbl": str(r[4] or ""),
+            "tableLabel": str(r[5] or ""),
+            "isMain": str(r[6] or "N"),
+            "matchedBy": matched_by,
+        } for r in rows if str(r[1] or "").strip()]
+    finally:
+        conn.close()
+
+
+def _suggest_targets(name: str, limit: int = 5) -> list[dict]:
+    """没精确命中时给「相近的名称」提示，但绝不自动选中。"""
+    name = str(name or "").strip()
+    if not name:
+        return []
+    cfg = db_config()
+    if not db_is_configured(cfg):
+        return []
+    conn = _db_connect(cfg)
+    try:
+        cur = conn.cursor()
+        like = f"%{name}%"
+        cur.execute(
+            "SELECT d.code_, d.name_, COALESCE(t.comment_, '') "
+            "FROM iform_bo_def d LEFT JOIN iform_bo_table t ON t.def_code_ = d.code_ "
+            "WHERE COALESCE(d.state_, '') <> 'deleted' "
+            "  AND (d.name_ LIKE %s OR d.code_ LIKE %s OR COALESCE(t.comment_, '') LIKE %s) "
+            "ORDER BY (COALESCE(d.is_main_, 'N') = 'Y') DESC, d.code_ LIMIT %s",
+            (like, like, like, int(limit)))
+        return [{"code": str(r[0] or ""), "name": str(r[1] or r[0] or ""),
+                 "tableLabel": str(r[2] or "")} for r in cur.fetchall()]
+    except Exception:                      # noqa: BLE001
+        return []
+    finally:
+        conn.close()
+
+
+def _pick_target(matches: list[dict]) -> dict | None:
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    mains = [m for m in matches if str(m.get("isMain") or "").upper() == "Y"]
+    if len(mains) == 1:
+        return mains[0]
+    return None
+
+
+def resolve_target(name: str = "", code: str = "", token: str = "",
+                   force: bool = False) -> TargetObject:
+    """把「用户输入的名称/编码」解析成 TargetObject；必要时从库抽快照。
+
+    优先级：上传 token（快照自带目标元信息）→ 项目 → 库精确匹配。
+    解析不了就抛 ValueError（API 层转 400），不要静默退回项目——那会把字段对齐到
+    一个用户根本没选的对象上。
+    """
+    name = str(name or "").strip()
+    code = str(code or "").strip()
+    token = str(token or "").strip()
+
+    if token:
+        snap = load_snapshot_file(token, force=force)
+        got = target_of(snap)
+        if code and got.code != code:
+            raise ValueError(f"上传的快照是「{got.name}」（{got.code}），与选择的对象编码不一致")
+        if name and got.name != name and got.code != code:
+            raise ValueError(f"上传的快照是「{got.name}」，与输入的「{name}」不一致")
+        return got
+
+    if (not code or code == PROJECT_CODE) and (not name or name == "项目"):
+        return project_target()
+
+    if code == PROJECT_CODE or name == "项目":
+        return project_target()
+
+    matches = find_targets(name=name, code=code)
+    pick = _pick_target(matches)
+    if pick is None:
+        if len(matches) > 1:
+            names = "、".join(f"{m['name']}（{m['code']}）" for m in matches[:6])
+            raise ValueError(f"名称「{name}」匹配到多个业务对象：{names}；请改用对象编码")
+        if not db_is_configured():
+            raise ValueError(f"未连接数据库，无法核对业务对象「{name}」；"
+                             f"请上传该对象的 zip 作为字段池")
+        extra = ""
+        got = _suggest_targets(name)
+        if got:
+            extra = "；相近的有：" + "、".join(
+                f"{x['name']}（{x['code']}）" for x in got)
+        raise ValueError(f"数据库里没有名称完全一致的业务对象「{name}」{extra}")
+
+    target = target_for(pick["code"], pick["name"], pick["tbl"],
+                        pick["tableLabel"], pick["matchedBy"])
+    path = target_cache_path(target)
+    snap = _load_file(path, "target_db", force=force)
+    if snap is None or _snapshot_mismatch(snap, target):
+        conn = _db_connect()
+        try:
+            snap = snapshot_from_cursor(conn.cursor(), target)
+            if snap.source == "unavailable":
+                raise ValueError(snap.warnings[0] if snap.warnings else
+                                 f"读取业务对象 {target.code} 的字段失败")
+            save_snapshot(snap, path)
+        finally:
+            conn.close()
+    return target
+
+
+def target_status(name: str = "", code: str = "") -> dict:
+    """给界面用的目标对象状态：连库精确匹配结果 + 是否有可用字段快照。"""
+    name = str(name or "").strip()
+    code = str(code or "").strip()
+    configured = db_is_configured()
+    if (not code or code == PROJECT_CODE) and (not name or name == "项目"):
+        snap = load_snapshot()
+        tgt = project_target()
+        return {"ok": True, "dbConfigured": configured, "name": name or "项目",
+                "matches": [], "target": tgt.to_dict(), "resolved": True,
+                "fieldCount": len(snap.fields), "source": snap.source,
+                "sourceLabel": snap.label(), "status": snap.status,
+                "generatedAt": snap.generated_at, "warnings": list(snap.warnings)[:3]}
+    matches = find_targets(name=name, code=code)
+    pick = _pick_target(matches)
+    base = {"ok": True, "dbConfigured": configured, "name": name,
+            "matches": matches[:6], "resolved": False, "target": None,
+            "fieldCount": 0, "source": "unavailable", "sourceLabel": "无",
+            "status": "unavailable", "generatedAt": "", "warnings": []}
+    if pick is None:
+        base["suggestions"] = _suggest_targets(name) if configured and name else []
+        return base
+    try:
+        tgt = resolve_target(name=name, code=pick["code"])
+    except Exception as exc:                # noqa: BLE001
+        base["error"] = str(exc)
+        return base
+    snap = load_snapshot(target=tgt)
+    base.update({
+        "resolved": True, "target": tgt.to_dict(),
+        "fieldCount": len(snap.fields), "source": snap.source,
+        "sourceLabel": snap.label(), "status": snap.status,
+        "generatedAt": snap.generated_at,
+        "warnings": list(snap.warnings)[:3],
+    })
+    return base
+
+
+
 
 
 # ---------------------------------------------------------------- 链接字段
 
 
-def plan_link_field(bo: Bo, pool: list[ProjectField]) -> LinkPlan:
-    """该对象的「所属项目」链接字段怎么处置：新增 / 复用 / 冲突 / 拒绝。"""
-    if bo.code == PROJECT_CODE:
-        return LinkPlan("reject_self", note="对象 project 不能关联自己（自关联不允许）")
+def plan_link_field(bo: Bo, pool: list[ProjectField],
+                    target: TargetObject | None = None) -> LinkPlan:
+    """该对象的「关联目标对象」链接字段怎么处置：新增 / 复用 / 冲突 / 拒绝。"""
+    target = target or project_target()
+    label = target.link_label
+    if bo.code == target.code:
+        return LinkPlan("reject_self", code=target.link_code,
+                        field_name=target.link_field, name=label,
+                        note=f"对象 {target.code} 不能关联自己（自关联不允许）")
     cands = [f for f in bo.fields
-             if f.type_new == "object" and (f.object_type or "") == PROJECT_CODE]
+             if f.type_new == "object" and (f.object_type or "") == target.code]
     if cands:
         first = min(cands, key=lambda f: f.sn)
         col = first.resolved_field_name()
-        if first.code == LINK_CODE and col == LINK_FIELD_NAME:
+        if first.code == target.link_code and col == target.link_field:
             # 已经是系统范式那个链接字段（本轮刚补的，或上一轮「确认版 Excel」带回来的）
             # → 对用户就是「这个对象会/已经有一个 projectId」，不重复新增
             return LinkPlan("add", code=first.code, field_name=col, name=first.name,
                             existing={"code": first.code, "fieldName": col,
                                       "name": first.name, "length": first.length,
                                       "type": first.type_new},
-                            note=f"指向项目对象（{col} varchar {first.length or 64}）")
+                            note=f"指向{target.name}对象（{col} varchar {first.length or 64}）")
         note = f"= 复用已有链接字段 {first.name}（{first.code}）"
-        if col != LINK_FIELD_NAME:
-            note += f"：物理列 {col}（项目范式为 {LINK_FIELD_NAME}），未改动"
+        if col != target.link_field:
+            note += f"：物理列 {col}（{target.name}范式为 {target.link_field}），未改动"
         if first.length not in (None, 64) or str(
                 (first.options or {}).get("isMultiple")).lower() == "true":
             note += "：定义与系统范式不同（长度/isMultiple），未改动"
@@ -1041,43 +1548,49 @@ def plan_link_field(bo: Bo, pool: list[ProjectField]) -> LinkPlan:
                                   "name": first.name, "length": first.length,
                                   "type": first.type_new},
                         note=note)
-    same_code = bo.field_by_code(LINK_CODE)
+    same_code = bo.field_by_code(target.link_code)
     if same_code is not None:
-        # 编码被别的字段占着（不是指向项目）→ 不能再补一个同编码字段
+        # 编码被别的字段占着（不是指向目标对象）→ 不能再补一个同编码字段
         return LinkPlan(
             "conflict", code=same_code.code, field_name=same_code.resolved_field_name(),
             name=same_code.name,
             existing={"code": same_code.code, "name": same_code.name,
                       "type": same_code.type_new},
-            note=f"编码 {LINK_CODE} 已被字段（{same_code.name}）占用且未关联项目")
+            note=f"编码 {target.link_code} 已被字段（{same_code.name}）占用"
+                 f"且未关联{target.name}")
     for f in bo.fields:
-        if f.resolved_field_name() == LINK_FIELD_NAME and not (
-                f.type_new == "object" and (f.object_type or "") == PROJECT_CODE):
+        if f.resolved_field_name() == target.link_field and not (
+                f.type_new == "object" and (f.object_type or "") == target.code):
             return LinkPlan(
                 "conflict", code=f.code, field_name=f.resolved_field_name(), name=f.name,
                 existing={"code": f.code, "name": f.name, "type": f.type_new},
-                note=f"物理列 {LINK_FIELD_NAME} 已被字段 {f.code}（{f.name}）占用且未关联项目")
-    return LinkPlan("add", note=f"新增：指向项目对象（{LINK_FIELD_NAME} varchar 64）")
+                note=f"物理列 {target.link_field} 已被字段 {f.code}（{f.name}）占用"
+                     f"且未关联{target.name}")
+    return LinkPlan("add", code=target.link_code, field_name=target.link_field,
+                    name=label,
+                    note=f"新增：指向{target.name}对象（{target.link_field} varchar 64）")
 
 
-def link_field(name: str = "", sn: int = 1) -> BoField:
+def link_field(name: str = "", sn: int = 1,
+               target: TargetObject | None = None) -> BoField:
     """按系统范式构造链接字段（10 个结构键逐键对齐 project_create.projectId）。
 
-    field_name 显式给成 project_id_：``resolved_field_name()`` 本来就会按编码
-    推出同一个值（XML 产物不变），但「确认版 Excel」的「物理列名」列取的是
+    field_name 显式给出：``resolved_field_name()`` 本来就会按编码推出同一个值
+    （XML 产物不变），但「确认版 Excel」的「物理列名」列取的是
     ``BoField.field_name``——留空那一格是空的，用户看不到「数据库列也一致」。
     """
+    target = target or project_target()
     return BoField(
         bo_code="",
-        code=LINK_CODE,
-        name=(name or "").strip() or LINK_DEFAULT_NAME,
+        code=target.link_code,
+        name=(name or "").strip() or target.link_label,
         type_new="object",
-        object_type=PROJECT_CODE,
+        object_type=target.code,
         length=64,
         precision=None,
         is_null=True,
         is_index=False,
-        field_name=LINK_FIELD_NAME,
+        field_name=target.link_field,
         options=copy.deepcopy(LINK_OPTIONS),
         sn=sn,
     )
@@ -1086,8 +1599,18 @@ def link_field(name: str = "", sn: int = 1) -> BoField:
 # ---------------------------------------------------------------- 分析
 
 
-def _norm_suspects() -> set[str]:
-    return {normalize(x) for x in SEMANTIC_SUSPECT}
+def _norm_suspects(target: TargetObject | None = None) -> set[str]:
+    """可疑快照字段：与目标对象同名/同义的文本列，可能是手抄的快照。
+
+    项目侧固定三项（项目名称/项目简称/项目经理）；其它对象按同样的口径
+    加上「{对象名}名称 / {对象名}简称」——例如在采购申请里写「合同名称」
+    多半只是文本快照，不应该自动改名成 contract.name 变成对象主标题。
+    """
+    names = list(SEMANTIC_SUSPECT)
+    target = target or project_target()
+    if not target.is_project and target.name:
+        names += [f"{target.name}名称", f"{target.name}简称"]
+    return {normalize(x) for x in names}
 
 
 def _type_label(type_new: str) -> str:
@@ -1338,8 +1861,10 @@ _CONFIDENCE = {"E0": "high", "S3": "high", "S4": "medium", "S2": "medium",
 
 
 def _decide(own: BoField, pool: list[ProjectField], update_mode: bool,
-            suspects: set[str], bo: Bo | None = None) -> AlignAction | dict:
-    """单个我方字段 → AlignAction（找到对应项目字段）或 skipped 记录。"""
+            suspects: set[str], bo: Bo | None = None,
+            target: TargetObject | None = None) -> AlignAction | dict:
+    """单个我方字段 → AlignAction（找到对应目标字段）或 skipped 记录。"""
+    target = target or project_target()
     if own.code in SYSTEM_CODES:
         return {"fieldCode": own.code, "fieldName": own.name, "kind": "system",
                 "message": "系统字段/流程字段不参与对齐"}
@@ -1354,11 +1879,12 @@ def _decide(own: BoField, pool: list[ProjectField], update_mode: bool,
     # B10 可疑名单弹窗，不能被这条守卫吞掉——所以只认两个完整等价写法。
     own_label = normalize(own.name)
     if own.code == "name" or own_label in ("名称", "标题"):
+        where = "项目字段" if target.is_project else f"{target.name}字段"
         return {"fieldCode": own.code, "fieldName": own.name, "kind": "own_name",
-                "message": "本对象自身的名称/标题字段，不参与项目字段对齐"}
-    if own.type_new == "object" and (own.object_type or "") == PROJECT_CODE:
+                "message": f"本对象自身的名称/标题字段，不参与{where}对齐"}
+    if own.type_new == "object" and (own.object_type or "") == target.code:
         return {"fieldCode": own.code, "fieldName": own.name, "kind": "self_link",
-                "message": "已是「所属项目」链接字段，跳过"}
+                "message": f"已是「{target.link_label}」链接字段，跳过"}
     cands: list[tuple[int, int, str, ProjectField]] = []
     for t in pool:
         rule = similar(own, t)
@@ -1374,8 +1900,9 @@ def _decide(own: BoField, pool: list[ProjectField], update_mode: bool,
         if len(a) >= 2 and len(b) >= 2 and (a in b or b in a):
             cands.append((RANK["C"], t.sn, "C", t))
     if not cands:
+        where = "项目对象" if target.is_project else f"{target.name}对象"
         return {"fieldCode": own.code, "fieldName": own.name, "kind": "no_match",
-                "message": "项目对象里没有对应字段，按原规则生成"}
+                "message": f"{where}里没有对应字段，按原规则生成"}
     cands.sort(key=lambda x: (x[0], x[1]))
     rank, _sn, rule, best = cands[0]
     # 同分候选（同一条规则命中两个项目字段）→ 多候选：不自动应用，交给用户挑
@@ -1415,7 +1942,7 @@ def _decide(own: BoField, pool: list[ProjectField], update_mode: bool,
     if update_mode:
         notes.append("更新模式保留编码列名")
     if suspect:
-        notes.append("可疑快照：可能只是抄项目名称的文本")
+        notes.append(f"可疑快照：可能只是抄{target.name}名称的文本")
     if not family_ok:
         notes.append(f"类型跨族（{_type_label(own.type_new)}→"
                      f"{_type_label(best.type_new)}）")
@@ -1425,8 +1952,9 @@ def _decide(own: BoField, pool: list[ProjectField], update_mode: bool,
         notes.append("通用字段名，匹配可能不准")
     action.note = "；".join(dict.fromkeys(notes))
 
+    side = "项目侧" if target.is_project else f"{target.name}侧"
     if suspect:
-        action.reason = (f"同名但可能只是快照文本（项目侧 {best.code}），"
+        action.reason = (f"同名但可能只是快照文本（{side} {best.code}），"
                          f"不自动覆盖")
     elif not family_ok:
         action.reason = (f"类型跨族（{_type_label(own.type_new)}→"
@@ -1434,20 +1962,22 @@ def _decide(own: BoField, pool: list[ProjectField], update_mode: bool,
     elif ambiguous:
         action.reason = f"同分候选 {len(ties)} 个（{best.code} 最匹配），需你确认"
     elif rule == "E0":
-        action.reason = f"精确同名且同族（项目侧 {best.code}）"
+        action.reason = f"精确同名且同族（{side} {best.code}）"
     else:
-        action.reason = (f"{action.basis}（{rule}）：{own.name} ↔ 项目 "
+        action.reason = (f"{action.basis}（{rule}）：{own.name} ↔ {target.name} "
                          f"{best.name}（{best.code}）")
     return action
 
 
-def _skip_relation(own: BoField, rec: dict) -> dict:
+def _skip_relation(own: BoField, rec: dict,
+                   target: TargetObject | None = None) -> dict:
     """skipped 记录 → 关系行（系统字段 / 本对象名称 / 无匹配）。"""
+    target = target or project_target()
     kind = rec.get("kind") or ""
     status = "unrelated" if kind == "no_match" else "unknown"
     notes: list[str] = []
     if kind == "no_match":
-        notes.append(rec.get("message") or "项目对象里没有对应字段")
+        notes.append(rec.get("message") or f"{target.name}对象里没有对应字段")
     elif rec.get("message"):
         notes.append(rec["message"])
     if is_generic_name(own.name):
@@ -1517,20 +2047,23 @@ def relation_summary(relations: list[dict]) -> dict:
 
 def _conflict_of(action: AlignAction, own: BoField, taken: dict[str, str],
                  used_codes: dict[str, BoField], used_cols: dict[str, BoField],
-                 update_mode: bool, title_refs: set[str]) -> dict | None:
+                 update_mode: bool, title_refs: set[str],
+                 target: TargetObject | None = None) -> dict | None:
     """这条对齐会不会撞车（目标 / 编码 / 物理列 / 主身份）。撞了就返回冲突记录。
 
     四种冲突都按「跳过该字段、出一行报告」处理，绝不中止出包：
-      target_taken   项目字段已被别的我方字段认领（同一目标只认一个）
+      target_taken   目标字段已被别的我方字段认领（同一目标只认一个）
       code_taken     对齐后的编码被本对象另一个字段占着
       fieldname_taken 对齐后的物理列被占着（更新模式不会改列名，所以不查）
       identity       是本对象的标题/主身份字段，改名会改列表与详情的主标题
     """
+    target = target or project_target()
     target_code = action.target.code
     if target_code in taken:
         return {
             "fieldCode": own.code, "kind": "target_taken", "target": target_code,
-            "message": f"项目字段 {target_code} 已被字段「{taken[target_code]}」认领，已跳过",
+            "message": f"{target.name}字段 {target_code} 已被字段"
+                       f"「{taken[target_code]}」认领，已跳过",
         }
     if action.rename_code != own.code:
         other = used_codes.get(action.rename_code)
@@ -1552,7 +2085,8 @@ def _conflict_of(action: AlignAction, own: BoField, taken: dict[str, str],
         # B3-4：不要因为对齐把本对象自己的主身份字段改掉
         return {
             "fieldCode": own.code, "kind": "identity", "target": "name",
-            "message": "该字段是本对象的标题/主身份字段，对齐成项目 name 会改变列表与详情的主标题，已跳过",
+            "message": f"该字段是本对象的标题/主身份字段，对齐成{target.name} name "
+                       f"会改变列表与详情的主标题，已跳过",
         }
     return None
 
@@ -1619,14 +2153,16 @@ def _picked_target(action: AlignAction, want) -> ProjectField | None:
 
 
 def _plan_object(bo: Bo, pool: list[ProjectField], decision: dict | None = None,
-                 mode: str = "excel", project=None) -> ObjectPlan:
+                 mode: str = "excel", project=None,
+                 target: TargetObject | None = None) -> ObjectPlan:
     """一个对象的对齐计划。纯计算，不改模型。
 
     ``decision`` 是本对象的决策（``{"linked":…, "align":{字段: true/编码/false}}``）：
-      align[field] = true        → 按最匹配的项目字段覆盖（相近字段的「按项目覆盖」）
+      align[field] = true        → 按最匹配的目标字段覆盖（相近字段的「按项目覆盖」）
       align[field] = "targetCode"→ 按指定的候选覆盖（多候选下拉里挑的那个）
       align[field] = false / 缺省 → 保留我方（直接对应仍然自动覆盖）
     """
+    target = target or project_target()
     decision = decision or {}
     update_mode = mode == "package" or bool(getattr(bo, "exist_id", "") or "")
     plan = ObjectPlan(
@@ -1634,26 +2170,27 @@ def _plan_object(bo: Bo, pool: list[ProjectField], decision: dict | None = None,
         object_name=bo.name,
         linked=bool(getattr(bo, "project_link", False)),
         update_mode=update_mode,
-        link=plan_link_field(bo, pool),
+        link=plan_link_field(bo, pool, target),
     )
     if not pool:
         # 快照不可用：一个字段都没法判断 → 全部 unknown（不冒充「无关字段」，
-        # 否则报告会告诉用户「项目里没有这些字段」，而事实是**我们不知道**）
+        # 否则报告会告诉用户「目标对象里没有这些字段」，而事实是**我们不知道**）
+        label = "项目" if target.is_project else target.name
         for own in sorted(bo.fields, key=lambda f: f.sn):
             plan.relations.append(_relation_row(
                 field_code=own.code, field_name=own.name, status="unknown",
                 rule="", basis="", confidence="low", target=None, candidates=[],
-                diff=None, note="项目字段快照不可用，无法判断对应关系",
+                diff=None, note=f"{label}字段快照不可用，无法判断对应关系",
             ))
         return plan
 
-    suspects = _norm_suspects()
+    suspects = _norm_suspects(target)
     decided: list[tuple[AlignAction, BoField]] = []
     for own in sorted(bo.fields, key=lambda f: f.sn):
-        got = _decide(own, pool, update_mode, suspects, bo)
+        got = _decide(own, pool, update_mode, suspects, bo, target)
         if isinstance(got, dict):
             plan.skipped.append(got)
-            plan.relations.append(_skip_relation(own, got))
+            plan.relations.append(_skip_relation(own, got, target))
             continue
         decided.append((got, own))
 
@@ -1680,11 +2217,13 @@ def _plan_object(bo: Bo, pool: list[ProjectField], decision: dict | None = None,
         if picked is not None and picked is not action.target:
             _retarget(action, own, picked, update_mode, bo)
         elif isinstance(want, str) and want and picked is None:
-            msg = f"决策里指定的项目字段 {want} 不在候选里，已忽略"
-            plan.warnings.append(f"决策里给字段 {own.code} 指定的项目字段 {want} 不在候选里，已忽略")
+            where = "项目" if target.is_project else target.name
+            msg = f"决策里指定的{where}字段 {want} 不在候选里，已忽略"
+            plan.warnings.append(
+                f"决策里给字段 {own.code} 指定的{where}字段 {want} 不在候选里，已忽略")
             action.note = "；".join(x for x in (action.note, msg) if x)
         conflict = _conflict_of(action, own, taken, used_codes, used_cols,
-                                update_mode, title_refs)
+                                update_mode, title_refs, target)
         if conflict is not None:
             # 冲突不进 pending：用户不能选「按项目覆盖」（会撞车），只能保留我方
             plan.conflicts.append(conflict)
@@ -1741,7 +2280,8 @@ def _plan_object(bo: Bo, pool: list[ProjectField], decision: dict | None = None,
 
 
 def analyze(project, snap: Snapshot | None = None,
-            decisions: dict | None = None) -> dict:
+            decisions: dict | None = None,
+            target: TargetObject | None = None) -> dict:
     """只读分析，返回 view model（契约见架构 §2.4）。绝不修改 Project。
 
     ``decisions``：解析出来的 X-Project-Link（可以是 None）。带上它，用户勾过的
@@ -1762,9 +2302,11 @@ def analyze(project, snap: Snapshot | None = None,
     2026-11-15 口径：只有直接对应（E0 同族唯一）自动覆盖；其余进 ``pending``，
     等用户在弹窗里逐条勾。``pendingCount`` = 需要用户看一眼的条数。
     """
-    # 快照 token：用户上传项目包后，preview（analyze）和 build（apply）必须用同一份，
+    # 快照 token：用户上传目标对象包后，preview（analyze）和 build（apply）必须用同一份，
     # 否则页面上看到的是「随包快照」的对齐结果，出包却按上传包改字段——两边对不上。
-    snap = snap if snap is not None else load_snapshot((decisions or {}).get("snapshot") or None)
+    target = target or project_target()
+    snap = snap if snap is not None else load_snapshot(
+        (decisions or {}).get("snapshot") or None, target=target)
     pool = snap.pool()
     items: list[dict] = []
     diffs: list[dict] = []
@@ -1786,7 +2328,7 @@ def analyze(project, snap: Snapshot | None = None,
                           "conflicts": [], "skipped": [], "diffCount": 0})
             continue
         plan = _plan_object(bo, pool, ((decisions or {}).get("objects") or {}).get(bo.code),
-                            "excel", project)
+                            "excel", project, target)
         summary["linkedObjects"] += 1
         # summary 里的 exact / similar 仍然按**证据强度**分（E0 vs 相近规则），
         # 但只统计**这次真的要应用**的那些（auto + 已确认）
@@ -1811,8 +2353,8 @@ def analyze(project, snap: Snapshot | None = None,
             added_links.append({
                 "objectCode": bo.code,
                 "objectName": bo.name,
-                "fieldName": plan.link.name or LINK_DEFAULT_NAME,
-                "code": plan.link.code or LINK_CODE,
+                "fieldName": plan.link.name or target.link_label,
+                "code": plan.link.code or target.link_code,
             })
         new_fields.extend({
             "objectCode": bo.code,
@@ -1832,7 +2374,7 @@ def analyze(project, snap: Snapshot | None = None,
                 "fieldName": plan.link.field_name,
                 "name": plan.link.name,
                 "type": "object",
-                "objectType": PROJECT_CODE,
+                "objectType": target.code,
                 "length": 64,
                 "note": plan.link.note,
             }),
@@ -1859,14 +2401,23 @@ def analyze(project, snap: Snapshot | None = None,
     summary["pendingCount"] = rel_sum["needsConfirm"]
 
     if plans := [i for i in items if i["linked"]]:
-        notices.append(
-            "关联项目的对象只做「字段定义对齐」；如需把数据归属挂到项目下，"
-            "请在「所属关系」页签勾选父子关系")
+        if target.is_project:
+            notices.append(
+                "关联项目的对象只做「字段定义对齐」；如需把数据归属挂到项目下，"
+                "请在「所属关系」页签勾选父子关系")
+        else:
+            notices.append(
+                f"关联「{target.name}」的对象只做「字段定义对齐」；"
+                f"如需把数据归属挂到{target.name}下，请在「所属关系」页签勾选父子关系")
     status = snap.status
     notice = None
     if status == "unavailable":
-        notice = ("项目字段快照不可用（未连库刷新、无随包快照、未上传项目包），"
-                  "本次只补「所属项目」链接字段、不做字段对齐")
+        if target.is_project:
+            notice = ("项目字段快照不可用（未连库刷新、无随包快照、未上传项目包），"
+                      "本次只补「所属项目」链接字段、不做字段对齐")
+        else:
+            notice = (f"{target.name}字段快照不可用（未连库刷新、未上传{target.name}包），"
+                      f"本次只补「{target.link_label}」链接字段、不做字段对齐")
     elif not plans:
         notice = None
     return {
@@ -1874,6 +2425,7 @@ def analyze(project, snap: Snapshot | None = None,
         "snapshotSource": snap.source,
         "snapshotSourceLabel": snap.label(),
         "snapshotGeneratedAt": snap.generated_at,
+        "target": target.to_dict(),
         "project": {**dict(snap.project or {}),
                     "fieldCount": len(snap.fields)} if snap.fields else {},
         "notice": notice,
@@ -1917,6 +2469,15 @@ def parse_decisions(raw: str | None, project=None) -> dict | None:
         raise ValueError(f"X-Project-Link 不是合法 JSON：{exc}") from exc
     if not isinstance(data, dict) or data.get("version") != 1:
         raise ValueError("X-Project-Link 需要 {\"version\":1,\"objects\":{...}}")
+    target = data.get("target") or {}
+    if target and not isinstance(target, dict):
+        raise ValueError("X-Project-Link.target 必须是 {name, code} 对象")
+    t_name = str(target.get("name") or "").strip()
+    t_code = str(target.get("code") or "").strip()
+    if t_name and len(t_name) > 100:
+        raise ValueError("X-Project-Link.target.name 过长")
+    if t_code and not re.match(r"^[A-Za-z0-9_.-]{1,64}$", t_code):
+        raise ValueError("X-Project-Link.target.code 不合法")
     objects = data.get("objects")
     if not isinstance(objects, dict):
         raise ValueError("X-Project-Link.objects 必须是对象")
@@ -1943,14 +2504,17 @@ def parse_decisions(raw: str | None, project=None) -> dict | None:
                     f"决策 {bo_code}.align[{key}] 必须是 true/false 或项目字段编码")
     token = str(data.get("snapshot") or "").strip()
     if token and not _TOKEN_RE.match(token):
-        raise ValueError("项目快照标识无效，请重新上传项目 zip")
-    return {"version": 1, "snapshot": token or "", "objects": objects}
+        raise ValueError("字段快照标识无效，请重新上传业务对象 zip")
+    return {"version": 1, "snapshot": token or "",
+            "target": {"name": t_name, "code": t_code} if (t_name or t_code) else {},
+            "objects": objects}
 
 
 # ---------------------------------------------------------------- 应用
 
 
-def apply_linked(project, decisions: dict | None = None) -> list[str]:
+def apply_linked(project, decisions: dict | None = None,
+                 target: TargetObject | None = None) -> list[str]:
     """只把「关联项目」这个**布尔开关**写进模型，一个字段都不动。
 
     为什么单独一个函数（而不是复用 ``apply``）：解析页要把开关的结果**先**落到
@@ -1966,6 +2530,8 @@ def apply_linked(project, decisions: dict | None = None) -> list[str]:
         给用户看的提示（「哪个对象：关联项目=是/否」），可直接 extend 进 notes。
     """
     notices: list[str] = []
+    target = target or project_target()
+    label = "关联项目" if target.is_project else f"关联{target.name}"
     objects = (decisions or {}).get("objects") if isinstance(decisions, dict) else None
     if not isinstance(objects, dict):
         return notices
@@ -1982,7 +2548,7 @@ def apply_linked(project, decisions: dict | None = None) -> list[str]:
         if bool(getattr(bo, "project_link", False)) == want:
             continue
         bo.project_link = want
-        notices.append(f"对象 {bo_code}：关联项目={'是' if want else '否'}（来自界面开关）")
+        notices.append(f"对象 {bo_code}：{label}={'是' if want else '否'}（来自界面开关）")
     return notices
 
 
@@ -2261,10 +2827,12 @@ def _rewrite_refs(project, bo_code: str, mapping: dict[str, str],
 
 
 def apply(project, decisions: dict | None = None, snap: Snapshot | None = None,
-          mode: str = "excel") -> dict:
+          mode: str = "excel", target: TargetObject | None = None) -> dict:
     """把对齐结果写进模型。服务端重新分析，不信任前端给的 code/定义。"""
     decisions = decisions or {}
-    snap = snap if snap is not None else load_snapshot(decisions.get("snapshot") or None)
+    target = target or project_target()
+    snap = snap if snap is not None else load_snapshot(
+        decisions.get("snapshot") or None, target=target)
     pool = snap.pool()
     dec_objects = decisions.get("objects") if isinstance(decisions, dict) else None
     report = {
@@ -2273,9 +2841,14 @@ def apply(project, decisions: dict | None = None, snap: Snapshot | None = None,
         "scriptFormKeys": [], "notices": [], "noop": True,
     }
     if snap.status == "unavailable":
-        report["notices"].append(
-            "项目字段快照不可用（未连库刷新、无随包快照、未上传项目包），"
-            "本次只补「所属项目」链接字段、不做字段对齐")
+        if target.is_project:
+            report["notices"].append(
+                "项目字段快照不可用（未连库刷新、无随包快照、未上传项目包），"
+                "本次只补「所属项目」链接字段、不做字段对齐")
+        else:
+            report["notices"].append(
+                f"{target.name}字段快照不可用（未连库刷新、未上传{target.name}包），"
+                f"本次只补「{target.link_label}」链接字段、不做字段对齐")
 
     for bo in project.bos:
         d = (dec_objects or {}).get(bo.code) or {}
@@ -2283,9 +2856,9 @@ def apply(project, decisions: dict | None = None, snap: Snapshot | None = None,
             bo.project_link = bool(d["linked"])
         if not bo.project_link:
             continue
-        if bo.code == PROJECT_CODE:
-            raise ValueError("对象 project 不能关联自己（自关联不允许）")
-        plan = _plan_object(bo, pool, d, mode, project)
+        if bo.code == target.code:
+            raise ValueError(f"对象 {target.code} 不能关联自己（自关联不允许）")
+        plan = _plan_object(bo, pool, d, mode, project, target)
         entry = {
             "objectCode": bo.code, "objectName": bo.name, "linked": True,
             "updateMode": plan.update_mode, "aligned": [], "kept": [],
@@ -2296,12 +2869,13 @@ def apply(project, decisions: dict | None = None, snap: Snapshot | None = None,
         }
         if plan.link is not None:
             if plan.link.action == "reject_self":
-                raise ValueError("对象 project 不能关联自己（自关联不允许）")
+                raise ValueError(f"对象 {target.code} 不能关联自己（自关联不允许）")
             if plan.link.action == "conflict":
                 raise ValueError(
-                    f"物理列 {LINK_FIELD_NAME} 已被字段 {plan.link.code}"
-                    f"（{plan.link.name}）占用且未关联项目，请先改字段名或改用现有字段")
-            # 决策里 linkField=false = 只对齐字段、不补「所属项目」
+                    f"物理列 {target.link_field} 已被字段 {plan.link.code}"
+                    f"（{plan.link.name}）占用且未关联{target.name}，"
+                    f"请先改字段名或改用现有字段")
+            # 决策里 linkField=false = 只对齐字段、不补目标链接
             # （用户自己已经有别的关联方式）。builder 侧读这个标记跳过补字段。
             bo.skip_link_field = d.get("linkField") is False
             if plan.link.action == "reuse":
@@ -2309,16 +2883,16 @@ def apply(project, decisions: dict | None = None, snap: Snapshot | None = None,
                     "objectCode": bo.code, "objectName": bo.name,
                     "action": "reuse", "code": plan.link.code,
                     "fieldName": plan.link.field_name, "name": plan.link.name,
-                    "type": "object", "objectType": PROJECT_CODE,
+                    "type": "object", "objectType": target.code,
                     "length": (plan.link.existing or {}).get("length"),
                     "note": plan.link.note,
                 })
             elif not bo.skip_link_field:
                 report["linkFields"].append({
                     "objectCode": bo.code, "objectName": bo.name,
-                    "action": plan.link.action, "code": LINK_CODE,
-                    "fieldName": LINK_FIELD_NAME, "name": plan.link.name,
-                    "type": "object", "objectType": PROJECT_CODE, "length": 64,
+                    "action": plan.link.action, "code": target.link_code,
+                    "fieldName": target.link_field, "name": plan.link.name,
+                    "type": "object", "objectType": target.code, "length": 64,
                     "note": plan.link.note,
                 })
 
@@ -2345,11 +2919,12 @@ def apply(project, decisions: dict | None = None, snap: Snapshot | None = None,
             entry["rewrites"] = rewrites
             entry["notices"] = list(ref_notes)
             if plan.update_mode:
+                side = "项目侧" if target.is_project else f"{target.name}侧"
                 report["kept"].extend({
                     "objectCode": bo.code, "objectName": bo.name,
                     "fieldCode": row["fieldCode"], "fieldName": row["fieldName"],
                     "note": "保留编码与物理列（对象为更新模式）",
-                    "message": f"保留 {row['fieldName']}（项目侧 {row['newCode']}）",
+                    "message": f"保留 {row['fieldName']}（{side} {row['newCode']}）",
                 } for row in written)
         for item in plan.skipped:
             report["skipped"].append({
@@ -2465,12 +3040,15 @@ def _bo_field_from_raw(raw: dict, bo_code: str) -> BoField:
 
 
 def analyze_package(data: bytes, chosen: dict, spec: dict | None = None,
-                    snap: Snapshot | None = None) -> dict:
+                    snap: Snapshot | None = None,
+                    target: TargetObject | None = None) -> dict:
     """存量包侧的对齐分析：每个文件一份 ObjectPlan（patch 再翻成 raw 行）。"""
     import zipfile
 
     spec = spec or {}
-    snap = snap if snap is not None else load_snapshot(spec.get("snapshot") or None)
+    target = target or project_target()
+    snap = snap if snap is not None else load_snapshot(
+        spec.get("snapshot") or None, target=target)
     pool = snap.pool()
     link_files = [str(x) for x in (spec.get("linkProject") or [])]
     align_dec = spec.get("align") or {}
@@ -2488,9 +3066,9 @@ def analyze_package(data: bytes, chosen: dict, spec: dict | None = None,
             bo = _bo_from_package(file, text)
             if bo is None:
                 raise ValueError(f"{file}: 不是可解析的业务对象 XML")
-            if bo.code == PROJECT_CODE:
-                raise ValueError(f"{file}: 对象 project 不能关联自己（自关联不允许）")
-            # 用户手填的新字段也进候选池：它们同样要对齐成项目侧定义
+            if bo.code == target.code:
+                raise ValueError(f"{file}: 对象 {target.code} 不能关联自己（自关联不允许）")
+            # 用户手填的新字段也进候选池：它们同样要对齐成目标侧定义
             # （包里已存在的 code 不重复加，那种情况由「替换」分支处理）
             for raw in _user_rows(spec, file):
                 code = str(raw.get("code") or "").strip()
@@ -2498,11 +3076,12 @@ def analyze_package(data: bytes, chosen: dict, spec: dict | None = None,
                     continue
                 bo.fields.append(_bo_field_from_raw(raw, bo.code))
             decision = {"align": align_dec.get(file) or {}}
-            plan = _plan_object(bo, pool, decision, "package", None)
+            plan = _plan_object(bo, pool, decision, "package", None, target)
             if plan.link is not None and plan.link.action == "conflict":
                 raise ValueError(
-                    f"{file}: 物理列 {LINK_FIELD_NAME} 已被字段 {plan.link.code}"
-                    f"（{plan.link.name}）占用且未关联项目，请先改字段名或改用现有字段")
+                    f"{file}: 物理列 {target.link_field} 已被字段 {plan.link.code}"
+                    f"（{plan.link.name}）占用且未关联{target.name}，"
+                    f"请先改字段名或改用现有字段")
             out["objects"][file] = plan
     return out
 
@@ -2515,8 +3094,10 @@ def _user_rows(spec: dict, file: str) -> list[dict]:
     return list(spec.get("fields") or [])
 
 
-def plan_to_raw_rows(plan: ObjectPlan) -> tuple[list[dict], dict | None]:
+def plan_to_raw_rows(plan: ObjectPlan,
+                     target: TargetObject | None = None) -> tuple[list[dict], dict | None]:
     """ObjectPlan → patch 的两类 raw 行：(覆盖定义行[], 新增链接字段行|None)。"""
+    target = target or project_target()
     aligns: list[dict] = []
     for a in plan.aligned:
         t = a.target
@@ -2542,10 +3123,10 @@ def plan_to_raw_rows(plan: ObjectPlan) -> tuple[list[dict], dict | None]:
     link_raw = None
     if plan.link is not None and plan.link.action == "add":
         link_raw = {
-            "code": LINK_CODE,
-            "name": plan.link.name or LINK_DEFAULT_NAME,
+            "code": target.link_code,
+            "name": plan.link.name or target.link_label,
             "type": "object",
-            "objectType": PROJECT_CODE,
+            "objectType": target.code,
             "length": 64,
             "isnull": "是",
             "index": False,
@@ -2557,8 +3138,9 @@ def plan_to_raw_rows(plan: ObjectPlan) -> tuple[list[dict], dict | None]:
 # ---------------------------------------------------------------- 报告
 
 
-def package_report(plans: dict) -> dict:
+def package_report(plans: dict, target: TargetObject | None = None) -> dict:
     """把 analyze_package 的结果翻成与 apply() 同构的 report（共用报告文案）。"""
+    target = target or project_target()
     report = {
         "applied": 0, "objects": {}, "aligned": [], "kept": [], "skipped": [],
         "pending": [], "conflicts": [], "linkFields": [], "rewrites": {},
@@ -2570,7 +3152,7 @@ def package_report(plans: dict) -> dict:
             report["linkFields"].append({
                 "objectCode": plan.object_code, "objectName": plan.object_name,
                 "action": link.action, "code": link.code, "fieldName": link.field_name,
-                "name": link.name, "type": "object", "objectType": PROJECT_CODE,
+                "name": link.name, "type": "object", "objectType": target.code,
                 "length": 64, "note": link.note,
             })
         for a in plan.aligned:
@@ -2618,16 +3200,19 @@ def package_report(plans: dict) -> dict:
     return report
 
 
-def report_lines(report: dict) -> list[str]:
-    """给 web 报告 / zip comment / patch 报告共用的「项目对齐」小节。"""
+def report_lines(report: dict, target: TargetObject | None = None) -> list[str]:
+    """给 web 报告 / zip comment / patch 报告共用的「目标对象对齐」小节。"""
+    target = target or project_target()
+    title = "项目对齐" if target.is_project else f"{target.name}对齐"
+    label = "关联项目" if target.is_project else f"关联{target.name}"
     if not report or report.get("noop"):
-        return ["项目对齐", "  （本包没有对象勾「关联项目」，未做对齐）"]
-    lines = ["项目对齐"]
+        return [title, f"  （本包没有对象勾「{label}」，未做对齐）"]
+    lines = [title]
     for it in report.get("linkFields") or []:
         name = it.get("objectName") or it.get("objectCode") or ""
         code = it.get("objectCode") or ""
         if it.get("action") == "add":
-            lines.append(f"  ✓ {name} {code}：关联项目=是，新增 {it.get('code')}"
+            lines.append(f"  ✓ {name} {code}：{label}=是，新增 {it.get('code')}"
                          f"（{it.get('fieldName')} varchar {it.get('length')}）")
         else:
             lines.append(f"  = {name} {code}：{it.get('note') or '复用已有链接字段'}")
@@ -2639,9 +3224,10 @@ def report_lines(report: dict) -> list[str]:
         tail = ""
         if it.get("updateMode"):
             col = it.get("column") or it.get("fieldName")
-            # 项目侧列名取 projectField；老数据没有这个键时退回 newField
+            # 目标侧列名取 projectField；老数据没有这个键时退回 newField
             theirs = it.get("projectField") or it.get("newField") or ""
-            tail = f"  ← 保留物理列 {col}（项目侧 {theirs}，存量包不改列名）"
+            side = "项目侧" if target.is_project else f"{target.name}侧"
+            tail = f"  ← 保留物理列 {col}（{side} {theirs}，存量包不改列名）"
         lines.append(
             f"  ✓ {name} {it.get('fieldName')} → {it.get('newCode')}"
             f"（{it.get('type')}"
@@ -2713,10 +3299,13 @@ def similar_notices(project, snap: Snapshot | None = None) -> list[str]:
 # ---------------------------------------------------------------- 校验
 
 
-def validate(project, snap: Snapshot | None = None) -> list[dict]:
+def validate(project, snap: Snapshot | None = None,
+             target: TargetObject | None = None) -> list[dict]:
     """出包前专项校验。返回 [{level, where, message}]（validate.py 负责合并）。"""
     out: list[dict] = []
-    snap = snap if snap is not None else load_snapshot()
+    target = target or getattr(project, "link_target", None) or project_target()
+    snap = snap if snap is not None else load_snapshot(target=target)
+    label = "关联项目" if target.is_project else f"关联{target.name}"
     # 非法填法的检查对**所有**对象都要做：填了认不出的值时 project_link 是 False
     # （按否处理），如果只在勾上的对象里查，这条提示永远不会出现。
     for bo in project.bos:
@@ -2725,36 +3314,42 @@ def validate(project, snap: Snapshot | None = None) -> list[dict]:
                                "1", "0", "√", "T", "F"):
             out.append({
                 "level": "warn", "where": f"业务对象 {bo.code}",
-                "message": f"「关联项目」填了「{raw}」，认不出，按「否」处理"
+                "message": f"「{label}」填了「{raw}」，认不出，按「否」处理"
                            f"（该列只能填 是 / 否）"})
     linked = [b for b in project.bos if getattr(b, "project_link", False)]
     for bo in linked:
         where = f"业务对象 {bo.code}"
-        if bo.code == PROJECT_CODE:
+        if bo.code == target.code:
             out.append({"level": "error", "where": where,
-                        "message": "对象 project 不能勾「关联项目」："
-                                   "自己关联自己没有意义，请改成否"})
+                        "message": f"对象 {target.code} 不能勾「{label}」："
+                                   f"自己关联自己没有意义，请改成否"})
         for f in bo.fields:
-            if f.resolved_field_name() != LINK_FIELD_NAME:
+            if f.resolved_field_name() != target.link_field:
                 continue
-            if f.type_new == "object" and (f.object_type or "") == PROJECT_CODE:
+            if f.type_new == "object" and (f.object_type or "") == target.code:
                 continue
             out.append({
                 "level": "error", "where": where,
-                "message": f"物理列 {LINK_FIELD_NAME} 已被字段 {f.code}（{f.name}）占用"
-                           f"且未关联项目，请先改字段名或改用现有字段"})
+                "message": f"物理列 {target.link_field} 已被字段 {f.code}（{f.name}）占用"
+                           f"且未关联{target.name}，请先改字段名或改用现有字段"})
         links = [f for f in bo.fields
-                 if f.type_new == "object" and (f.object_type or "") == PROJECT_CODE]
+                 if f.type_new == "object" and (f.object_type or "") == target.code]
         if len(links) > 1:
             out.append({
                 "level": "warn", "where": where,
-                "message": f"对象里有 {len(links)} 个指向项目的关联字段"
+                "message": f"对象里有 {len(links)} 个指向{target.name}的关联字段"
                            f"（{'、'.join(f.code for f in links)}），只会复用第一个"})
     if linked:
         if snap.status == "unavailable":
-            out.append({
-                "level": "info", "where": "1_业务对象",
-                "message": "项目字段快照不可用，本次只补「所属项目」链接字段、不做字段对齐"})
+            if target.is_project:
+                out.append({
+                    "level": "info", "where": "1_业务对象",
+                    "message": "项目字段快照不可用，本次只补「所属项目」链接字段、不做字段对齐"})
+            else:
+                out.append({
+                    "level": "info", "where": "1_业务对象",
+                    "message": f"{target.name}字段快照不可用，本次只补"
+                               f"「{target.link_label}」链接字段、不做字段对齐"})
         elif snap.status == "degraded":
             for w in snap.warnings[:2]:
                 out.append({"level": "warn", "where": "1_业务对象", "message": w})

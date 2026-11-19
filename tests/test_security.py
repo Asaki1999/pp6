@@ -199,3 +199,30 @@ def _():
     snap = patch.inspect_package(buf.getvalue())
     assert snap["ok"]
     assert snap["objects"][0]["code"] == "project"
+
+
+@case("SEC13", "security", "提交前密钥扫描能拦住明文 Key", "P0",
+      ["sk- 长串判红", "占位值 sk-test/sk-xxx 不误报", "只扫跟踪文件，不扫本机 out/ 和 ~/.pp6kit"])
+def _():
+    import tempfile
+    from pathlib import Path
+    from tools import check_secrets
+
+    d = Path(tempfile.mkdtemp())
+    bad = d / "bad.py"
+    # 源码里把 Key 拆开拼接：扫描器扫这个测试文件时不会命中，
+    # 但写进临时文件的是完整长串，用来验证扫描器真的能拦住
+    bad.write_text('KEY = "' + "sk-" + "a" * 32 + '"\n', encoding="utf-8")
+    ok = d / "ok.py"
+    ok.write_text('KEY = "sk-test"  # 占位\n', encoding="utf-8")
+
+    orig = check_secrets.tracked
+    check_secrets.tracked = lambda: [str(bad)]
+    try:
+        assert check_secrets.main() == 1
+    finally:
+        check_secrets.tracked = lambda: [str(ok)]
+        try:
+            assert check_secrets.main() == 0
+        finally:
+            check_secrets.tracked = orig

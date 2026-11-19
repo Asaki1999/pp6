@@ -455,7 +455,8 @@ def _():
     assert vt.choices == ["OTC", "RX", "双跨", "其他", "大健康"], vt.choices
 
     # 非分组字段不受影响
-    st = bo.field_by_code("status")
+    # 合同状态按项目管理标准编码为 contractStatus
+    st = bo.field_by_code("contractStatus")
     assert st.choice_groups == {}
     assert st.choices == ["草稿", "进行中", "已完成"]
 
@@ -472,7 +473,7 @@ def _():
     assert parent_codes["化药"] in sel["OTC"]["dependValues"]
     assert sel["大健康"]["dependValues"] == [parent_codes["大健康"]]
     # 非分组字段不写 selectOptions
-    ms = re.search(r'<tns:attribute code="status"[^>]*>', xml)
+    ms = re.search(r'<tns:attribute code="contractStatus"[^>]*>', xml)
     assert "selectOptions" not in ms.group(0)
 
 
@@ -577,12 +578,12 @@ def _():
 
 
 @case("BO30", "bo", "日期/文件/附件 的类型与长度按真实库生成", "P0",
-      ["日期→datatype=date", "附件→varchar(200) 而非 clob", "文件→varchar"])
+      ["日期→datatype=date", "附件 BO 类型→file（表单控件仍是 attachment）", "文件→varchar"])
 def _():
     """2026-11-13 在 8112 真实库（powerproject6_release）核对出来的事实：
 
         date        → SQL 列类型 date（pp_qjlc.jie_shu_）
-        attachment  → varchar(200)（pp_project_initiation 的 4 个附件列）
+        attachment  → BO dataTypeNew=file、varchar(1000)（iform_bo_attr 实测 6 个 file 字段）
         file        → varchar(64~640)（pp_tr1 的评审材料 / 会议纪要）
 
     改之前 `attachment` 是按「附件 JSON 存在大文本」**推断**成 clob 的
@@ -598,16 +599,17 @@ def _():
     types = fieldtypes.all_types()
     assert types["date"]["datatype"] == "date"
     assert types["attachment"]["datatype"] == "varchar", "附件不是 clob"
-    assert types["attachment"]["length"] == 200
+    assert types["attachment"]["length"] == 1000
     assert types["file"]["datatype"] == "varchar"
 
     xml = bo_xml([field("contract", "立项日期", "日期"),
                   field("contract", "评审材料", "文件"),
                   field("contract", "附件", "附件列表")])
     assert 'dataTypeNew="date"' in xml and 'datatype="date"' in xml
-    assert 'dataTypeNew="attachment"' in xml and 'datatype="varchar"' in xml
-    assert 'dataTypeNew="file"' in xml
-    assert 'dataTypeNew="attachment" datatype="clob"' not in xml
+    # 附件在 BO 侧必须写 file；attachment 是表单控件类型，不是 BO 类型
+    assert 'dataTypeNew="file"' in xml and 'datatype="varchar"' in xml
+    assert 'dataTypeNew="attachment"' not in xml
+    assert 'dataTypeNew="file" datatype="clob"' not in xml
 
 
 @case("BO31", "bo", "流程对象的选择模式是 workflow，普通对象是 normal", "P0",
@@ -714,6 +716,7 @@ def _():
          "fields": [{"name": n, "type": "varchar"} for n in names]},
         description=desc)
     got = [f.name for f in bo.fields]
+    # 名称保持用户原词；编码按 PM 标准（不改变字段名）
     assert got == ["合同编号", "合同名称", "合同金额", "签订日期", "对方单位", "经办人"], got
     for extra in ["合同类型", "承办部门", "关联项目", "生效日期", "到期日期",
                   "合同状态", "收付款状态", "备注", "合同附件"]:

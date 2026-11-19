@@ -577,6 +577,9 @@ def build_bo(spec: dict, known_objects: list | None = None,
                 f"（既不是字段编码也不是字段名），请预览里改成正确编码")
     infer_cascade_parents(bo, notices)
     strip_parent_choices(bo, notices)
+    # 最后再对齐原生口径：此时字段都已落定，改编码不会影响级联/字典的构造
+    from . import pm_terms
+    notices.extend(pm_terms.apply(bo))
     return bo, notices
 
 
@@ -890,8 +893,9 @@ def generate(description: str, cfg: dict, known_objects: list | None = None,
     # 每 8 个字 ≈ 一个字段 × 240 token，再带 2000 推理余量。
     _budget = max(8000, min(32000, 4000 + len(description) // 8 * 240))
     hints = parse_conditional_cascades(description)
+    from . import pm_terms
     text, used = llm.chat_any(_fast_cfg(cfg), [
-        {"role": "system", "content": SYSTEM + extra},
+        {"role": "system", "content": SYSTEM + "\n\n" + pm_terms.PROMPT + extra},
         {"role": "user", "content": description.strip() + _cascade_prompt(hints)},
     ], timeout=timeout, max_tokens=_budget)
 

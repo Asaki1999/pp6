@@ -1738,6 +1738,20 @@ select.ai-in { cursor: pointer; }
 .patch-table input.num { width: 58px; min-width: 58px; }
 .patch-table td.center { text-align: center; }
 .patch-table td.center input { width: auto; min-width: 0; accent-color: var(--accent); }
+/* 已有字段改名表：每行只有一个可编辑的「新名称」，其余列纯展示 */
+.patch-exist { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--surface); }
+.patch-exist + .patch-exist { margin-top: 10px; }
+.patch-exist summary {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  cursor: pointer; font-size: 13px;
+}
+.patch-exist summary code { font-size: 11.5px; color: var(--muted); }
+.patch-exist .tbl-wrap { margin-top: 10px; max-height: 360px; overflow: auto; }
+.patch-exist-table { min-width: 640px; }
+.patch-exist-table td { vertical-align: middle; }
+.patch-exist-table tr.on td { background: var(--accent-soft); }
+.patch-exist-table input { min-width: 130px; }
+.patch-exist-table input::placeholder { color: var(--muted); opacity: .7; }
 .patch-paste { display: grid; gap: 7px; }
 .patch-paste label { font-size: 12.5px; color: var(--muted); }
 .patch-paste textarea {
@@ -2611,6 +2625,27 @@ body.pl-modal-open { overflow: hidden; }
 /* 说明文字固定占第二行：普通/流程/存量包三条选项栏宽度不同，
    靠 margin-left:auto 会出现「一条在右、一条换行」的不一致。 */
 .pl-pre .sub { flex-basis: 100%; margin-left: 0; font-size: 12px; color: var(--muted); }
+
+/* 关联目标：项目 / 其他业务对象（第 1 步内联控件） */
+.pl-target { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pl-target select,
+.pl-target input[type="text"] {
+  height: 26px; padding: 0 7px; font-size: 12.5px;
+  color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px;
+}
+.pl-target input[type="text"] { width: 168px; }
+.pl-target select:focus,
+.pl-target input[type="text"]:focus { outline: none; border-color: var(--accent-2); }
+.pl-target-other { display: inline-flex; align-items: center; gap: 6px; }
+.pl-target-ok {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; color: var(--ok);
+  background: var(--ok-soft); border: 1px solid #abefc6;
+  padding: 2px 8px; border-radius: 999px;
+}
+.pl-target-ok.bad { color: var(--danger); background: var(--danger-soft); border-color: #fecdca; }
+.pl-target-ok .muted { color: inherit; opacity: .72; }
 
 /* ---- 第 3 步标注：结果页顶上的一句话，和 .pl-entry 同族但更轻（没有按钮） ---- */
 .pl-step3 {

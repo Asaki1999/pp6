@@ -386,3 +386,29 @@ RESERVED: frozenset[str] = frozenset({
 def is_reserved(name: str) -> bool:
     """这个名字是不是数据库关键字。"""
     return (name or "").strip().lower() in RESERVED
+
+
+def semantic_code(name: str, limit: int = 24) -> str:
+    """中文名 → 语义化英文小驼峰；词典优先，查不到才退拼音。
+
+    和 ``to_english`` 的区别：后者**一律拼音**，适合保证列名可预测；
+    这里用于 AI 字段编码的兜底，目标是「一眼能看懂」，
+    所以先走 WORDS 词典（项目→project、里程碑→milestone），
+    只有词典没覆盖的片段才退拼音。
+    """
+    text = (name or "").strip()
+    if not text:
+        return ""
+    if not _CJK.search(text):
+        cleaned = re.sub(r"[^A-Za-z0-9]", "", text)
+        return cleaned[0].lower() + cleaned[1:] if cleaned else ""
+    text = re.sub(r"[（(][^）)]*[）)]", "", text).strip() or text
+    words = [w for w in _english_words(text) if w]
+    if not words:
+        return ""
+    head, tail = words[0], words[1:]
+    code = head + "".join(w[:1].upper() + w[1:] for w in tail)
+    code = re.sub(r"[^A-Za-z0-9]", "", code)
+    if not code or not code[0].isalpha():
+        code = "f" + code
+    return code[:limit]

@@ -9,10 +9,12 @@
 
 用法：
     python tools/dump_llm_params.py                       # 终端摘要，Key 打码
-    python tools/dump_llm_params.py --md out/参数.md --with-key
-    python tools/dump_llm_params.py --json out/llm.json --with-key
+    python tools/dump_llm_params.py --md out/参数.md
+    python tools/dump_llm_params.py --json out/llm.json
 
---with-key 才会写出明文密钥；不加时一律打码。终端摘要永远打码，避免日志留痕。
+**永远不写明文 Key**：导出的 Markdown/JSON/终端摘要一律打码。
+2026-11-18 的教训：曾用 --with-key 把明文写进 out/，这类文件一旦被转发就泄露，
+所以这个开关已经删除，不要再加回来。
 """
 from __future__ import annotations
 
@@ -110,8 +112,8 @@ def scan_call_params() -> list[dict]:
     return rows
 
 
-def build_markdown(channels: list[dict], with_key: bool) -> str:
-    key_of = (lambda k: k) if with_key else mask
+def build_markdown(channels: list[dict]) -> str:
+    key_of = mask
     lines: list[str] = []
     add = lines.append
 
@@ -208,9 +210,9 @@ def build_markdown(channels: list[dict], with_key: bool) -> str:
     return "\n".join(lines)
 
 
-def build_json(channels: list[dict], with_key: bool) -> str:
-    """机器可读版：channels 段可直接写入另一台机器的 nlq.json。"""
-    key_of = (lambda k: k) if with_key else mask
+def build_json(channels: list[dict]) -> str:
+    """机器可读版：Key 永远打码，不能直接当配置用。"""
+    key_of = mask
     payload = {
         "_说明": "生效通道直接取自 ~/.pp6kit/nlq.json；presets 为 app 内置平台预设；"
                  "call_params 为源码中的 timeout 与 max_tokens 表达式原文",
@@ -235,7 +237,6 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="导出 PP6 Studio 模型参数")
     ap.add_argument("--md", help="Markdown 输出路径")
     ap.add_argument("--json", dest="json_path", help="JSON 输出路径")
-    ap.add_argument("--with-key", action="store_true", help="写入明文 API Key（默认打码）")
     args = ap.parse_args()
 
     channels, _ = load_channels()
@@ -244,11 +245,11 @@ def main() -> int:
 
     if args.md:
         Path(args.md).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.md).write_text(build_markdown(channels, args.with_key), encoding="utf-8")
+        Path(args.md).write_text(build_markdown(channels), encoding="utf-8")
         print(f"已写入 {args.md}")
     if args.json_path:
         Path(args.json_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.json_path).write_text(build_json(channels, args.with_key), encoding="utf-8")
+        Path(args.json_path).write_text(build_json(channels), encoding="utf-8")
         print(f"已写入 {args.json_path}")
 
     # 终端摘要始终打码：避免密钥进日志

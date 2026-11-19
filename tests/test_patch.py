@@ -1,9 +1,9 @@
-"""改包（增量补丁）：在已有 zip 上加字段、改字段、改选项值。
+"""改包（增量补丁）：在已有 zip 上加字段、给已有字段改名称。
 
-这组用例守的是「你改的东西真的进了新 zip」。踩过的三个坑：
+这组用例守的是「你改的东西真的进了新 zip」，以及**改不到的东西真的没被改**：
   1. skip 模式下同名编码被跳过，产物和原包逐字节一致却报告「已加上」；
-  2. 覆盖模式整行重生成，把原包没建模的属性抹掉；
-  3. 改选项值时字典一个字节没动。
+  2. 已有字段只允许改 name —— 类型/选项/长度/必填一律不生效（2026-11-18 口径）；
+  3. 已有字段不能被删除（收到删除意图必须报错，不能静默忽略）。
 """
 from __future__ import annotations
 
@@ -97,77 +97,90 @@ def _():
         raise AssertionError("同名编码被静默跳过还出了包")
 
 
-@case("PAT06", "patch", "覆盖模式下同名编码按新定义改类型", "P0",
-      ["varchar→clob", "报告里记了覆盖"])
-def _():
-    _, body, _, report, obj = add_field(
-        [{"code": "name", "name": "项目名称", "type": "clob"}], mode="replace")
-    text = texts(body)[obj["file"]]
-    assert row_of(text, "name")["dataTypeNew"] == "clob"
-    assert report["changed"][obj["file"]]["replaced"], report["changed"]
-
-
-@case("PAT07", "patch", "覆盖面式改类型不动物理列名", "P0",
-      ["库里已有这一列", "改名等于让系统重建列"])
+@case("PAT06", "patch", "已有字段只改名称，类型/长度一概不动", "P0",
+      ["varchar→clob 的请求被忽略", "报告里逐条说明已忽略"])
 def _():
     raw = native_zip()
     obj = patch.inspect_package(raw)["objects"][0]
-    before = row_of(texts(raw)[obj["file"]], "name")["fieldName"]
-    _, body, _, _, obj2 = add_field(
-        [{"code": "name", "name": "项目名称", "type": "user"}], mode="replace")
-    after = row_of(texts(body)[obj2["file"]], "name")["fieldName"]
-    assert before == after, (before, after)
+    before = row_of(texts(raw)[obj["file"]], "name")
+    _, body, _, report, obj = add_field(
+        [{"code": "name", "name": "项目名称X", "type": "clob", "length": 999}],
+        mode="rename")
+    after = row_of(texts(body)[obj["file"]], "name")
+    assert after["name"] == "项目名称X"
+    assert after["dataTypeNew"] == before["dataTypeNew"], (before, after)
+    assert after.get("length") == before.get("length"), (before, after)
+    changed = report["changed"][obj["file"]]["replaced"][0]
+    assert changed["rename"] is True and changed["attrs"] == ["name"], changed
+    warns = " ".join(report["changed"][obj["file"]]["warnings"])
+    assert "只支持改名称" in warns, warns
 
 
-@case("PAT08", "patch", "覆盖时保留原 sn，不重排", "P1",
+@case("PAT07", "patch", "改名只动 name 那一段，其余属性逐字节不变", "P0",
+      ["物理列名不动", "没建模的属性不能被重写"])
+def _():
+    raw = native_zip()
+    obj = patch.inspect_package(raw)["objects"][0]
+    before = texts(raw)[obj["file"]]
+    _, body, _, _, obj = add_field(
+        [{"code": "name", "name": "项目名称X"}], mode="rename")
+    after = texts(body)[obj["file"]]
+
+    def frag(text: str) -> str:
+        return next(t for t in all_tags(text, "attribute")
+                    if attrs(t).get("code") == "name")
+
+    old, new = frag(before), frag(after)
+    assert new == old.replace('name="项目名称"', 'name="项目名称X"'), \
+        f"除 name 外有别的变化：\n旧 {old}\n新 {new}"
+
+
+@case("PAT08", "patch", "改名保留原 sn，不重排", "P1",
       ["重排会让表单控件对不上字段"])
 def _():
     raw = native_zip()
     obj = patch.inspect_package(raw)["objects"][0]
     before = row_of(texts(raw)[obj["file"]], "name")["sn"]
-    _, body, _, _, _ = add_field(
-        [{"code": "name", "name": "项目名称", "type": "user"}], mode="replace")
+    _, body, _, _, obj = add_field(
+        [{"code": "name", "name": "项目名称X"}], mode="rename")
     after = row_of(texts(body)[obj["file"]], "name")["sn"]
     assert before == after, (before, after)
 
 
-@case("PAT09", "patch", "改选项值时字典真的被重写", "P0",
-      ["以前 XML 一个字节没动", "选项还是老的"])
+@case("PAT09", "patch", "已有选项字段的候选值不给改，字典一字不动", "P0",
+      ["选项值属于「其他信息」", "请求被忽略并提示"])
 def _():
     raw = native_zip("选项.zip")
     obj = patch.inspect_package(raw)["objects"][0]
     field = next(f for f in obj["fields"] if f["type"] == "dic")
-    spec = {"targets": [obj["file"]], "scope": "full", "mode": "replace",
-            "fields": [{"code": field["code"], "type": "dic",
-                        "choices": "甲,乙,丙,新选项"}]}
+    spec = {"targets": [obj["file"]], "scope": "full", "mode": "rename",
+            "fields": [{"code": field["code"], "name": "改名后的选项字段",
+                        "type": "dic", "choices": "甲,乙,丙,新选项"}]}
     body, _, report = patch.build_patch(raw, spec)
     text = texts(body)[obj["file"]]
-    names = re.findall(r'<tns:dictionary [^>]*name="([^"]+)"', text)
-    assert "新选项" in names, names
-    assert report["changed"][obj["file"]]["dictRewritten"] >= 1
+    assert "新选项" not in text, "候选值被改了"
+    assert row_of(text, field["code"])["name"] == "改名后的选项字段"
+    warns = " ".join(report["changed"][obj["file"]]["warnings"])
+    assert "选项值" in warns, warns
 
 
-@case("PAT10", "patch", "改选项值时同名选项复用原 key", "P0",
-      ["key 是库里已存的值", "重生成会让已有记录对不上"])
+@case("PAT10", "patch", "删除已有字段被明确拒绝", "P0",
+      ["不能静默忽略", "用户会以为字段被删了"])
 def _():
-    raw = native_zip("选项.zip")
+    raw = native_zip()
     obj = patch.inspect_package(raw)["objects"][0]
-    field = next(f for f in obj["fields"] if f["type"] == "dic")
-    text0 = texts(raw)[obj["file"]]
-    old = dict(re.findall(r'<tns:dictionary [^>]*key="(\w+)"[^>]*name="([^"]+)"', text0))
-    old = {v: k for k, v in old.items()}
-    spec = {"targets": [obj["file"]], "scope": "full", "mode": "replace",
-            # 保留原有 a/b/c 并加一项：同名项必须复用原 key
-            "fields": [{"code": field["code"], "type": "dic",
-                        "choices": "a,b,c,新增甲"}]}
-    body, _, _ = patch.build_patch(raw, spec)
-    text = texts(body)[obj["file"]]
-    pairs = dict((n, k) for k, n in
-                 re.findall(r'<tns:dictionary [^>]*key="(\w+)"[^>]*name="([^"]+)"', text))
-    kept = {n: k for n, k in old.items() if n in pairs}
-    assert kept, f"原有选项一个都没留下：原 {sorted(old)}，现 {sorted(pairs)}"
-    for name, key in kept.items():
-        assert pairs[name] == key, f"{name} 的 key 从 {key} 变成了 {pairs[name]}"
+    for spec in (
+        {"targets": [obj["file"]], "mode": "rename", "fields": [],
+         "deleteFields": ["riskLevel"]},
+        {"targets": [obj["file"]], "mode": "rename",
+         "fields": [{"code": "name", "delete": True}]},
+    ):
+        try:
+            patch.build_patch(raw, spec)
+        except ValueError as exc:
+            assert "删除" in str(exc), exc
+        else:
+            raise AssertionError("删除意图被静默忽略")
 
 
 @case("PAT11", "patch", "新增选项字段同时生成字典类型与候选值", "P0",
@@ -286,11 +299,12 @@ def _():
     assert "加字段" in name, name
 
 
-@case("PAT20", "patch", "改已有字段的产物名写「改字段」", "P2", ["与加字段区分"])
+@case("PAT20", "patch", "改已有字段名的产物名写「改名称」", "P2",
+      ["与加字段区分"])
 def _():
     _, _, name, _, _ = add_field(
-        [{"code": "name", "name": "项目名称", "type": "user"}], mode="replace")
-    assert "改字段" in name or "加字段+改字段" in name, name
+        [{"code": "name", "name": "项目名称X"}], mode="rename")
+    assert "改名称" in name, name
 
 
 @case("PAT21", "patch", "对齐行强制覆盖定义类键（isindex N→Y 也要生效，列名不动）",

@@ -331,11 +331,11 @@ def _():
     assert {"mingCheng", "jinE"} <= names, names
 
 
-@case("FRM19", "form", "拖拽布局 V1.0：整张表单一个根 grid，不套 fieldset 分组", "P0",
-      ["布局样式=拖拽布局V1.0 时不生成 fieldset/card 容器",
-       "所有普通控件挂在同一个根 grid_layout 下，parentId 指向它",
+@case("FRM19", "form", "拖拽布局 V1.0：整张表单一个无标题容器 + 一个 grid，不按分区拆", "P0",
+      ["布局样式=拖拽布局V1.0 时只有一个无标题 fieldset/card（平台根级必须有容器）",
+       "所有普通控件挂在同一个 grid_layout 下，parentId 指向它",
        "字段顺序保持（跨分区也不丢）",
-       "布局契约检查通过（根 grid 允许没有 fieldset）"])
+       "布局契约检查通过"])
 def _():
     from pp6kit.reader import read_workbook
     import io as _io
@@ -360,14 +360,16 @@ def _():
     }
     body = build(data)
     x = pick(body, "form/")
-    # 没有 fieldset / card
-    assert not [t for t in all_tags(x, "formField")
-                if attrs(t).get("fieldType") in ("fieldset", "card")], "flat 模式不该有分组容器"
+    # 平台根级必须有容器：只允许一个**无标题** fieldset/card，不按分区拆
+    boxes = [t for t in all_tags(x, "formField")
+             if attrs(t).get("fieldType") in ("fieldset", "card")]
+    assert len(boxes) == 1, len(boxes)
+    assert not attrs(boxes[0]).get("label"), "flat 容器不该带分区标题"
     grids = [t for t in all_tags(x, "formField")
              if attrs(t).get("fieldType") == "grid_layout"]
     assert len(grids) == 1, len(grids)
     gid = attrs(grids[0])["id"]
-    assert not attrs(grids[0]).get("parentId"), "根 grid 不该有 parentId"
+    assert attrs(grids[0]).get("parentId") == attrs(boxes[0]).get("id")
     kids = [t for t in all_tags(x, "formField") if attrs(t).get("parentId") == gid]
     assert len(kids) == 3, len(kids)
     assert [attrs(k)["name"] for k in kids] == ["mingCheng", "jinE", "zhuangTai"]

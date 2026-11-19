@@ -1041,6 +1041,13 @@ def build(pack: SchemaPack, question: str) -> tuple[str, str]:
     if templated is not None:
         return templated
 
+    # 图表式问法（按 X 统计工时 / 工时最多的 5 个人）：必须走「维度 + 度量」，
+    # 否则「工时」会被当成对象去数行数，得到记录条数而不是工时合计。
+    from . import measure
+    measured = measure.build(pack, q)
+    if measured is not None:
+        return measured
+
     candidates = _find_tables(pack, q)
     if not candidates:
         # 完全没认出来，但说了业务主体（收入/回款）→ 落到合同

@@ -41,7 +41,7 @@
         <!-- 存量包修订：暂时隐藏入口。恢复时把 query.js 里 PP6_FEATURES.patch 置 true 即可，
              本行的 hidden 由 applyFeatureFlags() 负责去掉；面板与后端接口都还在。 -->
         <button class="mode" data-mode="patch" data-feature="patch" hidden
-                title="存量包修订 (3)：在已有 zip 上改字段类型 / 选项值">
+                title="存量包修订 (3)：在已有 zip 上加字段 / 改字段名称">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="3" y="3" width="18" height="18" rx="3"/><path d="M12 8v8M8 12h8"/>
           </svg>
@@ -88,7 +88,7 @@
         <span class="ai-pill" id="ctxAiPill" title="大模型配置状态">
           <span class="ai-dot" id="ctxAiDot"></span><span id="ctxAiText">AI 未配置</span>
         </span>
-        <button class="btn ghost" id="btnInspect">反解现有导出包</button>
+        <button class="btn ghost" id="btnInspect" data-feature="inspect" hidden>反解现有导出包</button>
         <input type="file" id="inspectInput" accept=".zip" hidden>
       </div>
     </header>
@@ -131,6 +131,7 @@
 
             <label>接口地址<input id="qBase" placeholder="https://api.deepseek.com/v1"></label>
             <label>API Key<input id="qKey" type="password" placeholder="粘贴平台的 Key（sk-...）"></label>
+            <div class="q-hint" id="qKeyNote">Key 只保存在本机 <code>~/.pp6kit/nlq.json</code>，不会随安装包或仓库分发；换一台电脑需要重新填。</div>
             <label>模型
               <select id="qModelPick" hidden></select>
               <input id="qModel" placeholder="glm-4.7-flash">
@@ -232,12 +233,26 @@
 
     <!-- 第 1 步：对象级选择放在**导入前**，不再导入后弹窗问一遍。
          两档共享一份状态（普通 / 流程两个菜单同一档），存 localStorage。
-         放在 AI 卡**上方**：这是导入/生成前就要定的开关，不能藏在长卡片下面。 -->
+         放在 AI 卡**上方**：这是导入/生成前就要定的开关，不能藏在长卡片下面。
+         2026-11-18：关联目标可以是「项目」或「其他业务对象」；选其它对象时
+         手输名称，连库走精确核对，没库则上传该对象的 zip。 -->
     <div class="pl-pre" id="plPreImportBar">
-      <b>第 1 步 · 业务对象关联项目</b>
+      <b>第 1 步 · 业务对象关联</b>
       <label><input type="radio" name="plPreImport" value="off" checked> 不关联</label>
       <label><input type="radio" name="plPreImport" value="on"> 关联</label>
-      <span class="sub">导入前先选：关联=这份 Excel 里每个对象都关联项目；不关联=一个都不关联。导入后不再弹选择框。</span>
+      <span class="pl-target" id="plTargetBox" hidden>
+        <select id="plTargetKind" title="关联到哪个业务对象">
+          <option value="project">项目</option>
+          <option value="other">其他业务对象</option>
+        </select>
+        <span class="pl-target-other" id="plTargetOther" hidden>
+          <input type="text" id="plTargetName" placeholder="业务对象名称，如 合同"
+                 autocomplete="off" spellcheck="false">
+          <button type="button" class="btn ghost sm" id="plTargetCheck">核对</button>
+        </span>
+        <span class="pl-target-ok" id="plTargetInfo" hidden></span>
+      </span>
+      <span class="sub" id="plPreHint">导入前先选：关联=这份 Excel 里的对象都关联到所选业务对象；不关联=一个都不关联。选「其他业务对象」时先输名称核对字段池。</span>
     </div>
 
     <div id="entryAi" hidden>
@@ -297,6 +312,8 @@
           <span>选择文件</span>
         </label>
         <span class="sub" id="reimportHint">标准 Excel 直接解析；自家表格、PDF / Word 交给 AI 识别（PDF / Word 提取文字后确认再生成）。有相近字段会先弹窗确认</span>
+        <button class="link" id="btnBlankTpl"
+                title="下载 14 个页签的空白填写模板（表头 + 每列说明），填好再拖回这里解析">下载空白模板</button>
         <button class="link" id="btnDemo">载入示例看效果</button>
       </div>
     </section>
@@ -410,7 +427,7 @@
     <nav class="tabs" id="tabs">
       <button class="tab active" data-panel="objects">业务对象</button>
       <button class="tab" data-panel="relations">所属关系 <span class="badge" id="relBadge">0</span></button>
-      <button class="tab" data-panel="projlink">项目对齐 <span class="badge" id="plBadge">0</span></button>
+      <button class="tab" data-panel="projlink"><span id="plTabTitle">项目对齐</span> <span class="badge" id="plBadge">0</span></button>
       <button class="tab" data-panel="fields">字段体检 <span class="badge" id="fieldBadge">0</span></button>
       <button class="tab" data-panel="forms">表单预览</button>
       <button class="tab" data-panel="lists">列表 / 数据集</button>
@@ -478,7 +495,8 @@
         <div class="set-note">
           <strong>和「反解现有导出包」的区别：</strong>反解会拆成 Excel 再重新造一份包，
           原生包里没建模的内容（对象角色、日志模板、字典样式、权限）会丢。
-          这里只往 <code>bo/*.xml</code> 里插入新字段，其余条目<b>字节原样保留</b>，适合给线上已有对象补字段。
+          这里只往 <code>bo/*.xml</code> 里加字段、给已有字段改显示名，其余条目<b>字节原样保留</b>。
+          <b>已有字段的类型 / 选项值 / 长度等定义不在可改范围</b>，也不会删除任何字段。
         </div>
       </div>
     </section>
@@ -501,12 +519,29 @@
       </div>
     </section>
 
+    <!-- ③ 已有字段：只允许改名称。放在新增字段表前面，是因为「导入已有对象」
+         的第一诉求往往是改显示名，而不是加字段。 -->
+    <section class="card" id="patchExistingCard" hidden>
+      <div class="card-head">
+        <div>
+          <h3>③ 已有字段（只能改名称）</h3>
+          <div class="sub">勾选的对象会把包里现有字段列在下面：<b>只有「名称」能改</b>，
+            编码 / 类型 / 选项值 / 长度 / 必填 / 索引 / 说明都是只读，
+            本工具也<b>不会删除任何字段</b>。改完名称直接去 ⑥ 生成新包。</div>
+        </div>
+        <div class="patch-actions">
+          <button class="btn ghost" id="patchExistingReset">全部还原</button>
+        </div>
+      </div>
+      <div class="patch-body" id="patchExistingBox"></div>
+    </section>
+
     <section class="card" id="patchFieldsCard" hidden>
       <div class="card-head">
         <div>
-          <h3>③ 填字段（新增字段、改已有字段都在这张表）</h3>
-          <div class="sub">编码是新的 → 往包里加字段；编码填已有字段的名字 → 改它的类型 / 选项值，
-            并在 ④ 把「重名字段」选成「按新定义覆盖原字段」。填了「选项值」记得把类型选成「选项」。
+          <h3>④ 新增字段</h3>
+          <div class="sub">只填<b>包里没有的</b>字段编码 → 往包里加字段，定义按这里填的落。
+            编码如果和已有字段重名，只会应用「名称」（等同 ③ 改名），类型等改动会被忽略并提示。
             一行一个字段，也可以直接从 Excel 复制粘贴。</div>
         </div>
         <div class="patch-actions">
@@ -542,9 +577,10 @@
     <section class="card" id="patchAlignCard" hidden>
       <div class="card-head">
         <div>
-          <h3>③ 项目对齐分析</h3>
+          <h3>⑤ 项目对齐分析</h3>
           <div class="sub">勾了「关联项目」的对象自动算：新增哪个链接字段、覆盖哪些已有字段
-            （只改类型/选项/长度/必填/索引，编码与物理列名不动）、哪些跳过</div>
+            （只改类型/选项/长度/必填/索引，编码与物理列名不动）、哪些跳过。
+            这是给<b>系统里还不存在的新对象</b>按项目母版落定义用的，和 ③ 的手工改名是两条路。</div>
         </div>
         <div class="card-actions">
           <button class="btn ghost" id="btnPatchAlign">重新分析</button>
@@ -556,18 +592,12 @@
     <section class="card" id="patchBuildCard" hidden>
       <div class="card-head">
         <div>
-          <h3>④ 生成新包</h3>
+          <h3>⑥ 生成新包</h3>
           <div class="sub">默认一个整包；勾了「每个对象单独出包」会逐个下载。</div>
         </div>
       </div>
       <div class="patch-body">
         <div class="patch-opts">
-          <label>重名字段（编码和包里已有的一样）
-            <select id="patchMode">
-              <option value="skip">跳过 —— 只加新字段，不动已有字段</option>
-              <option value="replace">按新定义覆盖 —— 改类型 / 改选项值用这个</option>
-            </select>
-          </label>
           <label>包内容
             <select id="patchScope">
               <option value="full">保留原包全部条目（推荐）</option>
@@ -697,20 +727,21 @@
 <!-- 第 1 步（业务对象关联项目）已经不在这里了：它改成初始页上的 #plPreImportBar
      三档控件，导入前就定好，导入后不再弹窗问一遍。 -->
 
-<!-- 没连数据库时，「关联项目」需要一个字段池：让用户导入一份项目对象 zip。
-     上传后 service 端存成快照，后续 parse/build 都带 token 用它。 -->
+<!-- 没连数据库时，「关联」需要一个字段池：让用户导入目标业务对象的 zip。
+     上传后 service 端存成快照，后续 parse/build 都带 token 用它。
+     2026-11-18：项目 / 其他业务对象共用这个弹窗，文案由 app.js 按目标改写。 -->
 <div class="pl-mask" id="psMask" hidden>
   <div class="pl-modal" role="dialog" aria-modal="true" aria-labelledby="psTitle">
     <div class="pl-modal-head">
       <div>
-        <h3 id="psTitle">未检测到已连接的数据库</h3>
-        <div class="sub">关联项目需要「项目」对象的字段定义</div>
+        <h3 id="psTitle">导入业务对象 zip</h3>
+        <div class="sub" id="psSub">关联项目需要「项目」对象的字段定义</div>
       </div>
       <button class="pl-modal-close" id="psClose" title="关闭（Esc）">×</button>
     </div>
     <div class="pl-modal-body">
-      <p class="ps-lead">当前 App 没有配置数据库连接，读不到系统里「项目」对象的字段。</p>
-      <p class="ps-lead">请导入一份<strong>项目 zip</strong>（包里 <code>bo/*.xml</code> 有 <code>code="project"</code> 的同步包；项目对象、项目列表/表单导出的包都可以）。导入后用它和你的 Excel 对比，找出同名与相似字段。</p>
+      <p class="ps-lead" id="psLead1">当前 App 没有配置数据库连接，读不到系统里「项目」对象的字段。</p>
+      <p class="ps-lead" id="psLead2">请导入一份<strong>项目 zip</strong>（包里 <code>bo/*.xml</code> 有 <code>code="project"</code> 的同步包；项目对象、项目列表/表单导出的包都可以）。导入后用它和你的 Excel 对比，找出同名与相似字段。</p>
       <div class="pl-modal-meta muted" id="psStatus"></div>
       <input type="file" id="psFile" accept=".zip" hidden>
     </div>

@@ -899,8 +899,10 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
     parents = _cascade_parent_names(form)
 
     for gi, (title, rows) in enumerate(groups, start=1):
-        # flat 模式下第一组（普通控件）直接挂根 grid_layout，不套 fieldset
-        no_container = flat and gi == 1 and not title
+        # flat 模式保留一个**无标题容器**：平台导入时根级必须是 card/fieldset，
+        # 裸 grid_layout 会被判结构不合法（2026-11-18 用户实测导入失败）。
+        # 对用户而言仍然是一整块画布，没有多个字段分组。
+        no_container = False
         # 明细表（dataTemplate）/ 表格字段（tableField）单独成容器：原生表单里它们
         # **不经过** grid_layout，直接挂在容器的 columns 上（项目汇报表里 4 个明细表、
         # project_create 详情里 3 个表格字段，容器 columns 引用的就是控件 id 本身）。
@@ -1026,8 +1028,8 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
         body.append(el("formField", {
             "id": grid_id,
             "formId": form_id,
-            # flat：根 grid_layout 直接挂 formDef，parentId 不写
-            "parentId": None if no_container else container_id,
+            # 根级必须有容器（card/fieldset），平台才能挂载整棵树
+            "parentId": container_id,
             "name": "gridLayout_" + short_id(),
             "label": "表格布局V1.0",
             "desc": "",

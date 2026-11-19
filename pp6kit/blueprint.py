@@ -168,11 +168,14 @@ def expand(project: Project) -> list[str]:
         if bo is None:
             notices.append(f"表单 {form.key}: 标准全套找不到对象 {form.bo_code}，已跳过")
             continue
+        # 详情/条件专用表单也要继承新建表单的 typeId / 布局样式 / 状态；
+        # 传 fields=[] 的空壳，避免把新建表单的字段（required/只读）原样复制过去。
+        base = replace(form, fields=[])
         for kind in (FORM_CREATE, FORM_DETAIL, FORM_CONDITION):
             if (bo.code, kind) in existing:
                 notices.append(f"对象 {bo.code}: 已存在 {kind} 表单，跳过自动生成")
                 continue
-            added.append(_make(bo, kind, form if kind == FORM_CREATE else None,
+            added.append(_make(bo, kind, form if kind == FORM_CREATE else base,
                                group_src=form))
             existing.add((bo.code, kind))
         notices.append(f"对象 {bo.code}: 已按规范展开为标准全套（新建 / 详情 / 条件专用）")

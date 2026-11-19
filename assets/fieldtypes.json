@@ -52,7 +52,7 @@
     "attachment": {
       "label": "附件列表",
       "datatype": "varchar",
-      "length": 200,
+      "length": 1000,
       "verified": true,
       "note": "2026-11-13 在 8112 真实库核对：pp_project_initiation 的 4 个附件列都是 varchar(200)"
     },

@@ -49,16 +49,19 @@ _BANNED_IMPORT_CODES = {
 _BANNED_IMPORT_LABELS = ("创建人", "创建时间", "更新人", "更新时间", "流程实例", "版本", "主键")
 
 
-def _is_native_code(code: str) -> bool:
+def _is_native_code(code: str, target=None) -> bool:
     """编码是不是项目对象/系统约定里本来就有的（stateId / projectId…）。
 
     lazy import 避免 validate ↔ projlink 的循环依赖（projlink 只在函数里
     import validate 的兄弟模块，但两边都在模块顶层互相引会成环）。
     快照读不到时 projlink 会退回「系统字段 + 链接字段」，不会因为离线失效。
+    关联其它业务对象时，目标对象的字段编码与链接字段也算原生。
     """
     try:
         from . import projlink as _projlink
-        return _projlink.is_project_code(code)
+        if _projlink.is_project_code(code):
+            return True
+        return bool(target is not None and _projlink.is_target_code(code, target))
     except Exception:
         return False
 
@@ -193,7 +196,7 @@ def validate(proj: Project) -> list[Issue]:
             issues.append(Issue("error", w, "物理表名只能用小写字母数字下划线"))
         if not bo.fields:
             issues.append(Issue("error", w, "没有任何字段"))
-        _validate_fields(bo, issues, obj_pool)
+        _validate_fields(bo, issues, obj_pool, getattr(proj, "link_target", None))
         _validate_bo_cascade(bo, issues, w)
 
         # 选项值的短码在同一字典内不能重复（库里没有唯一约束，重复会静默覆盖）
@@ -756,7 +759,8 @@ def _check_object_ref(f: BoField, issues: list[Issue], w: str,
 
 
 def _validate_fields(bo: Bo, issues: list[Issue],
-                     obj_pool: list[dict] | None = None) -> None:
+                     obj_pool: list[dict] | None = None,
+                     target=None) -> None:
     seen: dict[str, str] = {}
     for f in bo.fields:
         w = f"字段 {bo.code}.{f.code or '<空>'}"
@@ -836,7 +840,7 @@ def _validate_fields(bo: Bo, issues: list[Issue],
         # 例外：项目对象与系统原生的编码本来就带 Id（stateId / classificationId /
         # gradeId / projectId…）。对齐就是为了「跟项目完全一致」，再报「建议去掉
         # Id 后缀」等于让用户跟系统对着干，也会把这份警告刷满整页。
-        if (f.code.endswith("Id") or f.code.endswith("ID")) and not _is_native_code(f.code):
+        if (f.code.endswith("Id") or f.code.endswith("ID")) and not _is_native_code(f.code, target):
             issues.append(Issue(
                 "warn", w,
                 f"命名不符合规范：{f.code} 建议去掉 Id 后缀（如 {f.code[:-2]}），提升阅读体验",

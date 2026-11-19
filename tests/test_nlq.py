@@ -1619,3 +1619,68 @@ def _():
         assert data["examples"][0]["sql"] == "SELECT 3"
     finally:
         store._file = orig
+
+
+# --------------------------------------------------------------------------
+# 度量模板（nlq/measure.py）
+#
+# 模型来自 8112 图表自定义的数据源：维度（labelKey/groupKey）与度量
+# （valueKeys + sum/avg）分开。这里锁住三条底线：
+#   1. 度量要落到真实列上做 SUM/AVG，不能退化成 COUNT(*)
+#   2. 「有多少/几个」是计数，不能被度量模板抢走
+#   3. 维度认不准就返回 None，交回通用路径（宁可慢，不可错）
+# --------------------------------------------------------------------------
+
+def test_measure_sum_by_fk_dimension():
+    from pp6kit.nlq import measure
+    sql, note = measure.build(_pack(), "每个客户的合同金额合计")
+    assert "SUM(`t`.`amount_`)" in sql, sql
+    assert "pp_customer" in sql, "维度要翻成客户名称"
+    assert "GROUP BY" in sql and "COUNT(" not in sql
+    assert "合同金额" in note
+
+
+def test_measure_topn_uses_limit():
+    from pp6kit.nlq import measure
+    sql, _ = measure.build(_pack(), "合同金额最高的3个客户")
+    assert "LIMIT 3" in sql, sql
+    assert "DESC" in sql
+
+
+def test_measure_avg_keeps_avg():
+    from pp6kit.nlq import measure
+    sql, _ = measure.build(_pack(), "每个项目的平均进度")
+    assert "AVG(`t`.`progress_`)" in sql, sql
+
+
+def test_measure_skips_count_questions():
+    from pp6kit.nlq import measure
+    # 计数问句必须交回计数路径，绝不能变成「合同金额合计」
+    assert measure.build(_pack(), "每个客户有多少合同") is None
+    assert measure.build(_pack(), "每个项目有多少任务") is None
+
+
+def test_measure_skips_when_dimension_unknown():
+    from pp6kit.nlq import measure
+    # 「预算大类」不在白名单里，也没有对应列 —— 认不准就不猜
+    assert measure.build(_pack(), "每个预算大类的合同金额汇总") is None
+
+
+def test_measure_time_dimension():
+    from pp6kit.nlq import measure
+    sql, _ = measure.build(_pack(), "按月统计合同金额")
+    assert "DATE_FORMAT" in sql and "%Y-%m" in sql, sql
+    assert "ORDER BY DATE_FORMAT" in sql, "时间维度要按时间正序"
+
+
+@case("NLQ116", "nlq", "模型接口：内网地址优先直连，证书错误给人话提示", "P1",
+      ["powerproject.cn / 内网 IP 判定为内部地址", "公网 API 不绕过代理",
+       "证书校验失败不再只说「TLS 抖动」"])
+def _():
+    from pp6kit.nlq import llm
+
+    assert llm._is_internal("https://newapi.powerproject.cn:8848/v1")
+    assert llm._is_internal("http://111.15.169.118:8848/v1")
+    assert not llm._is_internal("https://api.openai.com/v1")
+    assert "证书校验失败" in str(llm.TransientError(
+        "证书校验失败：通常是本机代理/VPN 的中间人证书未被信任"))
