@@ -274,3 +274,23 @@ def _():
         ), got
     finally:
         check_secrets.subprocess.check_output = orig
+
+
+@case("SEC15", "security", "密钥扫描在 ascii/cp1252 控制台下仍能正常退出", "P0",
+      ["脚本入口强制 stdout/stderr UTF-8", "中文提示不会让 Windows runner 秒退 1"])
+def _():
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    from tools import check_secrets
+
+    script = Path(check_secrets.__file__)
+    root = script.parent.parent
+    for enc in ("ascii", "cp1252"):
+        env = dict(os.environ, PYTHONIOENCODING=enc)
+        r = subprocess.run(
+            [sys.executable, str(script)], cwd=str(root), env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60,
+        )
+        assert r.returncode == 0, f"{enc}: {r.returncode} {r.stderr.decode('utf-8', 'replace')[:300]}"

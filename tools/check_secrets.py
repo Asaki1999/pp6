@@ -27,6 +27,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Windows runner 的 stdout 默认 cp1252/ascii，print 中文会抛 UnicodeEncodeError
+# 直接让进程 exit 1——2026-11-19 的 Windows CI 就是这么红的（与扫描结果无关）。
+# 强制 stdout/stderr 走 UTF-8，与平台 locale 解耦。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 PATTERNS = {
     "OpenAI/DeepSeek Key": re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}"),
     "AWS Access Key": re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
