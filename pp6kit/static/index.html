@@ -137,6 +137,11 @@
               <input id="qModel" placeholder="glm-4.7-flash">
             </label>
 
+            <label>全局指令（可选）
+              <textarea id="qInstr" rows="3" placeholder="例：金额一律按万元显示；排除名称含「测试」的项目；日期条件用 create_time_"></textarea>
+            </label>
+            <div class="q-hint">每次 AI 生成都会带上这段规则，与默认规则冲突时以此为准。留空则不注入。</div>
+
             <div class="q-row">
               <button class="btn primary" id="qSaveLlm">保存并测试</button>
             </div>

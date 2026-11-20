@@ -222,6 +222,7 @@ async function loadConfig() {
 
     Q_PROVIDERS = d.providers || [];
     renderProviders(Q_PROVIDERS);
+    if (d.instructions) Q.get("qInstr").value = d.instructions;
 
     const ch = ((d.llm || {}).channels || [])[0] || {};
     if (ch.base_url) Q.get("qBase").value = ch.base_url;
@@ -412,6 +413,8 @@ Q.get("qSaveLlm").onclick = async () => {
           model: model, fallbacks: fallbacks, enabled: true,
         }],
       },
+      // 全局指令跟 Key 一起存，用户不用再找个单独的地方点保存
+      instructions: Q.get("qInstr").value.trim(),
     });
 
     // 第三步：保存成功，清空输入框、刷新状态
@@ -591,6 +594,43 @@ async function runSql(sql) {
   }
 }
 
+/* 流式问答：AI 生成时把 SQL 实时写进框里，不用盯着按钮转圈。
+
+   SSE 帧格式是 `data: {json}\n\n`，浏览器按 chunk 给到，所以要带缓冲地切帧
+   ——一个 chunk 可能是半帧，也可能一次给好几帧。
+   服务端不支持流式、或非 200 时抛 stream-unavailable，由调用方退回同步接口。 */
+async function askStream(payload, onDelta) {
+  const res = await fetch("/api/nlq/ask-stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok || !res.body) throw new Error("stream-unavailable");
+
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let result = null;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const frames = buf.split("\n\n");
+    buf = frames.pop();                 // 最后一段可能是半帧，留到下一轮
+    for (const frame of frames) {
+      const line = frame.split("\n").find((l) => l.startsWith("data:"));
+      if (!line) continue;              // 心跳 / 空帧
+      let ev;
+      try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
+      if (ev.stage === "delta") onDelta(ev.delta || "");
+      else if (ev.stage === "done") result = ev.result;
+      else if (ev.stage === "error") throw new Error(ev.error || "生成失败");
+    }
+  }
+  if (!result) throw new Error("没有拿到结果，请重试");
+  return result;
+}
+
 async function ask(engine, clarified) {
   Q.get("qRuleBox").hidden = true;
   const question = Q.get("qQuestion").value.trim();
@@ -598,8 +638,24 @@ async function ask(engine, clarified) {
   const btn = Q.get("qAsk");
   btn.disabled = true; btn.textContent = "生成中…";
   const t0 = performance.now();
+  let acc = "";
   try {
-    const d = await qApi("/api/nlq/ask", { question, engine, clarified: !!clarified });
+    // 流式优先：能一边生成一边看 SQL，长 SQL 也不用干等
+    Q.get("qSqlCard").hidden = false;
+    Q.get("qSql").value = "";
+    let d;
+    try {
+      d = await askStream({ question, engine, clarified: !!clarified }, (piece) => {
+        acc += piece;
+        // 生成中先显示原始输出，done 之后 showSql 会用校验过的版本覆盖
+        const ta = Q.get("qSql");
+        ta.value = acc;
+        ta.scrollTop = ta.scrollHeight;   // 跟着最新写出来的字往下滚
+      });
+    } catch (e) {
+      if (String(e.message) !== "stream-unavailable") throw e;
+      d = await qApi("/api/nlq/ask", { question, engine, clarified: !!clarified });
+    }
     if (d.sql) {
       showSql(d.sql, question, true);
       renderOrigin(d);
@@ -625,6 +681,7 @@ async function ask(engine, clarified) {
     Q.get("qSqlCard").hidden = false;
     // 清空旧的 SQL：被安全闸拒掉时如果还留着上一次的结果，
     // 很容易被当成「这次生成的」，真的复制去库里跑就麻烦了。
+    // 流式吐了一半再失败也算：半截 SQL 比没有更危险。
     Q.get("qSql").value = "";
     Q.get("qRuleBox").hidden = true;
     Q.get("qErr").hidden = false;

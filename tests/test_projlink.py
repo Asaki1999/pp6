@@ -1403,7 +1403,7 @@ def _probe_frontend(probe_name: str = "fe_projlink_probe.js") -> dict:
     只 grep 源码证明不了「开关能压住 ProjLink 的 linked」「失败会回滚」这类行为，
     所以这里把 app.js 放进 vm 跑一遍。没装 node 就 skip（不装依赖、不联网）。
 
-    probe_name：换一份探针脚本（PL84/PL85 用 fe_projlink_snapshot_probe.js）。
+    probe_name：换一份探针脚本（PL84/PL85/PL86 用 fe_projlink_snapshot_probe.js）。
     """
     import json as _json
     import shutil
@@ -3560,7 +3560,7 @@ def _():
         f"链接控件没有独占整行（span={row.group(1) if row else '未找到'}）"
 
 
-# ---------------------------------------------------------------- PL83–PL85
+# ---------------------------------------------------------------- PL83–PL86
 # 2026-11-20 用户报的 bug：上传 Word、第 1 步选了「关联项目」，AI 生成的字段里没有
 # 「项目选择」。根因在**前端**：没连库时 askProjectZip 只给「导入项目 zip」，
 # 用户手上没有 zip 就点取消 → 关联没生效 → 请求不带 X-Project-Link →
@@ -3667,3 +3667,36 @@ def _():
     assert out["F_linkOk"] is True, "有 isLink 字段时不该提示"
     assert out["F_selfTarget"] is True, "生成对象就是关联目标时不该提示"
     assert out["F_offSilent"] is True, "关掉关联时不该提示"
+
+
+@case("PL86", "projlink", "已连数据库：字段来源改成一条非阻塞提示，一份文件只提示一次",
+      "P0", ["dbConfigured=true → resolve true 且不弹 #psMask",
+             "toast 同时点明「已连接数据库」「字段取自库中」「无需再选项目文件」",
+             "同一份文件再调用不再提示；换文件才重新提示一次",
+             "没连库仍走原弹窗；已有 token 的快速返回不提示"])
+def _():
+    """用户把「连库时静默跳过 zip 弹窗」误认成弹窗被删了。
+    这次不恢复强制弹窗（用户要求不打扰），改成可见但不挡路的 toast。
+    """
+    out = _probe_frontend("fe_projlink_snapshot_probe.js")
+
+    assert out["G_dbResolve"] is True, "连库时没继续走主流程"
+    assert out["G_dbResolveAgain"] is True, "第二次调用把主流程挡住了"
+    first = out["G_first"]
+    assert first["maskHidden"] is True, "连库时不该再弹 #psMask"
+    assert first["flag"] is True, "提示标志没记下来（会每次刷屏）"
+    assert len(first["toasts"]) == 1, f"第一次调用提示次数不对：{first['toasts']}"
+    msg = first["toasts"][0]
+    assert "已连接数据库" in msg and "项目字段" in msg and "库中" in msg \
+        and "无需再选项目文件" in msg, msg
+    assert len(msg) <= 40, f"提示太长：{msg}（{len(msg)} 字）"
+
+    assert out["G_second"]["toasts"] == [], "同一份文件里提示刷屏了"
+    assert len(out["G_afterNewFile"]) == 1, "换文件后提示没有重新出现"
+    assert len(out["G_afterNewFile"][0]) <= 40, out["G_afterNewFile"]
+
+    assert out["G_noDbMaskHidden"] is False, "没连库时不弹窗了（路径被改坏）"
+    assert out["G_noDbResolve"] is True, "没连库时随包快照路径被改坏"
+    assert out["G_noDbToasts"] == [], f"没连库时混进了连库提示：{out['G_noDbToasts']}"
+    assert out["G_tokenResolve"] is True, "已有 token 的快速返回被改坏"
+    assert out["G_tokenToasts"] == [], "已有 token 时不该提示"

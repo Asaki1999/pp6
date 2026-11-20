@@ -1684,3 +1684,157 @@ def _():
     assert not llm._is_internal("https://api.openai.com/v1")
     assert "证书校验失败" in str(llm.TransientError(
         "证书校验失败：通常是本机代理/VPN 的中间人证书未被信任"))
+
+
+@case("NLQ117", "nlq", "@ 点名的表：物理名/中文/对象编码都认，问题本体去掉 @", "P1",
+      ["@pp_contract 解析成物理表",
+       "中文 @项目 命中 pp_project，且贪心回退不吃掉后面的字",
+       "@CON 走 obj_code",
+       "干净问题里不再残留 @ 标记"])
+def _():
+    from pp6kit.nlq import mentions
+
+    pack = _pack()
+    pinned, q = mentions.parse(pack, "查 @pp_contract 里金额最大的 5 个")
+    assert pinned == ["pp_contract"], pinned
+    assert "@" not in q and "查" in q, q
+
+    pinned, q = mentions.parse(pack, "@项目 里有哪些需求")
+    assert pinned == ["pp_project"], (pinned, q)
+
+    # 中文没有分隔符：@项目里 → 必须先贪心再逐字回退，只吃掉「项目」两个字
+    pinned, q = mentions.parse(pack, "@项目里有哪些需求")
+    assert pinned == ["pp_project"], pinned
+    assert q == "里有哪些需求", q
+
+    pack.tables["pp_contract"].obj_code = "CON"
+    pinned, _ = mentions.parse(pack, "看 @CON 的数据")
+    assert pinned == ["pp_contract"], pinned
+
+
+@case("NLQ118", "nlq", "@ 认不出来就原样保留：邮箱不能被当成表名吃掉", "P1",
+      ["不存在的 @zhangsan 不产生 pinned",
+       "整句原样返回，a@b.com 不被截断"])
+def _():
+    from pp6kit.nlq import mentions
+
+    q = "把 @zhangsan 的项目导出，邮箱 a@b.com 别动"
+    pinned, clean = mentions.parse(_pack(), q)
+    assert pinned == [], pinned
+    assert clean == q, clean
+
+
+@case("NLQ119", "nlq", "schema 预算：只裁列不删表，@ 点名的表不受预算约束", "P1",
+      ["紧预算比松预算短",
+       "被裁的表仍留表头（模型不会以为它不存在）",
+       "keep 里的表列明细完整保留"])
+def _():
+    pack = _pack()
+    tables = list(pack.tables)
+
+    loose = engine._schema_block(pack, tables, budget=10 ** 6)
+    tight = engine._schema_block(pack, tables, budget=200)
+    assert len(tight) < len(loose), (len(tight), len(loose))
+    for n in tables:
+        assert n in tight, f"{n} 的表头被整张删了"
+    assert "列已省略" in tight, tight
+
+    last = tables[-1]
+    kept = engine._schema_block(pack, tables, budget=200, keep=[last])
+    tail_col = pack.tables[last].columns[-1].name
+    assert tail_col in kept, f"keep 表的列 {tail_col} 被裁掉了"
+
+
+@case("NLQ120", "nlq", "全局指令注入 system，位置在 schema 之前；不配就不注入", "P1",
+      ["用户指令出现在 system 里并声明冲突时以它为准",
+       "注入位置在「可用 schema」之前（先看规则再看表）",
+       "没配指令时提示词与原来一致，不凭空多一段"])
+def _():
+    pack = _pack()
+    msgs = engine.build_messages(pack, "项目有哪些", instructions="金额一律按万元显示")
+    system = msgs[0]["content"]
+    assert "金额一律按万元显示" in system
+    assert "全局指令" in system
+    assert system.index("全局指令") < system.index("可用 schema"), "指令要在 schema 之前"
+
+    plain = engine.build_messages(pack, "项目有哪些")
+    assert "全局指令" not in plain[0]["content"], "没配指令不该多出这一段"
+
+
+class _FakeSSEResp:
+    """假 SSE 响应：只实现 chat_stream 用到的那几个成员。"""
+
+    def __init__(self, lines):
+        self._lines = lines
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def __iter__(self):
+        return iter(self._lines)
+
+
+@case("NLQ121", "nlq", "流式解析：delta 逐段拼成完整 SQL，非 JSON 帧不打断", "P1",
+      ["多段 delta 按序拼成完整文本",
+       "回调收到的是分段而不是整块",
+       "[DONE] 之后不再读取",
+       "空行/心跳/半包 JSON 被跳过而不是抛异常"])
+def _():
+    from pp6kit.nlq import llm
+
+    lines = [
+        b'\n',
+        b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n',
+        b'data: {"choices":[{"delta":{"content":"SEL"}}]}\n',
+        b'\n',
+        b'data: {"choices":[{"delta":{"content":"ECT"}}]}\n',
+        b'data: not-json\n',                     # 半包/噪声帧
+        b'data: {"choices":[{"delta":{"content":" 1"}}]}\n',
+        b'data: [DONE]\n',
+        b'data: {"choices":[{"delta":{"content":"NOPE"}}]}\n',   # DONE 之后
+    ]
+    got = []
+    orig = llm._open
+    llm._open = lambda req, timeout: _FakeSSEResp(lines)
+    try:
+        text = llm.chat_stream("http://x/v1", "k", "m", [],
+                               on_delta=lambda p: got.append(p))
+    finally:
+        llm._open = orig
+
+    assert text == "SELECT 1", text
+    assert got == ["SEL", "ECT", " 1"], got
+    assert "NOPE" not in text
+
+
+@case("NLQ122", "nlq", "流式降级：已经吐出内容后绝不换渠道重来", "P0",
+      ["第一渠道吐出内容后报错 → 抛「生成中断」",
+       "绝不对第二渠道再发一次请求（否则前端会看到两段 SQL 拼接）"])
+def _():
+    from pp6kit.nlq import llm
+
+    calls = []
+
+    def fake_stream(base_url, api_key, model, messages, on_delta=None, **kw):
+        calls.append(base_url)
+        on_delta("SEL")                  # 已经让用户看到了
+        raise llm.TransientError("连接被重置")
+
+    cfg = {"channels": [
+        {"key": "a", "base_url": "http://a", "api_key": "k", "model": "m1"},
+        {"key": "b", "base_url": "http://b", "api_key": "k", "model": "m2"},
+    ]}
+    orig = llm.chat_stream
+    llm.chat_stream = fake_stream
+    try:
+        llm.chat_stream_any(cfg, [])
+        assert False, "应该抛异常"
+    except llm.LlmError as exc:
+        assert "生成中断" in str(exc), str(exc)
+    finally:
+        llm.chat_stream = orig
+
+    assert calls == ["http://a"], f"吐出内容后不该再试第二个渠道：{calls}"

@@ -1150,6 +1150,8 @@ def nlq_config() -> dict:
         "db": db,
         "llm": {"channels": channels,
                 "ready": bool(nlq_llm.active_channels(llm))},
+        # 全局指令：每次 AI 请求都会注入。空串 = 没配。
+        "instructions": nlq_store.load_instructions(),
         # 内置免费平台预设：前端拿它渲染下拉框，用户选完自动填地址和模型
         "providers": nlq_providers.as_list(),
         "examples": len(nlq_store.all_examples()),
@@ -1366,6 +1368,8 @@ def nlq_save_config(payload: dict) -> dict:
         nlq_store.save_db(db)
     llm = payload.get("llm") or {}
     warnings = []
+    if "instructions" in payload:
+        nlq_store.save_instructions(payload.get("instructions") or "")
     if llm:
         nlq_store.save_llm(llm)     # save_llm 内部处理空 Key 沿用
         # 保存时就检查 Key 形态，别等测试连接才发现复制不全
@@ -2232,11 +2236,14 @@ def nlq_test() -> dict:
     }
 
 
-def _nlq_ask_impl(payload: dict) -> dict:
+def _nlq_ask_impl(payload: dict, on_delta=None) -> dict:
     """engine: hybrid（默认）/ local / llm / auto
 
     hybrid = 规则先跑，规则没把握才调 AI，AI 答对了顺便沉淀成示例。
     这是默认模式：简单问题秒出结果不花钱，复杂问题交给 AI。
+
+    on_delta 非空时代表「流式调用」：AI 每吐一段就回调，前端能实时看到 SQL
+    在长出来。规则命中的分支不会有 delta——那本来就是毫秒级返回。
     """
     question = (payload.get("question") or "").strip()
     if not question:
@@ -2253,6 +2260,11 @@ def _nlq_ask_impl(payload: dict) -> dict:
         pack = _schema()
         allowed = set(pack.tables) | nlq_guard.PARTY_TABLES | {"iform_cat_dic", "iform_cat_type"}
 
+        # @ 点名的表：优先于打分器，也保证不被 schema 预算裁掉。
+        # 解析完把 question 换成去掉 @xx 的干净版本，后续规则/模型都吃它。
+        from .nlq import mentions as nlq_mentions
+        pinned, question = nlq_mentions.parse(pack, question)
+
         # 缺时间范围时先追问一句，避免「新增/趋势」把全量历史算进去
         if not payload.get("clarified"):
             from .nlq import clarify as nlq_clarify
@@ -2265,7 +2277,8 @@ def _nlq_ask_impl(payload: dict) -> dict:
                         "question": question}
 
         if mode == "llm":
-            return _ask_ai(conn, pack, question, cfg, learn=True)
+            return _ask_ai(conn, pack, question, cfg, learn=True, pinned=pinned,
+                           on_delta=on_delta)
 
         if mode in ("local", "auto") and not has_key:
             return _ask_local(conn, pack, question, allowed)
@@ -2275,7 +2288,8 @@ def _nlq_ask_impl(payload: dict) -> dict:
 
         if mode == "auto":       # 旧行为：有 key 就直接用 AI
             try:
-                return _ask_ai(conn, pack, question, cfg, learn=True)
+                return _ask_ai(conn, pack, question, cfg, learn=True, pinned=pinned,
+                           on_delta=on_delta)
             except Exception as exc:
                 res = _ask_local(conn, pack, question, allowed)
                 res["source"] = f"本地规则（大模型不可用：{str(exc)[:60]}）"
@@ -2307,7 +2321,8 @@ def _nlq_ask_impl(payload: dict) -> dict:
         try:
             ai = _ask_ai(conn, pack, question, cfg, learn=True,
                          rule_sql=res.get("sql", ""),
-                         rule_rows=len(res.get("rows") or []))
+                         rule_rows=len(res.get("rows") or []),
+                         pinned=pinned, on_delta=on_delta)
         except Exception as exc:
             res["source"] += f"（AI 也失败：{str(exc)[:50]}）"
             res["ai_error"] = str(exc)[:120]
@@ -2372,19 +2387,26 @@ def _expected_tables(pack, question: str) -> list[str]:
 
 
 def _ask_ai(conn, pack, question: str, cfg: dict, learn: bool = True,
-            rule_sql: str = "", rule_rows: int = 0) -> dict:
+            rule_sql: str = "", rule_rows: int = 0,
+            pinned: list[str] | None = None,
+            on_delta=None) -> dict:
     """走大模型；答对了就沉淀成示例，下次同类问题规则能直接命中。
 
     rule_sql / rule_rows 是规则引擎当时的结论：如果 AI 和规则**明显冲突**，
     就不沉淀——AI 也会错，错了再沉淀等于把错误固化。
+
+    pinned 是用户 @ 点名的表，透传给选表和 schema 预算（点名表不被截断）。
     """
     # 传入选表结果，让示例挑选能按「表重合」加权（问工时就用工时的示例）
     try:
-        want_tables = nlq_engine.select_tables(pack, question)
+        want_tables = nlq_engine.select_tables(pack, question, pinned=pinned)
     except Exception:
-        want_tables = None
+        want_tables = pinned
     res = nlq_engine.ask(conn, pack, question, cfg,
-                         nlq_store.pick_examples(question, tables=want_tables))
+                         nlq_store.pick_examples(question, tables=want_tables),
+                         pinned=pinned,
+                         instructions=nlq_store.load_instructions(),
+                         on_delta=on_delta)
     res["source"] = "大模型生成" + (f"（{res['channel']}）" if res.get("channel") else "")
     res["origin"] = "ai"                      # 大模型生成
     res["origin_label"] = "AI 生成"
@@ -2489,6 +2511,45 @@ def nlq_ask(payload: dict) -> dict:
     except Exception:
         pass
     return res
+
+
+def nlq_ask_stream(payload: dict):
+    """SSE 流式版 /api/nlq/ask：生成过程实时吐字，其余流程与同步版完全一致。
+
+    为什么用线程 + 队列而不是把整条链路改成生成器：
+    `_nlq_ask_impl` 里套着规则引擎 → 判定 → AI → 冲突检测 → 沉淀五段逻辑，
+    改成 yield 形式等于把它重写一遍，回归风险远大于收益。这里只多开一个
+    线程跑原来那套，主线程负责把 delta 转成 SSE 事件——业务逻辑一行没动。
+
+    事件时序：
+        {"stage": "start"}                     请求已受理
+        {"stage": "delta", "delta": "SEL"}     AI 每吐一段（可能没有，规则命中时直接 done）
+        {"stage": "done",  "result": {...}}    完整结果，结构与 /api/nlq/ask 相同
+        {"stage": "error", "error": "..."}     失败原因
+    """
+    import queue as _queue
+    import threading
+
+    box: _queue.Queue = _queue.Queue()
+
+    def _worker() -> None:
+        try:
+            res = _nlq_ask_impl(
+                payload,
+                on_delta=lambda piece: box.put({"stage": "delta", "delta": piece}))
+            box.put({"stage": "done", "result": res})
+        except Exception as exc:      # 闸门拒绝 / 未配 Key / 所有渠道失败
+            box.put({"stage": "error", "error": str(exc)})
+        finally:
+            box.put(None)
+
+    yield {"stage": "start"}
+    threading.Thread(target=_worker, daemon=True, name="nlq-ask-stream").start()
+    while True:
+        ev = box.get()
+        if ev is None:
+            break
+        yield ev
 
 
 def nlq_run(payload: dict) -> dict:
@@ -2798,6 +2859,30 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("文件超过 30MB，请精简后再传")
         return self.rfile.read(length)
 
+    def _sse(self, events) -> None:
+        """SSE 流式响应：不设 Content-Length，靠连接关闭界定结尾。
+
+        BaseHTTPRequestHandler 默认 HTTP/1.0，无 Content-Length 时响应体就是
+        「写到关闭为止」，浏览器 fetch 的 ReadableStream 会边收边给——这正是
+        流式需要的语义，不必自己拼 chunked 帧。
+
+        X-Accel-Buffering: no 是给 Nginx 之类反代用的；本机直连无害。
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            for ev in events:
+                payload = "data: " + json.dumps(ev, ensure_ascii=False) + "\n\n"
+                self.wfile.write(payload.encode("utf-8"))
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            # 用户关了页面或点了停止：安静收场，不要往 stderr 喷栈
+            return
+
     # --- 路由
     def do_GET(self) -> None:
         path = self.path.split("?")[0]
@@ -2936,6 +3021,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(nlq_test_llm(json.loads(self._body())))
             elif self.path == "/api/nlq/ask":
                 self._json({"ok": True, **nlq_ask(json.loads(self._body()))})
+            elif self.path == "/api/nlq/ask-stream":
+                # 流式：先解析完 body 再进 SSE，避免 _sse 已经开始写响应后
+                # 才发现 JSON 有问题（那时改不了状态码了）
+                self._sse(nlq_ask_stream(json.loads(self._body())))
             elif self.path == "/api/nlq/run":
                 self._json({"ok": True, **nlq_run(json.loads(self._body()))})
             elif self.path == "/api/nlq/verify":

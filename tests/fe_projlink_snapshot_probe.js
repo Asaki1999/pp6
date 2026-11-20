@@ -1,6 +1,6 @@
 /* 前端探针：没连库时「关联项目」的字段池决策（真跑 app.js）。
  *
- * 由 tests/test_projlink.py 的 PL83–PL85 调用（`node tests/fe_projlink_snapshot_probe.js
+ * 由 tests/test_projlink.py 的 PL83–PL86 调用（`node tests/fe_projlink_snapshot_probe.js
  * pp6kit/static/app.js`），结果以一行 JSON 打到 stdout 由 Python 断言。
  *
  * 为什么要真跑：这次的 bug 是「用户在第 1 步选了关联，弹窗却只给导入项目 zip，
@@ -231,6 +231,70 @@ async function main() {
   out.E_reopen = c;
   if (c.cancelIsFn) q("#psCancel").onclick();
   out.E_reopenResolve = await p;
+
+  /* ---------------- G · 连库时：非阻塞提示（真跑 ensureProjectSnapshot） ----------------
+   * 用户把「连库静默跳过 zip 弹窗」误认成弹窗被删了。这里验证：
+   *   · dbConfigured=true → 不弹 #psMask、resolve true，用 toast 说清字段来源；
+   *   · 同一份文件再调用一次不再 toast（防刷屏）；
+   *   · 换文件（模拟 handleFile 重置标志）后才再提示一次；
+   *   · 没连库仍走原来的弹窗；已有 token 的快速返回也不提示。
+   */
+  const DB = {
+    ok: true, dbConfigured: true, source: "target_db",
+    sourceLabel: "目标库", fieldCount: 51,
+    generatedAt: "2026-11-14T17:52:44+08:00", status: "ok",
+  };
+  const realToast = ctx.toast;
+  const toasts = [];
+  ctx.toast = (msg, ms) => { toasts.push(String(msg)); return realToast(msg, ms); };
+
+  async function callWithDb() {
+    resetSnapshotState();          // 清 token/缓存，强制重新读 dbConfigured
+    q("#psMask").hidden = true;
+    ctx.fetch = async () => ({ ok: true, json: async () => DB });
+    return await ctx.ensureProjectSnapshot();
+  }
+
+  st.plDbHintShown = false;        // 新文件：handleFile() 的重置点
+  toasts.length = 0;
+  out.G_dbResolve = await callWithDb();
+  out.G_first = {
+    toasts: toasts.slice(),
+    maskHidden: q("#psMask").hidden,
+    flag: st.plDbHintShown,
+  };
+
+  toasts.length = 0;
+  out.G_dbResolveAgain = await callWithDb();
+  out.G_second = {
+    toasts: toasts.slice(),
+    maskHidden: q("#psMask").hidden,
+    flag: st.plDbHintShown,
+  };
+
+  // 换文件：handleFile() 清掉标志，提示应该重新出现一次
+  st.plDbHintShown = false;
+  toasts.length = 0;
+  await callWithDb();
+  out.G_afterNewFile = toasts.slice();
+
+  // 没连库：仍走原来的选择弹窗，且不会被连库提示污染
+  toasts.length = 0;
+  const noDbPending = (await openModalWith(USABLE)).pending;
+  out.G_noDbMaskHidden = q("#psMask").hidden;
+  if (q("#psCancel").onclick) q("#psCancel").onclick();
+  out.G_noDbResolve = await noDbPending;
+  out.G_noDbToasts = toasts.slice();
+
+  // 已有上传 token：快速返回，不读状态接口、不提示
+  resetSnapshotState();
+  st.plSnapshotToken = "probe-token";
+  toasts.length = 0;
+  ctx.fetch = () => { throw new Error("有 token 时不该读状态接口"); };
+  out.G_tokenResolve = await ctx.ensureProjectSnapshot();
+  out.G_tokenToasts = toasts.slice();
+  st.plSnapshotToken = "";
+  ctx.toast = realToast;
 
   /* ---------------- F · renderAiBo 的「关联开着但没链接字段」提示 ---------------- */
   const WARN = "没有生成「项目选择」字段";

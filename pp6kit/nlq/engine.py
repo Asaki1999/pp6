@@ -55,20 +55,30 @@ SYSTEM = """你是 PowerProject 项目管理系统的 MySQL 8 查询专家。
 请只输出 SQL。"""
 
 
-def select_tables(pack: SchemaPack, question: str, limit: int = MAX_TABLES_IN_PROMPT) -> list[str]:
+def select_tables(pack: SchemaPack, question: str,
+                  limit: int = MAX_TABLES_IN_PROMPT,
+                  pinned: list[str] | None = None) -> list[str]:
     """挑这个问句可能用到的表。
 
     优先走 select.link_tables（综合打分 + 外键目标表 + 多跳中间表），
     它比「标签包含即命中」准得多；失败时退回旧的宽松匹配。
+
+    pinned 是用户用 @ 点名的表：无条件排在最前且不被 limit 截掉。
+    打分器再准也是猜，用户点名了就该听用户的。
     """
     try:
         from . import local, select
         picked = select.link_tables(pack, question, local._label_variants, limit=limit)
-        if picked:
-            return picked
+        if not picked:
+            picked = _select_tables_fallback(pack, question, limit)
     except Exception:
-        pass
-    return _select_tables_fallback(pack, question, limit)
+        picked = _select_tables_fallback(pack, question, limit)
+
+    if pinned:
+        head = [n for n in pinned if n in pack.tables]
+        if head:
+            return head + [n for n in picked if n not in head]
+    return picked
 
 
 def _select_tables_fallback(pack: SchemaPack, question: str, limit: int) -> list[str]:
@@ -129,7 +139,16 @@ _SYS_COLS = frozenset({
 })
 
 
-def _schema_block(pack: SchemaPack, tables: list[str]) -> str:
+# schema 说明的字符预算（≈3500 token）。DBX 对超大 schema 也是截断处理：
+# 「Large schemas are truncated. Explicit mentions are more reliable than
+# asking the model to guess among every object」。它们靠 @ 提及兜底，
+# 我们两边都有（pinned 表不受预算约束），所以裁剪是安全的。
+SCHEMA_BUDGET_CHARS = 7000
+
+
+def _schema_block(pack: SchemaPack, tables: list[str],
+                  budget: int = SCHEMA_BUDGET_CHARS,
+                  keep: list[str] | None = None) -> str:
     """生成 schema 说明。
 
     提示词长度直接决定响应速度（免费模型尤其明显）：
@@ -139,8 +158,16 @@ def _schema_block(pack: SchemaPack, tables: list[str]) -> str:
       - 整列为空的列（否则会写出必然 0 行的条件）
       - 枚举值（只列前 4 个，够模型判断格式）
       - 系统列（租户/IP/版本/审计）一律不列
+
+    budget 是字符预算。超预算的表只留表头——整张删掉的话模型会以为这个
+    对象不存在，转而臆造表名；留表头它至少知道「有这张表，要看明细请
+    @表名」。keep 里的表（用户 @ 点名的）永远完整输出。
     """
-    lines = []
+    keep_set = set(keep or ())
+    lines: list[str] = []
+    used = 0
+    trimmed: list[str] = []
+
     for name in tables:
         t = pack.tables.get(name)
         if not t:
@@ -152,7 +179,9 @@ def _schema_block(pack: SchemaPack, tables: list[str]) -> str:
         has_del = any(c.name == "deleted_" for c in t.columns)
         if not has_del:
             tag += "（无 deleted_ 列，禁止加软删除条件）"
-        lines.append(f"表 {t.name}（{t.label}，{t.rows} 行）{tag}")
+        head = f"表 {t.name}（{t.label}，{t.rows} 行）{tag}"
+
+        body: list[str] = []
         for c in t.columns:
             if c.name in _SYS_COLS and not c.ref_table:
                 continue
@@ -160,14 +189,14 @@ def _schema_block(pack: SchemaPack, tables: list[str]) -> str:
             if c.ref_table:
                 rel = next((r for r in pack.relations.get(name, []) if r["col"] == c.name), None)
                 dead = rel is not None and rel.get("live") == 0
-                tag = f"→{c.ref_table}" + ("(空列勿用)" if dead else "")
+                ref = f"→{c.ref_table}" + ("(空列勿用)" if dead else "")
                 # 被引用表的实际取值（ref_values 在 introspect 里已采样）：
                 # 「高级别项目」猜成 name_ LIKE '%高%' 就查不到——库里是
                 # 「集团战略级/事业部重点级/部门级」。值给到手模型就不用猜。
                 vals = (pack.ref_values.get(c.ref_table) or [])[:6]
                 if vals:
-                    tag += f"(值:{','.join(vals)})"
-                extra.append(tag)
+                    ref += f"(值:{','.join(vals)})"
+                extra.append(ref)
             if c.has_cn_enums:
                 pairs = [f"{lab}={code}" for lab, code in list(c.enums.items())[:4]
                          if lab != code]
@@ -176,20 +205,49 @@ def _schema_block(pack: SchemaPack, tables: list[str]) -> str:
             elif c.filled == 0:
                 extra.append("⚠空列")
             suffix = f" ←{';'.join(extra)}" if extra else ""
-            lines.append(f"  {c.label}={c.name}{suffix}")
+            body.append(f"  {c.label}={c.name}{suffix}")
+
+        cost = len(head) + sum(len(x) + 1 for x in body)
+        if used + cost > budget and name not in keep_set and lines:
+            note = "  ←列已省略，需要时用 @表名 指定"
+            lines.append(head + note)
+            used += len(head) + len(note)
+            trimmed.append(name)
+            continue
+        lines.append(head)
+        lines.extend(body)
+        used += cost
+
     # 内置人员/组织/字典表不在 pack.tables（避免被当业务表乱查），但模型经常
     # 需要它们（「每个部门有多少人」）。不给出真实列名，模型就臆造 org_ids_。
     lines.append("内置表（不在上面的清单里，需要时可直接查询）：")
     lines.append("  iform_party_employee 员工：name_=姓名，pp_org_id_=所属部门(单值)→iform_party_org.id_")
     lines.append("  iform_party_org 部门：name_=部门名称")
     lines.append("  iform_cat_dic 字典项：key_=字典key，name_=项名，parent_id_=父项")
+    if trimmed:
+        lines.append(f"（另有 {len(trimmed)} 张表的列因长度预算省略；"
+                     f"用户用 @ 点名可强制展开）")
     return "\n".join(lines)
 
 
-def build_messages(pack: SchemaPack, question: str, examples: list[dict] | None = None) -> list[dict]:
-    tables = select_tables(pack, question)
-    parts = [SYSTEM, "", "=== 业务口径 ===", semantic.prompt_block(pack),
-             "", "=== 可用 schema ===", _schema_block(pack, tables)]
+def build_messages(pack: SchemaPack, question: str, examples: list[dict] | None = None,
+                   pinned: list[str] | None = None,
+                   instructions: str = "") -> list[dict]:
+    tables = select_tables(pack, question, pinned=pinned)
+    parts = [SYSTEM]
+    if instructions:
+        # 用户配置的全局指令：放在通用规则之后、schema 之前。
+        # 「优先级高于上面的通用规则」必须写明——模型遇到冲突时需要一个
+        # 明确的裁决顺序，否则它会随机挑一条遵守（DBX 文档也强调了这点：
+        # 「Keep rules concise and non-conflicting」）。
+        parts += ["", "=== 全局指令（用户配置，与上面规则冲突时以此为准） ===", instructions]
+    parts += ["", "=== 业务口径 ===", semantic.prompt_block(pack)]
+    if pinned:
+        names = "、".join(f"{pack.tables[n].name}（{pack.tables[n].label}）"
+                         for n in pinned if n in pack.tables)
+        if names:
+            parts += ["", f"=== 用户点名要用的表 ===\n{names}\n查询必须从这些表出发。"]
+    parts += ["", "=== 可用 schema ===", _schema_block(pack, tables, keep=pinned)]
     if examples:
         parts += ["", "=== 参考示例（同库已验证的问答，照这个写法） ==="]
         for ex in examples[:6]:
@@ -246,7 +304,10 @@ def _cell(v):
 
 
 def ask(conn, pack: SchemaPack, question: str, cfg: dict,
-        examples: list[dict] | None = None) -> dict:
+        examples: list[dict] | None = None,
+        pinned: list[str] | None = None,
+        instructions: str = "",
+        on_delta=None) -> dict:
     """生成 + 执行；失败时把错误回灌给模型重试一次。
 
     多平台：cfg 里有多个渠道时，按顺序尝试，限流/失败自动切下一家。
@@ -261,8 +322,16 @@ def ask(conn, pack: SchemaPack, question: str, cfg: dict,
         raise llm.LlmError("未配置大模型 API Key（可在「连接与模型」里粘贴，免费平台见预设）")
 
     allowed = set(pack.tables) | guard.PARTY_TABLES | {"iform_cat_dic", "iform_cat_type"}
-    messages = build_messages(pack, question, examples)
-    raw, used = llm.chat_any(cfg, messages)
+    messages = build_messages(pack, question, examples, pinned=pinned,
+                              instructions=instructions)
+
+    # on_delta 非空 = 调用方要流式：把首字尽早吐出去，别让用户盯着黑屏。
+    # 重试路径（下面两处）仍走非流式——第一版 SQL 已经显示在用户眼前了，
+    # 第二版再流式会把两段内容拼在一起，比不动更让人困惑。
+    if on_delta:
+        raw, used = llm.chat_stream_any(cfg, messages, on_delta=on_delta)
+    else:
+        raw, used = llm.chat_any(cfg, messages)
     sql = guard.clean(raw)
     used_label = f"{used.get('model') or ''}"
 

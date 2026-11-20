@@ -82,6 +82,28 @@ def restore_backup() -> bool:
         return False
 
 
+def save_instructions(text: str) -> None:
+    """全局指令：注入每次 AI 请求的固定规则。
+
+    借鉴 DBX 的 global instructions（docs/ai-assistant.mdx「Global
+    Instructions and Prompt Templates」）：命名规则、时区、软删除约定、
+    生产约束这类每次都该生效的东西，不该靠用户每句话重说一遍。
+
+    上限 4000 字——它是每次都进上下文的东西，写成长篇小说只会拖慢生成。
+    """
+    data = load()
+    text = (text or "").strip()
+    if text:
+        data["instructions"] = text[:4000]
+    else:
+        data.pop("instructions", None)
+    save(data)
+
+
+def load_instructions() -> str:
+    return (load().get("instructions") or "").strip()
+
+
 def save_db(cfg: dict) -> None:
     data = load()
     data["db"] = {k: cfg.get(k, "") for k in ("host", "port", "user", "password", "database")}

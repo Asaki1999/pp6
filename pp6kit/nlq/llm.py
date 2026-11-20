@@ -169,6 +169,188 @@ def chat(base_url: str, api_key: str, model: str, messages: list[dict],
         raise LlmError(f"返回格式异常：{str(data)[:300]}") from exc
 
 
+# ---------------------------------------------------------------- 流式
+
+def chat_stream(base_url: str, api_key: str, model: str, messages: list[dict],
+                on_delta=None, temperature: float = 0.0, timeout: int = 120,
+                max_tokens: int | None = None) -> str:
+    """SSE 流式生成，每收到一段增量回调一次 on_delta，返回完整文本。
+
+    借鉴 DBX 的 ai_stream：先把首字吐出来，用户就不用盯着十几秒的黑屏。
+    返回值与 chat() 同格式，调用方可以无缝替换。
+
+    timeout 是**单次读**的超时，不是整段生成的超时：模型只要还在吐字就一直
+    读得动；推理模型思考期间可能几十秒没有输出，所以给到 120s。
+    """
+    body_payload: dict = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": True,
+    }
+    if max_tokens:
+        body_payload["max_tokens"] = max_tokens
+    req = urllib.request.Request(
+        _endpoint(base_url),
+        data=json.dumps(body_payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "text/event-stream",
+        },
+        method="POST",
+    )
+
+    parts: list[str] = []
+    try:
+        with _open(req, timeout) as resp:
+            for raw in resp:
+                line = raw.decode("utf-8", "ignore").strip()
+                if not line or not line.startswith("data:"):
+                    continue              # 空行 / 注释帧 / 心跳
+                chunk = line[5:].strip()
+                if chunk == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(chunk)
+                except json.JSONDecodeError:
+                    continue              # 半包或非 JSON 帧，跳过而不是崩掉整段生成
+                choices = obj.get("choices") or []
+                if not choices:
+                    continue
+                piece = (choices[0].get("delta") or {}).get("content") or ""
+                if not piece:
+                    continue              # 只带 role / reasoning 的帧
+                parts.append(piece)
+                if on_delta:
+                    on_delta(piece)
+    except urllib.error.HTTPError as exc:
+        raise _stream_error(exc, model, api_key) from exc
+    except ssl.SSLCertVerificationError as exc:
+        raise TransientError(
+            "证书校验失败：通常是本机代理/VPN 的中间人证书未被信任，"
+            "或代理节点证书链不完整。请把代理设为直连/关闭 MITM；内网地址可直接访问。"
+            f"（{exc}）") from exc
+    except (ssl.SSLError, urllib.error.URLError, TimeoutError,
+            ConnectionError, http.client.RemoteDisconnected) as exc:
+        raise TransientError(f"网络/TLS 抖动：{exc}") from exc
+    except (LlmError, GeneratorExit):
+        raise
+    except Exception as exc:
+        raise LlmError(f"流式调用失败：{exc}") from exc
+
+    return "".join(parts)
+
+
+def _stream_error(exc: urllib.error.HTTPError, model: str, api_key: str) -> LlmError:
+    """把 HTTP 错误翻成对应的异常类，与 chat() 的口径保持一致。
+
+    不直接复用 chat 里的分支是为了让流式路径完全独立——chat 那条路线上
+    挂了 NLQ110（SSL 抖动重试）和 NLQ116（证书提示）两组用例守着，
+    没必要时为了去重去动它。
+    """
+    body = exc.read().decode("utf-8", "ignore")[:400]
+    if exc.code == 429:
+        return RateLimited(f"限流 429：{body[:100]}")
+    if exc.code in (401, 403):
+        if _is_model_level_denied(body):
+            return NoAccess(f"模型 {model} 未开通：{body[:100]}")
+        return LlmError(_auth_hint(api_key, body))
+    if exc.code == 404:
+        return NoAccess(f"模型 {model} 不存在或已下线：{body[:100]}")
+    if exc.code >= 500:
+        return TransientError(f"服务端 {exc.code}：{body[:80]}")
+    return LlmError(f"接口返回 {exc.code}：{body}")
+
+
+# 流式回调的批处理间隔。DBX 用 122ms 也是同一个理由：模型供应商按 SSE
+# chunk 逐字推（每秒 30~100+ 帧），每帧都往浏览器写一次是纯浪费——前端
+# textarea 赋值 + 重排的开销远大于「早看到 80ms」的收益。
+STREAM_BATCH_SEC = 0.08
+
+
+def chat_stream_any(cfg: dict, messages: list[dict], on_delta=None,
+                    timeout: int = 120, max_tokens: int | None = None,
+                    retry_429: int = 1) -> tuple[str, dict]:
+    """流式版 chat_any：同样的多平台降级，但有一条硬约束——
+
+    **一旦已经向用户吐出内容，就不再换模型重来。**
+    前端是把 delta 逐段拼上去的，中途换模型会看到两段不相干的内容接在一起，
+    比直接报错更糟。所以只有「一个字都还没吐」时才允许降级。
+    """
+    channels = active_channels(cfg)
+    if not channels:
+        raise LlmError(
+            "未配置大模型 API Key。可在「连接与模型」里选一个免费平台"
+            "（智谱 GLM-4.7-Flash 免费），粘贴 Key 即可。"
+        )
+
+    errors: list[str] = []
+    for ch in channels:
+        for model in _model_chain(ch):
+            if f"{_chan_key(ch)}|{model}" in _NO_ACCESS:
+                continue
+            label = model or ch.get("base_url", "")
+            for attempt in range(retry_429 + 1):
+                emitted: list[str] = []
+                pending: list[str] = []
+                gate = [0.0]
+
+                def _emit(piece: str) -> None:
+                    emitted.append(piece)
+                    pending.append(piece)
+                    now = time.monotonic()
+                    if on_delta and now - gate[0] >= STREAM_BATCH_SEC:
+                        gate[0] = now
+                        on_delta("".join(pending))
+                        pending.clear()
+
+                def _flush() -> None:
+                    """把节流窗口里剩下没收尾的那几段送出去。
+
+                    生成结束和中途失败都要调：失败时前端更需要已经生成的部分，
+                    好让人看到「它写到哪儿断的」。
+                    """
+                    if on_delta and pending:
+                        on_delta("".join(pending))
+                        pending.clear()
+
+                try:
+                    text = chat_stream(ch["base_url"], ch["api_key"], model,
+                                       messages, on_delta=_emit, timeout=timeout,
+                                       max_tokens=max_tokens)
+                    _flush()
+                    if not (text or "").strip():
+                        errors.append(f"{label}：返回空")
+                        break
+                    if model != ch.get("model"):
+                        ch = dict(ch, model=model)
+                    return text, ch
+                except RateLimited as exc:
+                    _flush()
+                    if emitted:
+                        raise LlmError(f"生成中断（已输出部分内容）：{exc}")
+                    if attempt < retry_429:
+                        time.sleep(1.5)
+                        continue
+                    errors.append(f"{label}：限流")
+                    break
+                except NoAccess as exc:
+                    _flush()
+                    if emitted:
+                        raise LlmError(f"生成中断（已输出部分内容）：{exc}")
+                    _NO_ACCESS.add(f"{_chan_key(ch)}|{model}")
+                    errors.append(f"{label}：未开通")
+                    break
+                except (TransientError, LlmError) as exc:
+                    _flush()
+                    if emitted:
+                        raise LlmError(f"生成中断（已输出部分内容）：{exc}")
+                    errors.append(f"{label}：{exc}")
+                    break
+    raise LlmError("所有渠道都失败了 —— " + "；".join(errors[:4]))
+
+
 # ---------------------------------------------------------------- 多平台
 
 def active_channels(cfg: dict) -> list[dict]:

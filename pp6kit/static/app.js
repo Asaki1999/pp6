@@ -161,6 +161,10 @@ const state = {
   // 每次 parse/build 都随 X-Project-Link.snapshot 发回服务端。
   plSnapshotToken: "",
   plSnapshotStatus: null,
+  // 已连库时「项目字段取自数据库」的轻量提示：一份文件只提示一次（换文件重置）。
+  // 用户把「连库静默跳过 zip 弹窗」误认成弹窗被删了，补这条可见说明；
+  // 仍然不弹 modal、不要用户确认，只走 toast。
+  plDbHintShown: false,
   // 「关联到哪个业务对象」：project（默认） / other（手输名称）。
   // other 时必须先把名称核对通过（库里精确匹配或上传 zip），否则不解析 Excel。
   plTargetKind: readPref(PL_TARGET_KEY, ["project", "other"], "project"),
@@ -338,6 +342,9 @@ async function handleFile(file, { fromAi = false, quiet = false } = {}) {
     resetParseArtifacts();
     // 换了文件 → 项目对齐的弹窗可以再弹一次（决策仍按文件指纹缓存在本地）
     state.plModalShown = false;
+    // 换了文件 → 连库时「字段取自数据库」的提示也可以再出现一次；
+    // 同一份文件里拨开关重解析（reparseForTarget）不重置，避免刷屏。
+    state.plDbHintShown = false;
     // 「关联项目」开关是按对象编码记的，换了 Excel 编码就换了一批，
     // 不清会给新文件里的同名对象套上上一份的决策（这里只在**换文件**时清，
     // 拨开关的重新解析走 toggleProjLink()，不经过 handleFile）。
@@ -1129,8 +1136,16 @@ async function ensureProjectSnapshot() {
   }
   // 没有 dbConfigured 字段 = 不是这个接口的响应（探针/老版本），同样不拦
   if (!st || typeof st.dbConfigured !== "boolean") return true;
-  // 连了库：直接用库里的（或已经刷新过的）快照，不打扰用户
-  if (st.dbConfigured) return true;
+  // 连了库：直接用库里的（或已经刷新过的）快照，不打扰用户。
+  // 但静默跳过容易被误认成「弹窗被删了」，补一条非阻塞提示把字段来源说清楚。
+  // 一份文件只提示一次：换文件时 handleFile() 重置 plDbHintShown。
+  if (st.dbConfigured) {
+    if (!state.plDbHintShown) {
+      state.plDbHintShown = true;
+      toast("已连接数据库，项目字段直接取自库中，无需再选项目文件", 6000);
+    }
+    return true;
+  }
   return await askProjectZip(st);
 }
 
