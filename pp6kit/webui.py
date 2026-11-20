@@ -2281,23 +2281,23 @@ def _nlq_ask_impl(payload: dict, on_delta=None) -> dict:
                            on_delta=on_delta)
 
         if mode in ("local", "auto") and not has_key:
-            return _ask_local(conn, pack, question, allowed)
+            return _ask_local(conn, pack, question, allowed, pinned=pinned)
 
         if mode == "local":
-            return _ask_local(conn, pack, question, allowed)
+            return _ask_local(conn, pack, question, allowed, pinned=pinned)
 
         if mode == "auto":       # 旧行为：有 key 就直接用 AI
             try:
                 return _ask_ai(conn, pack, question, cfg, learn=True, pinned=pinned,
                            on_delta=on_delta)
             except Exception as exc:
-                res = _ask_local(conn, pack, question, allowed)
+                res = _ask_local(conn, pack, question, allowed, pinned=pinned)
                 res["source"] = f"本地规则（大模型不可用：{str(exc)[:60]}）"
                 return res
 
         # ---- hybrid：规则先跑 ----
         try:
-            res = _ask_local(conn, pack, question, allowed)
+            res = _ask_local(conn, pack, question, allowed, pinned=pinned)
         except nlq_local.NotUnderstood as exc:
             # 规则引擎明确说解析不了（问句里没有任何对象名/字段名/句式线索）。
             # 不能硬编一条错 SQL 去查生产库——有模型就交给 AI，没有就如实报错。
@@ -2427,12 +2427,27 @@ def _ask_ai(conn, pack, question: str, cfg: dict, learn: bool = True,
     return res
 
 
-def _ask_local(conn, pack, question: str, allowed: set, allowed_extra: bool = False) -> dict:
+def _ask_local(conn, pack, question: str, allowed: set, allowed_extra: bool = False,
+               pinned: list[str] | None = None) -> dict:
     """本地规则引擎：不依赖大模型。
 
     先看有没有「AI 教过」的相似问题——有就直接用它的 SQL，
     这是沉淀机制真正生效的地方：AI 只答一次，之后都走规则。
     """
+
+    def _touches_pinned(sql: str) -> bool:
+        """这条 SQL 有没有碰到用户 @ 点名的表。
+
+        点名了表却拿到一条查别的表的 SQL，比不答更糟——用户会以为
+        「AI 听懂了」，把结果当真。所以模板/历史答案只要没沾上点名表，
+        就让路给 local.build 重新按点名表构造。
+        没点名时恒为 True（不影响原有行为）。
+        """
+        if not pinned:
+            return True
+        refs = set(nlq_guard.referenced_tables(sql))
+        return any(n in refs for n in pinned)
+
     # ① 人工修正过这个问句 → 直接用人改的（人比模板权威）
     fixed = nlq_store.find_correction(question)
     if fixed:
@@ -2457,7 +2472,7 @@ def _ask_local(conn, pack, question: str, allowed: set, allowed_extra: bool = Fa
         tpl = nlq_local.match_template(pack, question)
     except Exception:
         tpl = None
-    if tpl:
+    if tpl and _touches_pinned(tpl[0]):
         sql, note = tpl
         safe = nlq_guard.validate(sql, allowed)
         cols, rows = nlq_engine.run_sql(conn, safe)
@@ -2469,7 +2484,7 @@ def _ask_local(conn, pack, question: str, allowed: set, allowed_extra: bool = Fa
                     "question": question}
 
     similar = nlq_store.find_similar(question)
-    if similar:
+    if similar and _touches_pinned(similar.get("sql", "")):
         try:
             safe = nlq_guard.validate(similar["sql"], allowed)
             cols, rows = nlq_engine.run_sql(conn, safe)
@@ -2489,7 +2504,7 @@ def _ask_local(conn, pack, question: str, allowed: set, allowed_extra: bool = Fa
         except Exception:
             pass          # 历史 SQL 失效（表结构变了），继续走规则
 
-    sql, note = nlq_local.build(pack, question)
+    sql, note = nlq_local.build(pack, question, pinned=pinned)
     safe = nlq_guard.validate(sql, allowed)
     cols, rows = nlq_engine.run_sql(conn, safe)
     out = {"sql": safe, "columns": cols, "rows": rows,

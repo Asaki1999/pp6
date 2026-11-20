@@ -1838,3 +1838,25 @@ def _():
         llm.chat_stream = orig
 
     assert calls == ["http://a"], f"吐出内容后不该再试第二个渠道：{calls}"
+
+
+@case("NLQ123", "nlq", "@ 点名对规则引擎同样生效：主表必须是点名的那张", "P0",
+      ["点 pp_project 出 FROM pp_project",
+       "点 pp_customer 出 FROM pp_customer（打分器不再自己改主意）",
+       "说明里写明主表就是点名表"])
+def _():
+    # 2026-11-20 实测回归：@项目 在 hybrid 下走规则路径，打分器把「项目」
+    # 匹配成「项目预算条目」，@ 完全失效——hybrid 默认先跑规则，这条不修
+    # @ 在大多数问句上等于没写。
+    pack = _pack()
+    sql, note = local.build(pack, "的名称", pinned=["pp_project"])
+    assert "FROM `pp_project`" in sql, sql
+    assert "pp_project" in note, note
+
+    sql2, _ = local.build(pack, "的名称", pinned=["pp_customer"])
+    assert "FROM `pp_customer`" in sql2, sql2
+
+    # 不点名时不允许被 pinned 影响：同一个问句换成另一张点名表，
+    # 产出的主表必须跟着变（证明是 @ 在起作用，不是别的路径碰巧命中）
+    assert "FROM `pp_project`" not in sql2, "换点名表后主表没跟着换"
+

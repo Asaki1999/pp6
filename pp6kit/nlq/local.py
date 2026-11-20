@@ -1024,8 +1024,15 @@ def match_template(pack: SchemaPack, q: str) -> tuple[str, str] | None:
     return _build_team_template(pack, q)
 
 
-def build(pack: SchemaPack, question: str) -> tuple[str, str]:
-    """返回 (sql, 说明)。解析不了抛 NotUnderstood。"""
+def build(pack: SchemaPack, question: str,
+          pinned: list[str] | None = None) -> tuple[str, str]:
+    """返回 (sql, 说明)。解析不了抛 NotUnderstood。
+
+    pinned 是用户用 @ 点名的表：命中就顶到候选第一位，让规则引擎也听用户的。
+    （2026-11-20 实测踩到：`@项目 的名称` 走了规则路径，打分器把「项目」
+    匹配到了「项目预算条目」，@ 等于白写——hybrid 默认先跑规则，不修这条
+    @ 在绝大多数问句上都不会生效。）
+    """
     q = question.strip()
     if not q:
         raise NotUnderstood("问题为空")
@@ -1049,6 +1056,13 @@ def build(pack: SchemaPack, question: str) -> tuple[str, str]:
         return measured
 
     candidates = _find_tables(pack, q)
+    # @ 点名的表顶到最前：用户已经说了查哪张表，别让打分器再猜一遍。
+    # 其余候选保留在后面，主表逻辑（外键/跨表）还能照常用到它们。
+    if pinned:
+        forced = [(1, pack.tables[n]) for n in pinned if n in pack.tables]
+        if forced:
+            named = set(pinned)
+            candidates = forced + [c for c in candidates if c[1].name not in named]
     if not candidates:
         # 完全没认出来，但说了业务主体（收入/回款）→ 落到合同
         if re.search(r"收入|营收|流水|回款|签单", q) and "pp_contract" in pack.tables:
