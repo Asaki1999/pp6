@@ -125,6 +125,9 @@ function plTargetReady() {
 
 const state = {
   file: null, data: null, formIndex: 0, desktop: false,
+  // 选文件重入锁：连点 / 事件叠加（label 原生激活 + JS 各弹一个面板）会同时开
+  // 两个系统对话框，用户看到「两个窗口」或一个空目录。见 beginPick()。
+  picking: false,
   flowMode: false,             // 流程模式 = 普通模式同一套 UI，导出时附带固定三步 XML
   entryMode: "",               // 第 1 步先选入口："ai" / "excel"；空=还在选择页
   picked: new Set(), imported: new Set(), aiData: null, aiFile: null,
@@ -1073,7 +1076,11 @@ function bindProjectSnapshotModal() {
   const file = $("#psFile");
   if ($("#psClose")) $("#psClose").onclick = () => closeProjectZipModal(false);
   if ($("#psCancel")) $("#psCancel").onclick = () => closeProjectZipModal(false);
-  if ($("#psPick")) $("#psPick").onclick = () => file && file.click();
+  if ($("#psPick")) $("#psPick").onclick = () => {
+    if (!file) return;
+    // 同一个守卫：别处正开着选文件面板时，这里不再叠一个
+    pickViaInput(file);
+  };
   if (file) {
     file.onchange = async () => {
       const f = file.files && file.files[0];
@@ -1773,6 +1780,51 @@ async function saveBlob(blob, filename) {
   return true;
 }
 
+/* ------------------------------------------------ 选文件入口守卫
+ *
+ * 桌面壳里选一次文件可能同时发生两件事：label / button 的原生激活和 JS 调用
+ * pywebview 的 NSOpenPanel。两个系统对话框同时 runModal，一个来自 WKWebView
+ * （受 App 沙箱限制，常读不到目录 → 用户看到「文件夹为空」），一个来自
+ * desktop_api._open。哪个在前取决于时序，所以现象是「偶现」。
+ *
+ * 这里做两件事：
+ *   1) state.picking 防重入：连点 / 事件叠加时只放第一个进来；
+ *   2) 所有入口共用同一把锁（patch.js 也通过 window.PP6_PICK 用这一份），
+ *      两处各自弹一个面板就是「双窗口」的来源，锁必须只有一份。
+ * desktop_api.py 里还有 _DIALOG_LOCK 兜底：即使前端漏了守卫，原生面板也不会叠。
+ */
+function beginPick() {
+  if (state.picking) return false;
+  state.picking = true;
+  return true;
+}
+function endPick() { state.picking = false; }
+
+/* 浏览器路径：点原生 <input type=file>（对话框是浏览器自己的，不受沙箱影响）。
+ * 对话框是模态的，但连点仍可能让 change 跑两遍，所以同样用这把锁括起来；
+ * 放开挂在 change / cancel 上，再留一个短超时兜底——老 WebKit 取消时两个事件
+ * 都不发，超时设成 1.2s（面板开着时页面本来就点不动，锁提前放开不会叠面板），
+ * 免得用户取消过一次后按钮「点了没反应」。 */
+function pickViaInput(input) {
+  if (!input) return;
+  if (!beginPick()) return;
+  let timer = 0;
+  const release = () => {
+    if (timer) { clearTimeout(timer); timer = 0; }
+    input.removeEventListener("change", release);
+    input.removeEventListener("cancel", release);
+    endPick();
+  };
+  input.addEventListener("change", release);
+  input.addEventListener("cancel", release);
+  timer = setTimeout(release, 1200);
+  input.click();
+}
+
+/* patch.js 是独立脚本（在 app.js 之后加载），选文件入口必须复用同一把锁。
+   走 window 显式暴露，不依赖跨脚本的顶层函数绑定。 */
+window.PP6_PICK = { begin: beginPick, end: endPick, viaInput: pickViaInput };
+
 /* 选文件：桌面壳用系统打开对话框；浏览器用 input[type=file] */
 async function pickFile(kind) {
   const api = native();
@@ -1907,7 +1959,11 @@ async function importOne(code, btn) {
 }
 
 async function inspectZip(file) {
-  if (!file && state.desktop) file = await pickFile("zip");
+  if (!file && state.desktop) {
+    // 反解入口也是原生选文件：同样走守卫，避免和别的入口叠出两个面板
+    if (!beginPick()) return;
+    try { file = await pickFile("zip"); } finally { endPick(); }
+  }
   if (!file) return;
   if (!/\.zip$/i.test(file.name)) {
     toast("请选择 .zip 导出包");
@@ -2365,12 +2421,73 @@ function renderAiActions(d) {
  */
 let aiVsIdx = -1;
 
+/* ---- 过滤规则（2026-11-20）
+ * 一条过滤规则 = 目标列 + 运算符 + **值来源** + 值。值来源只有系统真实支持的
+ * 4 种组合（线上 333 条规则全库统计），面板就这 4 项，不给人自由发挥的余地：
+ *
+ *   表单控件    dynamic / formField        值来自本表单某个控件（最常见）
+ *   固定值      fixed / formField          字面值：Y、0、a,b
+ *   SQL 片段    fixed / sqlSnippet         整段 SQL（挤进 field，operator 置空）
+ *   系统变量    systemVariable / formField value 是变量名（当前只有 currentUserId）
+ *
+ * 白名单外的组合后端会直接报错（不降级、不猜），所以这里也不提供。
+ */
+const AI_VS_SOURCES = [
+  ["dynamic", "formField", "表单控件"],
+  ["fixed", "formField", "固定值"],
+  ["fixed", "sqlSnippet", "SQL 片段"],
+  ["systemVariable", "formField", "系统变量"],
+];
+const AI_VS_OPS = [
+  ["equal", "等于"], ["not_equal", "不等于"], ["contains", "包含"], ["not_contains", "不包含"],
+  ["in", "属于"], ["not_in", "不属于"], ["less_or_equal", "小于等于"],
+  ["is_null", "为空"], ["is_not_null", "不为空"],
+];
+/* 数字 / 日期列不出「包含」这类文本算子（换成文本比较会得到错误结果） */
+const AI_VS_OPS_PICKY = ["equal", "not_equal", "in", "not_in", "less_or_equal",
+  "is_null", "is_not_null"];
+/* 系统变量：线上只见 currentUserId。做成可输入 + 候选，用户还能填别的 */
+const AI_VS_SYSVARS = [["currentUserId", "当前用户"]];
+
+function aiVsSrcKey(rule) {
+  return `${rule.source || "dynamic"}/${rule.fieldSource || "formField"}`;
+}
+
+function aiVsNewRule() {
+  return { field: "", operator: "equal", source: "dynamic", fieldSource: "formField",
+    value: null, control: "", label: "" };
+}
+
+/* 老会话只有 filterField（「按 X 过滤」单选）：搬成一条表单控件规则，
+   否则用户打开面板会看到「规则是空的」，一保存就把原有过滤弄丢。 */
+function aiVsMigrate(c) {
+  if (!Array.isArray(c.filterRules) && c.filterField) {
+    c.filterRules = [{
+      field: "", operator: "equal", source: "dynamic", fieldSource: "formField",
+      value: null, control: c.filterField, label: "",
+    }];
+  }
+  return c;
+}
+
+/* 面板里的规则列表：null = 这份值来源没配规则（后端走老口径） */
+function aiVsRules(c) {
+  if (!Array.isArray(c.filterRules)) return null;
+  return c.filterRules;
+}
+
+function aiVsOpLabel(op) {
+  const got = AI_VS_OPS.find((x) => x[0] === op);
+  return got ? got[1] : op;
+}
+
 function aiVsCfg(f) {
   if (!f.sourceConfig || typeof f.sourceConfig !== "object") f.sourceConfig = {};
   const c = f.sourceConfig;
   if (!Array.isArray(c.resultFields)) c.resultFields = [];
   if (!Array.isArray(c.linkage)) c.linkage = [];
-  return c;
+  if (c.filterLogic !== "OR") c.filterLogic = "AND";
+  return aiVsMigrate(c);
 }
 
 /* 用户动过面板没有：没动过 = 「按默认口径（全部业务字段、不过滤）」 */
@@ -2383,7 +2500,9 @@ function aiVsSummary(f) {
   if (c.custom !== true) return "值来源（默认：全部字段）";
   const n = (c.resultFields || []).length;
   if (!n) return "值来源（自动）";
-  return `返回 ${n} 列${c.filterField ? " · 过滤" : ""}`;
+  const rules = Array.isArray(c.filterRules) ? c.filterRules : [];
+  const filt = rules.length ? ` · 过滤 ${rules.length} 条` : "";
+  return `返回 ${n} 列${filt}`;
 }
 
 function updateAiVsSummary(i) {
@@ -2421,20 +2540,64 @@ function aiVsPopEl() {
     if (!f) return;
     const c = aiVsCfg(f);
 
-    const filt = e.target.closest("[data-vsfilter]");
-    if (filt) {
-      // 只选过滤条件也是「动过面板」：必须先把默认全选铺进 resultFields，
-      // 否则 custom=true + resultFields=[] 会让面板显示「一列都没勾」、
-      // 摘要退回「值来源（自动）」，而产物仍是全部业务字段（预览≠产物）；
-      // 用户接着勾一列，产物就只剩那一列——把「默认全字段」悄悄缩掉了。
+    // ---- 过滤规则：任何一处改动都算「动过面板」
+    const ruleEl = e.target.closest("[data-vsrule],[data-vsop],[data-vssrc],[data-vsval],[data-vssql],[data-vslogic]");
+    if (ruleEl) {
       if (c.custom !== true) seedAiVsDefaults(f, pop);
-      c.custom = true;              // 动过面板 → 按用户的选择生成
-      c.filterField = filt.value;
-      c.filterTarget = "";
-      renderAiVsPop();
-      updateAiVsSummary(aiVsIdx);
+      c.custom = true;
+      const rules = aiVsRules(c) || [];
+      if (ruleEl.hasAttribute("data-vslogic")) {
+        c.filterLogic = ruleEl.value === "OR" ? "OR" : "AND";
+        updateAiVsSummary(aiVsIdx);
+        return;
+      }
+      const i = Number(ruleEl.dataset.vsrule ?? ruleEl.dataset.vsop
+        ?? ruleEl.dataset.vssrc ?? ruleEl.dataset.vsval
+        ?? ruleEl.dataset.vssql ?? -1);
+      const rule = rules[i];
+      if (!rule) return;
+      if (ruleEl.hasAttribute("data-vsrule")) {
+        rule.field = ruleEl.value;
+        rule.label = "";
+        renderAiVsPop();
+      } else if (ruleEl.hasAttribute("data-vsop")) {
+        rule.operator = ruleEl.value;
+        renderAiVsPop();             // 为空/不为空要禁掉「值」输入
+      } else if (ruleEl.hasAttribute("data-vssrc")) {
+        const [source, fieldSource] = String(ruleEl.value).split("/");
+        rule.source = source;
+        rule.fieldSource = fieldSource;
+        // 换值来源就把「值」清干净：SQL 片段的值在 field 里、固定值在 value 里、
+        // 表单控件在 control 里，混着留会在后端生成出半条规则。
+        rule.value = null;
+        rule.control = "";
+        if (fieldSource === "sqlSnippet") {
+          rule.operator = "";
+          rule.type = "";
+          rule.input = "";
+          rule.label = "";
+        } else {
+          rule.operator = "equal";
+          rule.field = "";
+          rule.label = "";
+        }
+        renderAiVsPop();
+      } else if (ruleEl.hasAttribute("data-vssql")) {
+        rule.field = ruleEl.value;   // 整段 SQL 存在 field（线上形态）
+        rule.operator = "";
+        updateAiVsSummary(aiVsIdx);
+      } else if (rule.control !== undefined && aiVsSrcKey(rule) === "dynamic/formField"
+        && ruleEl.hasAttribute("data-vsval")) {
+        rule.control = ruleEl.value; // 表单控件编码 → 后端写进 link_condition.value
+        aiVsGuessColumn(rule, f);
+        updateAiVsSummary(aiVsIdx);
+      } else {
+        aiVsSetValue(rule, f, ruleEl.value);   // 固定值 / 系统变量
+        updateAiVsSummary(aiVsIdx);
+      }
       return;
     }
+
     const pick = e.target.closest("[data-vspick]");
     if (pick) {
       const col = pick.dataset.vspick;        // 目标物理列名（联动映射用）
@@ -2472,7 +2635,82 @@ function aiVsPopEl() {
       return;
     }
   });
+
+  // 输入框（固定值 / SQL 片段）用 input 事件：只改数据、不重渲染，
+  // 重渲染会让光标跳走（每敲一个字都会丢焦点）
+  pop.addEventListener("input", (e) => {
+    const f = state.aiData && state.aiData.bo && state.aiData.bo.fields[aiVsIdx];
+    if (!f) return;
+    const el = e.target.closest("[data-vsval],[data-vssql]");
+    if (!el) return;
+    const c = aiVsCfg(f);
+    const rules = aiVsRules(c);
+    if (!rules) return;
+    const i = Number(el.dataset.vsval ?? el.dataset.vssql ?? -1);
+    const rule = rules[i];
+    if (!rule) return;
+    if (c.custom !== true) seedAiVsDefaults(f, pop);
+    c.custom = true;
+    if (el.hasAttribute("data-vssql")) {
+      rule.field = el.value;        // 整段 SQL 存在 field（线上形态）
+      rule.operator = "";
+    } else if (aiVsSrcKey(rule) === "dynamic/formField") {
+      rule.control = el.value;
+      aiVsGuessColumn(rule, f);
+    } else {
+      aiVsSetValue(rule, f, el.value);
+    }
+    updateAiVsSummary(aiVsIdx);
+  });
+
+  // 规则的增删是按钮，不是 change
+  pop.addEventListener("click", (e) => {
+    const f = state.aiData && state.aiData.bo && state.aiData.bo.fields[aiVsIdx];
+    if (!f) return;
+    const c = aiVsCfg(f);
+    if (e.target.closest("[data-vsaddr]")) {
+      if (c.custom !== true) seedAiVsDefaults(f, pop);
+      c.custom = true;
+      if (!Array.isArray(c.filterRules)) c.filterRules = [];
+      c.filterRules.push(aiVsNewRule());
+      renderAiVsPop();
+      updateAiVsSummary(aiVsIdx);
+      return;
+    }
+    const del = e.target.closest("[data-vsdel]");
+    if (del) {
+      const rules = aiVsRules(c);
+      if (!rules) return;
+      if (c.custom !== true) seedAiVsDefaults(f, pop);
+      c.custom = true;
+      rules.splice(Number(del.dataset.vsdel), 1);
+      // 删到一条不剩 = 明确「不过滤」（filter_rules=[]），不能退回老口径：
+      // 老口径会按同名推导补一条，用户明明全删了却还在过滤。
+      c.filterRules = rules;
+      c.filterField = "";
+      c.filterTarget = "";
+      renderAiVsPop();
+      updateAiVsSummary(aiVsIdx);
+    }
+  });
   return pop;
+}
+
+/* 「值来源=表单控件」时，如果还没指定目标列，就按本表单控件的**显示名**去目标
+ * 列里对一条（与后端 links.auto_filter 同一口径）。对不上就留空，由后端按同名
+ * 推导；推导不出来才丢弃该条并出提示。 */
+function aiVsGuessColumn(rule, f) {
+  if (!rule || rule.field || !rule.control) return;
+  const target = String((f && f.objectType) || "").trim();
+  const info = state.objFieldCache && state.objFieldCache[target];
+  const cols = (info && info.fields) || [];
+  if (!cols.length) return;
+  const formFields = (state.aiData && state.aiData.bo && state.aiData.bo.fields) || [];
+  const src = formFields.find((x) => x.code === rule.control);
+  const name = (src && src.name) || "";
+  if (!name) return;
+  const hit = cols.find((c) => !c.system && c.name === name);
+  if (hit) rule.field = hit.column;
 }
 
 /* 把面板当前「默认全选」的那些列落进 resultFields（第一次动手前调一次）。
@@ -2490,6 +2728,107 @@ function seedAiVsDefaults(f, pop) {
   c.resultFields = got;
 }
 
+/* 过滤规则行列表（面板里的「过滤规则」段）。
+ * 目标列下拉来自后端 /api/objects/fields（与出包同一份口径），本表单字段下拉
+ * 用于「值来源=表单控件」——那里的值存字段编码，后端写进 link_condition.value。
+ */
+function aiVsRulesHtml(c, cols, formFields) {
+  if (!cols.length) {
+    return `<div class="ai-vs-rules"><div class="ai-vs-rule-head">过滤规则</div>
+      <div class="ai-vs-rule-empty">读不到 ${esc("目标对象")} 的字段清单，暂时不能加过滤规则</div></div>`;
+  }
+  const pickable = cols.filter((x) => !x.system);
+  const rules = aiVsRules(c);
+  const list = rules || [];
+  const logic = c.filterLogic === "OR" ? "OR" : "AND";
+  const sysOptions = AI_VS_SYSVARS.map(([v]) => `<option value="${esc(v)}"></option>`).join("");
+
+  const rows = list.map((rule, i) => {
+    const pairKey = aiVsSrcKey(rule);
+    const srcOpts = AI_VS_SOURCES.map(([s, fs, label]) =>
+      `<option value="${s}/${fs}" ${pairKey === `${s}/${fs}` ? "selected" : ""}>${label}</option>`).join("");
+    const sql = pairKey === "fixed/sqlSnippet";
+    const col = cols.find((x) => x.column === rule.field);
+    // 数字 / 日期列不提供「包含 / 不包含」：文本算子对它们会得出错误结果
+    const picky = col && (col.type === "number" || col.type === "datetime");
+    const opOpts = AI_VS_OPS.filter(([k]) => !picky || AI_VS_OPS_PICKY.indexOf(k) >= 0)
+      .map(([k, label]) =>
+        `<option value="${k}" ${(rule.operator || "equal") === k ? "selected" : ""}>${label}</option>`).join("");
+    const needsValue = rule.operator !== "is_null" && rule.operator !== "is_not_null";
+    const colOpts = (sql ? [`<option value="">（SQL 片段不用选列）</option>`] : [`<option value="">选目标列…</option>`])
+      .concat(sql ? [] : pickable.map((x) =>
+        `<option value="${esc(x.column)}" ${x.column === rule.field ? "selected" : ""}>${esc(x.name || x.code)}（${esc(x.column)}）</option>`))
+      .join("");
+
+    let valueHtml;
+    if (sql) {
+      valueHtml = `<textarea class="ai-vs-sql" data-vssql="${i}" rows="2"
+        placeholder="整段 SQL，例如 project_id_ = {{params:objectId}}">${esc(rule.field || "")}</textarea>`;
+    } else if (pairKey === "dynamic/formField") {
+      const cur = rule.control || "";
+      const opts = [`<option value="">${needsValue ? "选本表单字段…" : "（为空类不需要）"}</option>`]
+        .concat(formFields.map((x) =>
+          `<option value="${esc(x.code)}" ${x.code === cur ? "selected" : ""}>${esc(x.name || x.code)}</option>`))
+        .join("");
+      valueHtml = `<select class="ai-choice-add" data-vsval="${i}" ${needsValue ? "" : "disabled"}>${opts}</select>`;
+    } else if (pairKey === "systemVariable/formField") {
+      valueHtml = `<input class="ai-choice-add" data-vsval="${i}" list="aiVsSysVars"
+        value="${esc(rule.value == null ? "" : rule.value)}" placeholder="currentUserId"
+        ${needsValue ? "" : "disabled"}>`;
+    } else {
+      const ph = rule.operator === "in" || rule.operator === "not_in" ? "多个值用逗号分隔" : "值";
+      valueHtml = `<input class="ai-choice-add" data-vsval="${i}"
+        value="${esc(rule.value == null ? "" : rule.value)}" placeholder="${esc(ph)}"
+        ${needsValue ? "" : "disabled"}>`;
+    }
+
+    return `<div class="ai-vs-rule">
+      <select class="ai-choice-add" data-vsrule="${i}" ${sql ? "disabled" : ""}>${colOpts}</select>
+      <select class="ai-choice-add" data-vsop="${i}" ${sql ? "disabled" : ""}>${sql ? "" : opOpts}</select>
+      <select class="ai-choice-add" data-vssrc="${i}">${srcOpts}</select>
+      ${valueHtml}
+      <button type="button" class="ai-vs-del" data-vsdel="${i}" title="删除这条规则">×</button>
+    </div>`;
+  }).join("");
+
+  const empty = list.length ? "" : `<div class="ai-vs-rule-empty">
+    还没有过滤规则${rules ? "" : "（不配 = 按同名自动推导，推导不出来就不过滤）"}</div>`;
+  return `<datalist id="aiVsSysVars">${sysOptions}</datalist>
+    <div class="ai-vs-rules">
+      <div class="ai-vs-rule-head">
+        <span>过滤规则${list.length ? `（${list.length} 条）` : ""}</span>
+        <select class="ai-choice-add" data-vslogic title="多条规则之间用且 / 或用">
+          <option value="AND" ${logic === "AND" ? "selected" : ""}>且（AND）</option>
+          <option value="OR" ${logic === "OR" ? "selected" : ""}>或（OR）</option>
+        </select>
+        <button type="button" class="ai-vs-add" data-vsaddr>+ 添加规则</button>
+      </div>
+      ${empty}${rows}
+    </div>`;
+}
+
+
+/* 一条规则对应的目标列（面板里的类型判定用；找不到返回 null） */
+function aiVsTargetCol(rule, f) {
+  const target = String((f && f.objectType) || "").trim();
+  const info = state.objFieldCache && state.objFieldCache[target];
+  const cols = (info && info.fields) || [];
+  return cols.find((x) => x.column === rule.field) || null;
+}
+
+/* 固定值 / 系统变量的「值」：数字列要存成 JSON number。
+ * 线上 less_or_equal 的 1 是数字不是 "1"，写成字符串会让平台的数字过滤退化成
+ * 文本比较（或者直接不生效）。 */
+function aiVsSetValue(rule, f, raw) {
+  if (rule.source === "systemVariable") { rule.value = raw; return; }
+  const col = aiVsTargetCol(rule, f);
+  if (col && col.type === "number" && /^-?\d+(\.\d+)?$/.test(String(raw))) {
+    rule.value = Number(raw);
+    return;
+  }
+  rule.value = raw;
+}
+
 function renderAiVsPop() {
   const pop = aiVsPopEl();
   const d = state.aiData;
@@ -2500,16 +2839,18 @@ function renderAiVsPop() {
   const target = (f.objectType || "").trim();
   const info = state.objFieldCache && state.objFieldCache[target];
 
-  // 过滤：本对象里其它关联对象字段（用它当前的值去筛目标对象）
-  const peers = d.bo.fields.filter((x, j) =>
-    j !== aiVsIdx && x.type === "object" && x.objectType);
-  const filtOpts = [`<option value="">不过滤（返回全部）</option>`]
-    .concat(peers.map((x) =>
-      `<option value="${esc(x.code)}" ${x.code === c.filterField ? "selected" : ""}>按「${esc(x.name)}」过滤</option>`))
-    .join("");
-
   // 本表单里能接联动的控件（排除自己）
   const owners = d.bo.fields.filter((x, j) => j !== aiVsIdx);
+
+  // 过滤规则：目标列下拉用后端那份字段清单（与出包同一口径）；
+  // 老会话迁移过来的规则只有 control、没有 field，渲染时先按显示名对一次列。
+  const vsCols = (info && info.fields) || [];
+  (aiVsRules(c) || []).forEach((r) => aiVsGuessColumn(r, f));
+  // 「值来源=表单控件」时值是本表单字段：关联对象字段排前面（架构 §11「object 字段优先」），
+  // 因为「按本表单的某个关联字段筛目标对象」是最常见的用法
+  const ownerFields = owners.slice().sort(
+    (a, b) => (b.type === "object" ? 1 : 0) - (a.type === "object" ? 1 : 0));
+  const rulesHtml = aiVsRulesHtml(c, vsCols, ownerFields);
 
   let body;
   if (!target) {
@@ -2553,8 +2894,8 @@ function renderAiVsPop() {
   pop.innerHTML = `
     <div class="ai-choice-head">值来源 <span class="muted">· ${esc(f.name || "关联对象")} → ${esc(target || "未选")}</span></div>
     <div class="ai-vs-note">默认<b>返回目标的全部业务字段 + 主键、不加过滤</b>
-      （下面这些列都是默认勾上的）。在这里勾选 / 取消 / 选过滤条件之后，才会按你的选择生成。</div>
-    <div class="ai-vs-row"><label>过滤条件</label><select class="ai-choice-add" data-vsfilter>${filtOpts}</select></div>
+      （下面这些列都是默认勾上的）。在这里勾选 / 取消 / 加过滤规则之后，才会按你的选择生成。</div>
+    ${rulesHtml}
     <div class="ai-vs-sub">返回结果 <span class="muted">（主键必选，名称用于显示）</span></div>
     ${body}
     <div class="ai-choice-hint">「联动」把该列的值带进本表单对应控件（如项目的「专业」带进专业字段）；留「只回显」就只显示不写值。</div>`;
@@ -3646,11 +3987,20 @@ function renderBuildReport(report, name) {
 function bind() {
   const pickAndLoad = async () => {
     if (state.desktop) {
-      const file = await pickFile("source");
-      if (file) handleFile(file);
+      if (!beginPick()) return;        // 连点 / 事件叠加只放一次，避免两个系统面板
+      let file = null;
+      try {
+        file = await pickFile("source");
+      } finally {
+        // 只锁住「对话框」这一段：选完就放开，解析期间用户仍能重新选文件
+        endPick();
+      }
+      if (!file) { toast("未选择文件"); return; }
+      handleFile(file);
       return;
     }
-    $("#fileInput").click();
+    // 浏览器路径：pickViaInput 内部用同一把锁（放开挂在 change / cancel 上）
+    pickViaInput($("#fileInput"));
   };
 
   // ---- 第 1 步：先选入口，再展开对应面板
@@ -3658,7 +4008,8 @@ function bind() {
     b.onclick = () => {
       state.entryMode = b.dataset.entry;
       renderEntry();
-      const focus = state.entryMode === "ai" ? $("#aiChatText1") : $("#fileInput");
+      // 「已经有一份文件」入口的可见控件现在是 #btnReimportPick（不再是 label）
+      const focus = state.entryMode === "ai" ? $("#aiChatText1") : $("#btnReimportPick");
       if (focus && focus.focus) focus.focus();
     };
   });
@@ -3673,15 +4024,22 @@ function bind() {
   $("#btnPickSheet").onclick = async () => {
     if (state.desktop) {
       // 桌面壳里 <input type=file> 不可靠，走系统文件对话框（Excel / PDF / Word）
+      if (!beginPick()) return;       // 连点只放一次，不叠第二个系统面板
       try {
-        const file = await pickFile("source");
-        if (file) await handleAiSource(file);
+        let file = null;
+        try {
+          file = await pickFile("source");
+        } finally {
+          endPick();                  // 只锁对话框这一段，解析期间还能重新选
+        }
+        if (!file) { toast("未选择文件"); return; }   // 取消不再静默
+        await handleAiSource(file);
       } catch (err) {
         toast("打开文件选择失败：" + (err && err.message ? err.message : err), 7000);
       }
       return;
     }
-    $("#aiSheetInput").click();
+    pickViaInput($("#aiSheetInput"));
   };
   $("#aiSheetInput").onchange = async (e) => {
     const file = e.target.files[0];
@@ -3699,7 +4057,8 @@ function bind() {
   });
 
   // ---- 第 1 步（下半）：已经有一份标准 Excel，直接进预览
-  $("#reimport").querySelector("span").onclick = pickAndLoad;
+  // 入口是 button，不是 label 包 input：结构上不存在「label 原生激活」这条岔路。
+  $("#btnReimportPick").onclick = pickAndLoad;
   $("#fileInput").onchange = (e) => {
     const f = e.target.files && e.target.files[0];
     // 同一个文件再选一次也要触发 change：否则「出包 → 返回上一步 → 改 Excel →

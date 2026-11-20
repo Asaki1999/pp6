@@ -152,3 +152,26 @@ def _():
     got = slug("项目 A/B")
     assert got and all(ch.isalnum() for ch in got), f"slug 结果不安全：{got!r}"
     assert slug("   ") == ""
+
+
+@case("NAM21", "naming", "拼音兜底能准确报出来：采购申请不含拼音，设备点检记录的「点检」是拼音", "P0",
+      ["用户 2026-11-20：选择器 key 不要拼音", "has_pinyin / pinyin_parts 与 object_code 同一份归一"])
+def _():
+    """词典命中与否必须**说得出来**：提示语靠 ``pinyin_parts`` 精确到词。
+
+    两条要求同时成立：
+      · 常见词（采购 / 申请）全都命中词典 → ``has_pinyin`` 为 False，不许误报；
+      · 缺词（点检）退成 dianjian → 能报出「哪个中文词、什么拼音」，用户才知道
+        该往 ``naming.WORDS`` 里补什么。
+    ``pinyin_parts`` 必须和 ``object_code`` 走同一份归一（``_object_name_text``），
+    否则会出现「key 里是 dianjian、提示说别的词」这种对不上的情况。
+    """
+    assert naming.object_code("采购申请") == "purchase_apply"
+    assert not naming.has_pinyin("采购申请"), naming.pinyin_parts("采购申请")
+
+    assert naming.object_code("设备点检记录") == "equipment_dianjian"
+    assert naming.has_pinyin("设备点检记录")
+    assert naming.pinyin_parts("设备点检记录") == [("点检", "dianjian")], \
+        naming.pinyin_parts("设备点检记录")
+    # 「记录」是 _NOISE 尾巴：不参与命名，也不该被算成拼音兜底
+    assert all(cn != "记录" for cn, _py in naming.pinyin_parts("设备点检记录"))

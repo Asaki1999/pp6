@@ -38,6 +38,7 @@ from .model import (
     Bo,
     BoField,
     DataSet,
+    FilterRule,
     Form,
     FormField,
     HideRule,
@@ -1683,9 +1684,19 @@ def _source_configs(fields: list[dict]) -> dict[str, dict]:
 
         {"custom": true, "datasetKey": "", "filterField": "xiangMuLeiXing",
          "filterTarget": "", "resultFields": ["id", "name", "zhuanYe"],
-         "linkage": [{"name": "zhuan_ye_", "field": "zhuanYe", "label": "专业"}]}
+         "linkage": [{"name": "zhuan_ye_", "field": "zhuanYe", "label": "专业"}],
+         "filterLogic": "AND",
+         "filterRules": [{"field": "classification_id_", "operator": "equal",
+                          "source": "dynamic", "fieldSource": "formField",
+                          "control": "xiangMuLeiXing"}]}
 
     没配过的字段不在返回里；下游据此决定「自动推导」还是「按配置出」。
+
+    ``filterRules``（2026-11-20）：面板把「过滤条件」单选下拉换成了规则行列表。
+    **只有 payload 里真的带了这个键才走规则路径**（``filterRules: []`` = 用户
+    把规则全删了 = 明确不过滤）；老会话只带 ``filterField``，那就仍然走 legacy
+    口径，产物逐字不变。前端发 ``fieldSource``，Excel 里叫 ``field_source``，
+    两种写法都认。
 
     ``custom`` 是「用户动过面板没有」的标记（2026-11-20）：
     面板在用户没动过时会把**全部业务字段**显示成勾上（那是后端的默认口径
@@ -1716,12 +1727,58 @@ def _source_configs(fields: list[dict]) -> dict[str, dict]:
         if custom and not wanted:
             # 见 docstring：空返回列不能当「没配过」，否则口径倒回全字段
             wanted, linkage, fallback = ["id"], [], True
-        if not (wanted or linkage or str(cfg.get("filterField") or "").strip()):
+        # 过滤规则（2026-11-20）：面板把单选下拉换成了规则行列表。
+        # **只有 payload 里真的带了 filterRules 才走规则路径**——老会话只带
+        # filterField，那就仍然交给 legacy 口径，产物逐字不变（兼容红线）。
+        rules_raw = cfg.get("filterRules")
+        has_rules = isinstance(rules_raw, list)
+        rules: list[FilterRule] = []
+        # 半填的规则（面板上加了行、但没选目标列 / 格式不全）必须记数：
+        # 直接 continue 会让 filterRules 变成 []，而 [] 的语义是「用户主动删光 =
+        # 明确不过滤」，于是「配了三条、一条没生效」在界面上看起来像「没配过滤」，
+        # 产物里也就真的没有过滤——静默失效。这里只统计、不阻断，交给调用方出提示。
+        dropped = 0
+        if has_rules:
+            for it in rules_raw:
+                if not isinstance(it, dict):
+                    dropped += 1
+                    continue
+                field = str(it.get("field") or "").strip()
+                source = str(it.get("source") or "dynamic").strip() or "dynamic"
+                control = str(it.get("control") or "").strip()
+                # 只选了「本表单哪个字段」的写法则 field 留空，目标列由生成侧按
+                # 显示名推导（links.filter_rules_of）。其余三种必须有目标列。
+                if not field and not (source == "dynamic" and control):
+                    dropped += 1
+                    continue
+                rules.append(FilterRule(
+                    field=field,
+                    operator=str(it.get("operator") or "equal").strip() or "equal",
+                    source=source,
+                    field_source=str(it.get("fieldSource") or it.get("field_source")
+                                     or "formField").strip() or "formField",
+                    value=it.get("value"),
+                    control=control,
+                    type=str(it.get("type") or "").strip(),
+                    input=str(it.get("input") or "").strip(),
+                    label=str(it.get("label") or "").strip(),
+                ))
+        filter_logic = str(cfg.get("filterLogic") or "AND").strip().upper() or "AND"
+        if filter_logic not in ("AND", "OR"):
+            filter_logic = "AND"
+        if not (wanted or linkage or str(cfg.get("filterField") or "").strip()
+                or has_rules):
             continue
         out[code] = {
             "datasetKey": str(cfg.get("datasetKey") or "").strip(),
             "filterField": str(cfg.get("filterField") or "").strip(),
             "filterTarget": str(cfg.get("filterTarget") or "").strip(),
+            # None = 没配规则（走 legacy），[] = 明确不过滤，非空 = 按规则
+            "filterRules": rules if has_rules else None,
+            "filterLogic": filter_logic,
+            # 被跳过的条数（0 = 没有半填的规则）。filterRules=[] 本身不算 dropped：
+            # 那是用户把规则全删了，语义是「明确不过滤」。
+            "droppedRules": dropped,
             "resultFields": wanted,
             "linkage": linkage,
             "resultFallback": fallback,
@@ -1757,7 +1814,14 @@ def _apply_source_configs(proj, bo, fields: list[dict]) -> list[str]:
         if not target:
             continue
         fp = json.dumps([target, cfg["filterField"], cfg["filterTarget"],
-                         cfg["resultFields"]], ensure_ascii=False, sort_keys=True)
+                         cfg["resultFields"],
+                         # 规则必须进指纹：同一个目标对象、同一批返回列，但过滤
+                         # 规则不同 → 必须另起 <key>_2，否则两个控件共用一份
+                         # 值来源，导入后必有一个过滤条件失效。
+                         ([r.to_dict() for r in cfg["filterRules"]]
+                          if cfg["filterRules"] is not None else None),
+                         cfg["filterLogic"]],
+                        ensure_ascii=False, sort_keys=True)
         if fp in used:
             continue
         # 面板上传的键名还叫 datasetKey（前端契约，没改），语义是「这份值来源的
@@ -1780,10 +1844,32 @@ def _apply_source_configs(proj, bo, fields: list[dict]) -> list[str]:
             ds_type=DS_VALUE,
             filter_field=cfg["filterField"],
             filter_target=cfg["filterTarget"],
+            # None = 老会话（只带 filterField）→ 走 legacy 口径，产物不变；
+            # [] = 面板里把规则全删了 → 明确不要任何过滤；非空 = 按规则生成。
+            filter_rules=cfg["filterRules"],
+            filter_logic=cfg["filterLogic"],
             result_fields=cfg["resultFields"],
         ))
-        notices.append(f"值来源 {key}：按界面配置生成（过滤：{cfg['filterField'] or '自动'}，"
+        # 过滤那一格的文案必须跟着**真正会生效的那条路径**走：
+        #   有规则     → 「N 条规则（AND 连接）」；此时 filterField 已被忽略，
+        #                再写「过滤：自动」就是在骗人（P2-2 的原始症状）
+        #   []        → 「不过滤」（用户把规则删光了，= 明确不过滤）
+        #   None      → 老口径，才轮到 filterField / 自动
+        rules = cfg["filterRules"]
+        if rules:
+            # 用逗号而不是括号：这行本身已经在一个括号里，嵌套括号读起来别扭
+            filt_text = f"{len(rules)} 条规则，{cfg['filterLogic']} 连接"
+        elif rules is not None:
+            filt_text = "不过滤"
+        else:
+            filt_text = cfg["filterField"] or "自动"
+        notices.append(f"值来源 {key}：按界面配置生成（过滤：{filt_text}，"
                        f"返回 {len(cfg['resultFields']) or 2} 列）")
+        if cfg.get("droppedRules"):
+            # 半填的规则被跳过时必须说：否则界面上配了三条、包里一条都没有，
+            # 而 [] 的语义还会被理解成「用户主动不要过滤」，属于静默失效
+            notices.append(f"值来源 {key}：有 {cfg['droppedRules']} 条过滤规则"
+                           f"没选目标列（或格式不全），已忽略")
         if not cfg["datasetKey"]:
             # key 是工具生成的：词典缺词退拼音时要说清（用户才知道该去补词）
             notices.extend(value_source_key_notes(key, target_name))

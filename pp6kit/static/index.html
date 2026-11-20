@@ -307,10 +307,13 @@
         </div>
       </div>
       <div class="reimport" id="reimport">
-        <label class="reimport-pick">
-          <input type="file" id="fileInput" accept=".xlsx,.xlsm,.pdf,.docx" hidden>
-          <span>选择文件</span>
-        </label>
+        <!-- 曾经是 <label> 包着 <input type=file>：点一下会同时触发 label 的原生激活
+             （WKWebView 自己的文件面板，受 App 沙箱限制常看到空目录）和 pywebview 的
+             NSOpenPanel（desktop_api 里的 pick_source）。两个面板抢同一个 modal →
+             「文件夹为空」和「同时弹两个窗口」。这里改成 button 与 input 平级，
+             结构上断掉 label 的原生激活，选文件只剩 JS 一条路。 -->
+        <button type="button" class="reimport-pick" id="btnReimportPick">选择文件</button>
+        <input type="file" id="fileInput" accept=".xlsx,.xlsm,.pdf,.docx" hidden>
         <span class="sub" id="reimportHint">标准 Excel 直接解析；自家表格、PDF / Word 交给 AI 识别（PDF / Word 提取文字后确认再生成）。有相近字段会先弹窗确认</span>
         <button class="link" id="btnBlankTpl"
                 title="下载 14 个页签的空白填写模板（表头 + 每列说明），填好再拖回这里解析">下载空白模板</button>

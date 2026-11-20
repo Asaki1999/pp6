@@ -674,6 +674,62 @@ def _filter_conditions(ds: DataSet, filt) -> list[dict]:
     }]
 
 
+def _rule_dict(rule) -> dict:
+    """一条过滤规则 -> 线上 ``filterConditions[].filter.rules[]``（键序与老路径一致）。
+
+    与 legacy ``_filter_conditions`` 的差别只有两处，且都有线上 333 条规则的统计
+    依据（见 docs/架构-值来源过滤条件-20261120.md §5）：
+
+      · ``field_type`` / ``field_input`` 恒 ``string`` / ``text``
+        ——线上 333/333（含 type=number、input=number 的列）都是这两个值；
+      · ``type`` / ``input`` 仍随列类型变（number 列 → number/number），
+        它们才是决定算子集合的那一对。
+    """
+    label = rule.label or rule.field
+    return {
+        "id": rule.field,
+        "field": rule.field,
+        "label": label,
+        "type": rule.type or "string",
+        "input": rule.input or "text",
+        "operator": rule.operator,
+        "source": rule.source,
+        "value": rule.resolved_value(),
+        "field_source": rule.field_source,
+        "field_date_type": "",
+        "field_custom_format": "",
+        "field_type": "string",
+        "field_input": "text",
+        "rule_id": rule.rule_id,
+        "desc": rule.rule_id,
+        "date_type": "",
+        "custom_format": "",
+        "origLabel": label,
+    }
+
+
+def _filter_conditions_rules(ds: DataSet, rules: list) -> list[dict]:
+    """多条规则 -> 一个条件组（线上 263/266 份模板只有 1 个组）。
+
+    组内 ``condition`` 取数据集上的 AND/OR（线上 AND=269 / OR=1，默认 AND）。
+    组的 key 由 rule_id 一起派生：规则集不同就是另一个组，反复出包不变。
+    """
+    seed = f"{ds.key}:" + ",".join(str(r.rule_id) for r in rules)
+    return [{
+        "label": "默认条件",
+        "key": _links.filter_key(seed),
+        "type": "condition",
+        "rights": [{"type": "all"}],
+        "filter": {
+            "condition": ds.filter_logic if ds.filter_logic in ("AND", "OR") else "AND",
+            "rules": [_rule_dict(r) for r in rules],
+        },
+        "addType": {"isTrusted": True},
+        "combinationName": "",
+        "formFieldSource": "template",
+    }]
+
+
 def render_dataset(ds: DataSet, bo: Bo | None, snip: dict, tenant: str = "-999",
                    link=None) -> tuple[str, list[str]]:
     """值来源 / 数据集：下拉框数据来源。
@@ -716,7 +772,16 @@ def render_dataset(ds: DataSet, bo: Bo | None, snip: dict, tenant: str = "-999",
     # 自动联动到的列（专业/合同金额这种）也要真的出现在 resultColumns 里，
     # 否则联动的是一条值来源不返回的列，选了值带不过来。
     results = _links.with_linked_columns(target, src_bo, src_bf, results, explicit)
-    filt = _links.filter_of(ds, target, src_bo, src_bf)
+    # 过滤规则（2026-11-20）：归一化只在 links 一处做，值来源侧与表单侧读同一份。
+    # rules is None → 老口径（继续走 filter_of，产物逐字不变）；
+    # rules == []   → 明确「一条过滤都不要」（Excel 写 `无`）；
+    # 非空          → 完全按规则，legacy 的过滤字段/过滤目标不再参与。
+    if link is not None:
+        rules, rule_notes = link.rules_of(ds, target, src_bo, src_bf)
+    else:
+        rules, rule_notes = _links.filter_rules_of(ds, target, src_bo, src_bf)
+    notices.extend(rule_notes)
+    filt = None if rules is not None else _links.filter_of(ds, target, src_bo, src_bf)
     if filt is not None and not ds.filter_target:
         # 回写目标列：gen_form 的 link_condition 与 dataTemplateField 的
         # 候选列都读这一个值，不回写就会两边各算一遍、有分叉风险。
@@ -728,7 +793,7 @@ def render_dataset(ds: DataSet, bo: Bo | None, snip: dict, tenant: str = "-999",
         notices.append(
             f"值来源 {ds.key}: 过滤字段 {filt.rebound_from} 已不存在"
             f"（可能被对齐改名），已按「{filt.source_label}」绑定")
-    if ds.filter_field and filt is None:
+    if rules is None and ds.filter_field and filt is None:
         notices.append(
             f"值来源 {ds.key}: 过滤字段 {ds.filter_field} 在目标对象 {target.code} 里"
             f"找不到对应的列，已按不过滤生成（请到 6.1_值来源 补「过滤目标」，或写「过滤字段=目标列」）")
@@ -814,9 +879,21 @@ def render_dataset(ds: DataSet, bo: Bo | None, snip: dict, tenant: str = "-999",
     # 其后：需要「选择控件 + 候选值」的列各一条。过滤列也写一条——
     # 设计器的过滤条件面板就是按这些列选字段的，缺了它过滤条件选不出来。
     picker_cols: list = []
-    filter_field = target.field(ds.filter_target) if ds.filter_target else None
-    if filter_field is not None and filter_field.needs_picker():
-        picker_cols.append(filter_field)
+    if rules is not None:
+        # 有规则时按**规则里的列**出 dataTemplateField：设计器的过滤条件面板
+        # 就是按这些列选字段的，只看 ds.filter_target 的话规则里的列选不出来。
+        for rule in rules:
+            if rule.field_source != "formField":
+                continue      # SQL 片段没有「目标列」，出不了候选值
+            col = target.field(rule.field)
+            if col is None or not col.needs_picker():
+                continue
+            if all(col.column != c.column for c in picker_cols):
+                picker_cols.append(col)
+    else:
+        filter_field = target.field(ds.filter_target) if ds.filter_target else None
+        if filter_field is not None and filter_field.needs_picker():
+            picker_cols.append(filter_field)
     for col in results:
         if col.needs_picker() and all(col.column != c.column for c in picker_cols):
             picker_cols.append(col)
@@ -840,7 +917,17 @@ def render_dataset(ds: DataSet, bo: Bo | None, snip: dict, tenant: str = "-999",
         "resultColumns": json_attr([_result_column(target, f) for f in results]),
         "attrs": json_attr({"sqlOptimize": True, "toRepeat": True}),
     }
-    if filt is not None:
+    if rules:
+        # 有规则（哪怕只有一条）：单条件组 + AND/OR。
+        # 样本里 filterConditions 在 resultColumns 之前。
+        tpl_attrs = {
+            "id": tpl_attrs["id"],
+            "templateId": tpl_id,
+            "filterConditions": json_attr(_filter_conditions_rules(ds, rules)),
+            "resultColumns": tpl_attrs["resultColumns"],
+            "attrs": tpl_attrs["attrs"],
+        }
+    elif filt is not None:
         # 样本里 filterConditions 在 resultColumns 之前
         tpl_attrs = {
             "id": tpl_attrs["id"],

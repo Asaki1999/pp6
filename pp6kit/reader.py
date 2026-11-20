@@ -27,6 +27,7 @@ from .model import (
     WfNode,
     Workflow,
     parse_filter_field,
+    parse_filter_rules,
     parse_json,
     parse_linkage,
     object_name_of,
@@ -774,6 +775,15 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
                 continue
             filt_field, filt_target = parse_filter_field(get("filter_field"))
             explicit_target = str(get("filter_target") or "").strip()
+            # 过滤规则：留空 = 老口径（filter_rules=None）；`无` = 一条过滤都不要；
+            # JSON = 完全按规则。解析出错必须报错而不是降级——白名单外的组合
+            # 系统到底怎么解释没有任何样本，猜错的表现是「界面看着配好了、
+            # 下拉里却是全量或空」，比直接报错难查得多。
+            try:
+                filter_rules, filter_logic = parse_filter_rules(get("filter_rules"))
+            except ValueError as exc:
+                errors.append(f"[{spec.S_VALUE}] 第{row_no}行: {exc}")
+                filter_rules, filter_logic = None, "AND"
             bo = proj.bo(bo_text) or next(
                 (b for b in proj.bos if b.tbl_name == bo_text), None)
             # 对象名称：本包 BO 优先，其次系统清单（离线时也有随包快照）。
@@ -799,9 +809,18 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
                     auto_notes.extend(value_source_key_notes(key, obj_name))
             name = str(get("name") or "").strip()
             if not name:
-                # 用途后缀取「按哪个字段过滤」的显示名，过滤为空就是「全部」
+                # 用途后缀取「按哪个字段过滤」的显示名，过滤为空就是「全部」。
+                # 顺序即优先级，和生成侧同一条口径：**有过滤规则时规则说了算**
+                # （有规则就走规则、legacy 的过滤字段/过滤目标一律忽略），
+                # 所以名字也必须跟着规则走，否则「名字说过滤 X、包里过滤 Y」。
                 purpose = ""
-                if filt_field:
+                if filter_rules:
+                    first = filter_rules[0]
+                    what = first.label or first.field or "规则"
+                    purpose = f"过滤{what}"
+                    if len(filter_rules) > 1:
+                        purpose += f"等{len(filter_rules)}条"
+                elif filt_field:
                     src = bo.field_by_code(filt_field) if bo is not None else None
                     purpose = f"过滤{src.name if src is not None else filt_field}"
                 elif explicit_target or filt_target:
@@ -828,6 +847,8 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
                 unique_field=str(get("unique_field") or "id_").strip(),
                 filter_field=filt_field,
                 filter_target=explicit_target or filt_target,
+                filter_rules=filter_rules,
+                filter_logic=filter_logic,
                 auto_filter=not wants_no_filter(get("filter_field")),
                 # ``*`` = 全部自建字段（result_all），不能再把 "*" 当字段名塞进
                 # result_fields —— result_list 里 picked 非空会顶掉 all_fields，

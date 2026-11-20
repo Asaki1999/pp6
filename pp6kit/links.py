@@ -32,7 +32,8 @@ import hashlib
 import uuid
 from dataclasses import dataclass, field
 
-from .model import Bo, BoField, DataSet, camel_to_snake, table_name_for
+from .model import (RULE_SQL_SNIPPET, RULE_SOURCE_PAIRS, Bo, BoField, DataSet,
+                    FilterRule, camel_to_snake, table_name_for)
 
 # 目标对象的主键 / 名称物理列。线上所有业务表都是这两个名字，
 # 值来源的 unique/uniqueField 也必须是主键，否则下拉取不到值。
@@ -298,6 +299,10 @@ class LinkInfo:
     filter: LinkFilter | None = None
     results_explicit: bool = False
     has_dataset: bool = False
+    # 过滤规则（2026-11-20）：None = 老口径（看 filter），[] = 明确不过滤，
+    # 非空 = 按规则。值来源侧（gen_tpl）与表单侧（gen_form）读**同一份**
+    # 归一化结果，rule_id 才可能两侧一致。
+    rules: list[FilterRule] | None = None
 
 
 # ---------------------------------------------------------------- 目标对象解析
@@ -521,6 +526,124 @@ def filter_of(ds: DataSet | None, target: LinkTarget,
     )
 
 
+# ---------------------------------------------------------------- 过滤规则归一化
+
+
+def filter_rules_of(ds: DataSet | None, target: LinkTarget,
+                    source_bo: Bo | None = None,
+                    field: BoField | None = None
+                    ) -> tuple[list[FilterRule] | None, list[str]]:
+    """数据集上的过滤规则 -> 归一化后的规则（+ 提示）。**唯一真相**。
+
+    三档语义（与 ``model.parse_filter_rules`` 一一对应，别在这里另立一套）：
+
+    ```text
+    filter_rules is None → None  老口径：调用方继续走 filter_of()
+    filter_rules == []   → []    明确「一条过滤都不要」，不出 filterConditions
+    非空                 → 逐条补 label/type/input/rule_id，校验后返回
+    ```
+
+    归一化补齐的东西（值来源侧与表单侧都从这里读，禁各算一遍）：
+
+      · ``field``   统一成目标对象**物理列名**（Excel 里写编码/显示名也认）；
+      · ``label``   空则目标列显示名，再退来源字段名；
+      · ``type`` / ``input`` 空则按目标列 ``rule_types()``；
+      · ``control_type`` 恒取 ``rule_types()[2]``（link_condition 的 type 用它）；
+      · ``rule_id`` 空则 ``stable_code(f"{ds.key}:{i}:{field}")``——反复出包不变，
+        同一份规则集永远同一串，值来源与表单两侧因此能对上。
+
+    解析不到列的规则**丢弃并说明**（与今天「找不到列 → 按不过滤生成」同口径，
+    不静默出全量）；全丢光时按「明确不过滤」返回 ``[]``。
+    """
+    if ds is None or ds.filter_rules is None:
+        return None, []
+    if not ds.filter_rules:
+        return [], []
+    rules: list[FilterRule] = []
+    notices: list[str] = []
+    for i, rule in enumerate(ds.filter_rules):
+        got, notes = _normalize_rule(ds, rule, i, target, source_bo, field)
+        if got is not None:
+            rules.append(got)
+        notices.extend(notes)
+    return rules, notices
+
+
+def _normalize_rule(ds: DataSet, rule: FilterRule, index: int, target: LinkTarget,
+                    source_bo: Bo | None, field: BoField | None
+                    ) -> tuple[FilterRule | None, list[str]]:
+    """单条规则归一化；返回 (规则|None, 要给用户看的话，可能 0~2 条)。
+
+    丢弃规则时第一项是 None；**没丢但存在静默失效风险时照样给人话**（P2-3：
+    dynamic 规则绑了一个本对象里不存在的控件，导入后下拉能点、条件永不生效，
+    界面上还看不出哪儿错——必须有声音）。
+    """
+    where = f"值来源 {ds.key}"
+    if not isinstance(rule, FilterRule):
+        return None, [f"{where}: 过滤规则格式不对，已跳过该条"]
+    if (rule.source, rule.field_source) not in RULE_SOURCE_PAIRS:
+        return None, [(f"{where}: 过滤规则的值来源组合「{rule.pair_key()}」系统不支持，"
+                       f"已跳过该条（只支持 表单控件 / 固定值 / SQL 片段 / 系统变量）")]
+    if rule.field_source == RULE_SQL_SNIPPET:
+        # 线上 58/58：id=field=整段 SQL、operator=""、value=null，没有「目标列」这回事
+        rule.operator = ""
+        rule.value = None
+        rule.type = rule.type or "string"
+        rule.input = rule.input or "text"
+        rule.control_type = ""
+        rule.label = rule.label or _sql_label(rule.field)
+        rule.rule_id = rule.rule_id or stable_code(f"{ds.key}:{index}:{rule.field}")
+        return rule, []
+
+    col = target.field(rule.field) if rule.field else None
+    if col is None and rule.is_dynamic() and rule.control and source_bo is not None:
+        # 面板里只选了「本表单哪个字段」、还没指定目标列的写法：按该字段的
+        # 显示名去目标对象对一列（与 auto_filter 同一口径）。
+        src = source_bo.field_by_code(rule.control)
+        if src is not None:
+            col = target.field(src.name)
+    if col is None:
+        return None, [(f"{where}: 过滤规则的列 {rule.field or '(空)'} 在目标对象 "
+                       f"{target.code} 里找不到，已跳过该条")]
+    rule.field = col.column
+    if rule.is_dynamic() and not rule.control:
+        # 没写「本表单哪个字段」时按同名推导一次（与 auto_filter 同一口径）：
+        # 用户手写 Excel 时只写目标列也能跑，推导不出来才丢。
+        pair = auto_filter(source_bo, field, target)
+        if pair is not None and pair[1] == col.column:
+            rule.control = pair[0]
+    if rule.is_dynamic() and not rule.control:
+        return None, [(f"{where}: 过滤规则「{col.label or col.column}」是表单控件过滤，"
+                       f"但没指定本表单用哪个字段，已跳过该条")]
+    rtype, rinput, rcontrol = col.rule_types()
+    rule.type = rule.type or rtype
+    rule.input = rule.input or rinput
+    rule.control_type = rcontrol
+    notes: list[str] = []
+    src = None
+    if source_bo is not None and rule.control:
+        src = source_bo.field_by_code(rule.control)
+        if rule.is_dynamic() and src is None:
+            # 本对象（= 表单所属对象）里查不到这个控件编码：多半是控件被删了、
+            # 或 Excel 手写时写了别的对象的字段编码。目标列本身可能是对的，
+            # 所以**保留这条规则**，只把「不会生效」这件事说出来——这是设计
+            # 文档最怕的那种静默失效。
+            notes.append(
+                f"{where}: 过滤规则「{col.label or col.column}」要绑定的表单控件 "
+                f"{rule.control} 在本对象里不存在，导入后这条过滤不会生效")
+    if not rule.label:
+        rule.label = (col.label if col.label and col.label != col.column
+                      else (src.name if src is not None else col.column))
+    rule.rule_id = rule.rule_id or stable_code(f"{ds.key}:{index}:{rule.field}")
+    return rule, notes
+
+
+def _sql_label(sql: str) -> str:
+    """SQL 片段规则的显示名：取开头一小段，够在设计器里认出来就行。"""
+    text = " ".join(str(sql or "").split())
+    return (text[:24] + "…") if len(text) > 24 else (text or "SQL 片段")
+
+
 # ---------------------------------------------------------------- 计划
 
 
@@ -530,6 +653,10 @@ class LinkPlan:
     def __init__(self, project=None) -> None:
         self.project = project
         self._targets: dict[str, LinkTarget] = {}
+        # 过滤规则归一化缓存：按 ds.key 缓存**同一批 FilterRule 对象**。
+        # gen_tpl（值来源侧）与 gen_form（表单侧）都从这里取，rule_id 不可能分叉
+        # ——这比今天「各处调 filter_of 各派生一次」更强（架构文档 §5）。
+        self._rules: dict[str, tuple[list[FilterRule] | None, list[str]]] = {}
 
     # ---- 目标对象
     def target(self, code: str) -> LinkTarget | None:
@@ -557,6 +684,25 @@ class LinkPlan:
         if self.project is None or not key:
             return None
         return next((d for d in self.project.datasets if d.key == key), None)
+
+    # ---- 过滤规则（归一化 + 缓存）
+    def rules_of(self, ds: DataSet | None, target: LinkTarget,
+                 source_bo: Bo | None = None,
+                 field: BoField | None = None
+                 ) -> tuple[list[FilterRule] | None, list[str]]:
+        """这份值来源的过滤规则（归一化一次，之后所有人都读这一份）。
+
+        缓存的键是 ``ds.key``：同一份值来源会被值来源侧（按 key 回查）和表单侧
+        （按控件拿）各取一次，两处必须拿到**同一批对象**——rule_id 只要重算一次
+        就可能与另一侧不一致，线上表现是过滤条件静默失效。
+        """
+        if ds is None:
+            return None, []
+        if ds.key in self._rules:
+            return self._rules[ds.key]
+        got = filter_rules_of(ds, target, source_bo, field)
+        self._rules[ds.key] = got
+        return got
 
     def dataset_for(self, target: LinkTarget, value_source: str = "") -> DataSet | None:
         """控件该用哪份值来源：先看它自己指的 key，再按目标对象找。"""
@@ -614,15 +760,19 @@ class LinkPlan:
             all_fields=bool(ds is not None and ds.result_all))
         results = with_linked_columns(target, bo, bf, results, explicit)
         linkage = _linkage(bo, bf, ff, results, form)
+        # 过滤规则：有规则时 legacy 的 filter_of() 一律不参与（规则优先，见
+        # model.DataSet.filter_rules 的三档说明），两侧读同一份归一化结果。
+        rules, _notes = self.rules_of(ds, target, bo, bf)
         return LinkInfo(
             field=ff.name,
             target=target,
             dataset_key=ds.key if ds is not None else (ff.value_source or bf.object_type),
             results=results,
             linkage=linkage,
-            filter=filter_of(ds, target, bo, bf),
+            filter=None if rules is not None else filter_of(ds, target, bo, bf),
             results_explicit=explicit,
             has_dataset=ds is not None,
+            rules=rules,
         )
 
 
@@ -723,6 +873,8 @@ def label_suffix(plan: LinkInfo | None) -> str:
     if plan is None:
         return ""
     parts = [f"返回 {len(plan.results)} 列"]
-    if plan.filter is not None:
+    if plan.rules:
+        parts.append(f"过滤：{len(plan.rules)} 条规则")
+    elif plan.filter is not None:
         parts.append(f"过滤：{plan.filter.source_label}")
     return "（" + "，".join(parts) + "）"

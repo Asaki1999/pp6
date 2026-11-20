@@ -33,8 +33,8 @@ TEST_DIR = ROOT / "tests"
 # 模块顺序 = 清单顺序 = 从底层到端到端，出问题先看最前面的
 # 新模块加在这里才会被加载——**这是最容易漏的一步**（用例写了但没跑）
 MODULES = ["naming", "pm_terms", "reader", "doc_text", "desktop", "validate", "bo", "projlink",
-           "form", "tablefield", "links", "builder", "value", "workflow", "patch",
-           "webui", "security", "nlq"]
+           "form", "tablefield", "links", "builder", "value", "value_rules", "workflow",
+           "patch", "webui", "security", "nlq"]
 
 # 本次回归会话独有的临时根目录（见 _isolate_tmp）
 _TMP_DIR: Path | None = None

@@ -1252,7 +1252,7 @@ select.ai-in { cursor: pointer; }
 /* 值来源配置：对象下拉 + 「值来源」按钮同一行 */
 .ai-objrow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .ai-vs-btn { font-size: 11px; padding: 3px 6px; }
-.ai-vs-pop { width: 380px; max-height: 460px; overflow: auto; }
+.ai-vs-pop { width: 480px; max-height: 480px; overflow: auto; }
 .ai-vs-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .ai-vs-row label { color: var(--text-2); white-space: nowrap; }
 .ai-vs-row .ai-choice-add { flex: 1; }
@@ -1274,6 +1274,58 @@ select.ai-in { cursor: pointer; }
   background: #fff;
   color: var(--text);
 }
+
+/* 过滤规则（2026-11-20）：面板里的规则行列表。
+   一行 = 目标列 / 运算符 / 值来源 / 值 / 删除，值来源换档时「值」控件也跟着换。 */
+.ai-vs-rules {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.ai-vs-rule-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 600; color: var(--text);
+}
+.ai-vs-rule-head select { flex: 0 0 auto; max-width: 108px; }
+.ai-vs-add {
+  margin-left: auto;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 6px;
+  background: #fff;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  color: var(--accent);
+}
+.ai-vs-add:hover { border-color: var(--accent); }
+.ai-vs-rule {
+  display: grid;
+  grid-template-columns: 1fr 84px 92px 1fr 18px;
+  align-items: center;
+  gap: 4px;
+}
+.ai-vs-rule .ai-choice-add { min-width: 0; font-size: 11px; padding: 2px 4px; }
+.ai-vs-rule .ai-vs-sql {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 5px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  resize: vertical;
+  min-height: 30px;
+}
+.ai-vs-del {
+  border: 0; background: none;
+  color: var(--muted);
+  font-size: 14px; line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.ai-vs-del:hover { color: #dc2626; }
+.ai-vs-rule-empty { font-size: 11px; color: var(--muted); line-height: 1.5; }
 
 /* 表单预览 */
 .ai-form-head {
@@ -1492,6 +1544,11 @@ select.ai-in { cursor: pointer; }
   cursor: pointer;
   font-size: 13px;
   font-weight: 500;
+  /* 元素从 <label> 换成 <button>（见 index.html 里 #btnReimportPick 的注释）：
+     只补 UA 按钮外观这一条最小重置，字号/字体/行高继续用上面的值，
+     外观和原来的 label 完全一致（全局 button 重置见第 68 行）。 */
+  appearance: none;
+  -webkit-appearance: none;
 }
 .reimport-pick:hover { border-color: #2563eb; color: #2563eb; }
 

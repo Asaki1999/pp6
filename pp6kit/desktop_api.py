@@ -7,15 +7,55 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 EXCEL_TYPES = ("Excel 文件 (*.xlsx;*.xlsm)",)
 ZIP_TYPES = ("导出包 (*.zip)",)
 SOURCE_TYPES = ("Excel PDF Word 文件 (*.xlsx;*.xlsm;*.pdf;*.docx)",)
+
+# 同一时刻只允许一个原生对话框在跑。
+# 根因：界面里「选择文件」曾经既是 <label> 包 <input type=file>（WKWebView 自己
+# 会弹一个文件面板，受 App 沙箱限制常看到空目录），又让 JS 调 pick_source 弹
+# pywebview 的 NSOpenPanel。两个面板同时 runModal → 用户看到「文件夹为空」和
+# 「同时两个选择窗口」，谁在前取决于时序，所以是偶现。前端已经按结构断开了
+# 第一条路（index.html 的 #btnReimportPick），这把锁是兜底：即使某处又漏了守卫，
+# 也只会有一个原生面板，第二个直接返回 None（等同用户取消）。
+_DIALOG_LOCK = threading.Lock()
+
+# 「上次选文件的目录」记忆：选择框总是从上次的位置打开，用户不用每次重新翻目录。
+_LAST_DIR_FILE = Path.home() / ".pp6kit" / "last_dir.json"
+
+
+def _last_dir() -> str:
+    """上次用过的目录；读不到 / 不存在 / 已不是目录都静默退回用户主目录。"""
+    try:
+        raw = json.loads(_LAST_DIR_FILE.read_text(encoding="utf-8")).get("dir") or ""
+        if isinstance(raw, str) and raw.strip():
+            path = Path(raw).expanduser()
+            if path.is_dir():
+                return str(path)
+    except Exception:
+        pass          # 配置坏了不能影响选文件，静默降级
+    return str(Path.home())
+
+
+def _remember_dir(path: Path) -> None:
+    """记住这次选中文件所在的目录（写失败一律静默）。"""
+    try:
+        parent = Path(path).expanduser().resolve().parent
+        if not parent.is_dir():
+            return
+        _LAST_DIR_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _LAST_DIR_FILE.write_text(json.dumps({"dir": str(parent)}, ensure_ascii=False),
+                                  encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _dialog(kind: str):
@@ -39,15 +79,23 @@ class DesktopApi:
 
     # ---- 内部
     def _open(self, kinds: tuple[str, ...]) -> dict | None:
-        files = self.window.create_file_dialog(
-            _dialog("open"), allow_multiple=False, file_types=kinds
-        )
-        if not files:
+        # 已经有一个对话框在跑：不再叠第二个，直接当「用户取消」（见 _DIALOG_LOCK）
+        if not _DIALOG_LOCK.acquire(blocking=False):
             return None
-        path = Path(files[0] if isinstance(files, (list, tuple)) else files)
-        if not path.is_file():
-            return None
-        return {"name": path.name, "data": base64.b64encode(path.read_bytes()).decode("ascii")}
+        try:
+            files = self.window.create_file_dialog(
+                _dialog("open"), allow_multiple=False, file_types=kinds,
+                directory=_last_dir(),
+            )
+            if not files:
+                return None
+            path = Path(files[0] if isinstance(files, (list, tuple)) else files)
+            if not path.is_file():
+                return None
+            _remember_dir(path)
+            return {"name": path.name, "data": base64.b64encode(path.read_bytes()).decode("ascii")}
+        finally:
+            _DIALOG_LOCK.release()
 
     def _save(self, filename: str, data_b64: str, file_type: str) -> dict | None:
         # 自动化自检：跳过对话框直接落盘，生产环境此变量不会存在
@@ -58,17 +106,24 @@ class DesktopApi:
             path.write_bytes(base64.b64decode(data_b64))
             return {"path": str(path)}
 
-        picked = self.window.create_file_dialog(
-            _dialog("save"), save_filename=filename, file_types=(file_type,)
-        )
-        if not picked:
+        if not _DIALOG_LOCK.acquire(blocking=False):
             return None
-        target = picked if isinstance(picked, str) else picked[0]
-        path = Path(target)
-        if path.suffix == "" and Path(filename).suffix:
-            path = path.with_suffix(Path(filename).suffix)
-        path.write_bytes(base64.b64decode(data_b64))
-        return {"path": str(path)}
+        try:
+            picked = self.window.create_file_dialog(
+                _dialog("save"), save_filename=filename, file_types=(file_type,),
+                directory=_last_dir(),
+            )
+            if not picked:
+                return None
+            target = picked if isinstance(picked, str) else picked[0]
+            path = Path(target)
+            if path.suffix == "" and Path(filename).suffix:
+                path = path.with_suffix(Path(filename).suffix)
+            path.write_bytes(base64.b64decode(data_b64))
+            _remember_dir(path)
+            return {"path": str(path)}
+        finally:
+            _DIALOG_LOCK.release()
 
     # ---- 暴露给前端
     def pick_excel(self) -> dict | None:

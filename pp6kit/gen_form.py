@@ -467,6 +467,29 @@ def _table_configurable(cell: dict) -> dict:
     }
 
 
+def _rule_condition(rule) -> dict:
+    """一条 dynamic 规则 -> link_condition 的一项（11 个键，与老路径完全一致）。
+
+    ``fieldName`` **恒为 ``<rule_id>_1``**，不是索引：线上一个控件挂 3 条条件时
+    是 ``0xi0u6u_1 / 1jz6tyg_1 / 1vnhwwc_1``，全是 ``_1``。
+    ``value`` 是本表单的控件编码（=FilterRule.control），值来源侧的
+    ``filterConditions`` 与这里靠同一个 rule_id 对上。
+    """
+    return {
+        "name": rule.rule_id,
+        "fieldName": f"{rule.rule_id}_1",
+        "fieldLabel": rule.label,
+        "fieldDataType": rule.type or "string",
+        "mode": "bind",
+        "value": rule.control,
+        "type": rule.control_type or "text",
+        "controlTypeOptions": {},
+        "controlType": rule.control_type or "text",
+        "rule_id": rule.rule_id,
+        "desc": rule.rule_id,
+    }
+
+
 def _linkdata_options(out: dict, field: FormField, link, bo: Bo | None,
                       form: Form | None = None) -> None:
     """关联数据控件的 fieldOptions（样本 form/002-glxmd.xml 的「所属项目」）。
@@ -517,7 +540,14 @@ def _linkdata_options(out: dict, field: FormField, link, bo: Bo | None,
     out["link_config"] = config
 
     out["link_linkage"] = [dict(item) for item in info.linkage]
-    if info.filter is not None:
+    # 过滤绑定：只有「值来自本表单控件」的规则才绑（线上 107 条 mode=bind 全是
+    # dynamic）。依据：同一份值来源同时含 dynamic + fixed 两条规则时，表单侧
+    # link_condition 长度 = 1（只对应 dynamic 那条）；56 份 sqlSnippet-only 值来源
+    # 在 453 个控件里一条绑定都查不到。
+    if info.rules is not None:
+        out["link_condition"] = [_rule_condition(r) for r in info.rules
+                                 if r.is_bindable()]
+    elif info.filter is not None:
         filt = info.filter
         out["link_condition"] = [{
             "name": filt.rule_id,

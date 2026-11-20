@@ -270,6 +270,15 @@ COLUMNS: dict[str, list[Col]] = {
                  "留空 = 按同名自动推导，推导不出来就不加"),
         Col("过滤目标", "filter_target", 18,
             note="目标对象里被过滤的物理列。留空按同名推导；上面写了 字段=列 时以那一处为准"),
+        Col("过滤规则", "filter_rules", 46, wrap=True,
+            note="JSON，一条过滤规则 = 目标列 + 运算符 + 值来源 + 值，可多条 AND/OR。"
+                 "**留空（或老工作簿没这列）= 现有行为**（按上面两列 + 同名推导）；"
+                 "写 `无` = 一条过滤都不要；有规则时忽略上面两列。"
+                 '形状：{"logic":"AND","rules":[{"field":"is_active_","operator":"equal",'
+                 '"source":"fixed","value":"Y"}]}。'
+                 "值来源只支持 4 种组合：表单控件(dynamic/formField)、"
+                 "固定值(fixed/formField)、SQL 片段(fixed/sqlSnippet，field 写整段 SQL、"
+                 'operator 留空)、系统变量(systemVariable/formField，value 写 currentUserId)'),
         Col("自动", "auto", 10, choices=["是", "否"],
             note="是=工具按默认口径生成（你改字段 / 过滤仍然算数）；否=你手加的。"
                  "只用来判断重复出包要不要沿用默认口径，不影响包里的内容"),

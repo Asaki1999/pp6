@@ -711,11 +711,27 @@ function pEmptyState() {
 
 function pBind() {
   const zipInput = pId("patchZipInput");
+  // 选文件守卫必须和普通工作区是同一把锁（app.js 暴露的 window.PP6_PICK）：
+  // 两处各自弹一个原生面板，就是用户看到的「同时两个选择窗口」。
+  const pickGuard = () => window.PP6_PICK || null;
   pId("patchPickZip").onclick = async () => {
     if (typeof native === "function" && native()) {
-      const file = await pickFile("zip");
-      if (file) await pUploadZip(file);
-    } else zipInput.click();
+      const guard = pickGuard();
+      if (guard && !guard.begin()) return;      // 别处正开着面板：不再叠一个
+      let file = null;
+      try {
+        file = await pickFile("zip");
+      } finally {
+        if (guard) guard.end();                 // 只锁对话框，读完包还能再选
+      }
+      // 取消 / 失败以前是静默 return，用户以为程序卡住
+      if (!file) { toast("未选择文件"); return; }
+      await pUploadZip(file);
+      return;
+    }
+    const guard = pickGuard();
+    if (guard) guard.viaInput(zipInput);
+    else zipInput.click();
   };
   zipInput.onchange = (e) => {
     const file = e.target.files[0];

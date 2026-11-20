@@ -880,3 +880,193 @@ def _():
             and not str(r.get("值来源key")).startswith("#")]
     assert [r["值来源key"] for r in rows] == ["penny_value", "purchase_apply_value"], rows
     assert sorted(_value_entries(webui.build_zip(confirm)[0])) == sorted(values)
+
+
+@case("VAL24", "value", "驼峰对象编码 caiGou：key 是英文，datasetKey / boCode / dataSet 仍是编码原样", "P0",
+      ["用户 2026-11-20：key 不要拼音", "datasetKey 与 key 是两回事",
+       "dataSet 的 key/from 跟 datasetKey 走"])
+def _():
+    """对象编码可以带大写（``caiGou`` 这类历史编码），key 只允许小写英文 slug。
+
+    最容易被顺手改错的一处就是「既然 key 变英文了，datasetKey 是不是也跟着变」——
+    不是。datasetKey / boCode 是「这份选择器取哪个对象的数据」，必须写对象编码
+    （驼峰也原样保留）；底下 ``<dataSet>`` 的 key / from 与它是同一个值。
+    """
+    data = {
+        S.S_BO: [{"对象名称": "采购申请", "对象编码": "caiGou",
+                  "物理表名": "pp_cai_gou"}],
+        S.S_FIELD: [field("caiGou", "申请单号", "字符串"),
+                    field("caiGou", "申请金额", "数字", 精度=2)],
+        S.S_FORM: [{"表单key": "create_caigou", "表单名称": "新建采购申请",
+                    "对象编码": "caiGou", "表单类型": "新建表单"}],
+        S.S_FORMFIELD: [{"表单key": "create_caigou", "字段编码": "shenQingDanHao",
+                         "显示标签": "申请单号", "控件类型": "text"}],
+    }
+    body = webui.build_zip(xlsx(data))[0]
+    values = _value_entries(body)
+    assert sorted(values) == ["purchase_apply_value"], sorted(values)
+
+    xml = values["purchase_apply_value"]
+    head = re.search(r"<dataTemplateDef\b[^>]*>", xml)
+    got = dict(re.findall(r'([\w:.-]+)="([^"]*)"', head.group(0)))
+    assert got["key"] == "purchase_apply_value", got
+    assert got["datasetKey"] == got["boCode"] == "caiGou", got       # 驼峰原样
+    assert got["name"] == "采购申请值来源", got
+
+    ds = re.search(r"<dataSet\b[^>]*>", xml)
+    ds_attrs = dict(re.findall(r'([\w:.-]+)="([^"]*)"', ds.group(0)))
+    assert ds_attrs["key"] == "caiGou", ds_attrs
+    assert ds_attrs["from"] == "pp_cai_gou", ds_attrs
+
+
+@case("VAL25", "value", "批量五个对象（编码全是拼音）：key 全是英文，且没有一个 key 以对象编码开头", "P0",
+      ["用户 2026-11-20：不要拼音 key", "key != datasetKey", "编码只做兜底"])
+def _():
+    """五个对象一次出包，编码**故意用拼音**（真实系统里的历史编码就长这样）。
+
+    判据两条，都是「全包扫一遍」而不是抽查：key 不得以对象编码开头（那就是
+    老的 ``caigou_value`` 口径又回来了），且 key 与 datasetKey 不得相等。
+    """
+    pairs = [("项目", "xiangmu"), ("合同", "hetong"), ("项目阶段", "xiangmujieduan"),
+             ("需求", "xuqiu"), ("测试用例", "ceshiyongli")]
+    data = {
+        S.S_BO: [{"对象名称": name, "对象编码": code, "物理表名": f"pp_{code}"}
+                 for name, code in pairs],
+        S.S_FIELD: [field(code, "名称", "字符串") for _name, code in pairs],
+        S.S_FORM: [{"表单key": "create_" + code, "表单名称": "新建" + name,
+                    "对象编码": code, "表单类型": "新建表单"}
+                   for name, code in pairs],
+        S.S_FORMFIELD: [{"表单key": "create_" + code, "字段编码": "name",
+                         "显示标签": "名称", "控件类型": "text"}
+                        for _name, code in pairs],
+    }
+    body = webui.build_zip(xlsx(data))[0]
+    values = _value_entries(body)
+    assert sorted(values) == ["contract_value", "project_phase_value", "project_value",
+                             "requirement_value", "test_case_value"], sorted(values)
+
+    for key, xml in values.items():
+        head = re.search(r"<dataTemplateDef\b[^>]*>", xml)
+        got = dict(re.findall(r'([\w:.-]+)="([^"]*)"', head.group(0)))
+        assert got["key"] == key, (key, got["key"])
+        assert got["key"] != got["datasetKey"], (key, got)
+        for _name, code in pairs:
+            assert got["datasetKey"] == code or not key.lower().startswith(code.lower()), \
+                (key, code)
+            assert not key.lower().startswith(code.lower()), (key, code)
+
+    # 编码与 key 的对应用一张表钉住（编码原样进 datasetKey）
+    want = {"project_value": "xiangmu", "contract_value": "hetong",
+            "project_phase_value": "xiangmujieduan", "requirement_value": "xuqiu",
+            "test_case_value": "ceshiyongli"}
+    for key, code in want.items():
+        xml = values[key]
+        assert f'datasetKey="{code}"' in xml, (key, code, xml[:300])
+
+
+@case("VAL26", "value", "存量包不翻档：老确认版里 自动=是 的拼音 key 沿用，清空 key 才换成英文", "P0",
+      ["存量包铁律：不翻档、不加第二份", "往返两轮 key 集合稳定",
+       "key 留空 = 按新口径重新生成"])
+def _():
+    """老版本的确认版 Excel 里，自动生成的那行 key 是 ``caigou_value``（拼音）。
+
+    用户升级后**重新上传这份确认版**，包里必须还是那一个 key —— 翻成
+    ``purchase_apply_value`` 等于把设计器里已经接好的控件引用全断掉，
+    而且会多出一条同名选择器。想换英文 key 的正确做法是「把那一行的
+    key 清空」（留空 = 按新口径重新生成）。
+    """
+    legacy_cols = ["id_", "name_", "shen_qing_dan_hao_", "shen_qing_jin_e_",
+                   "jin_ji_cheng_du_", "bei_zhu_"]
+
+    def legacy(code: str, value_key: str | None) -> dict:
+        data = _cai_gou_sheets()
+        data[S.S_BO] = [{"对象名称": "采购申请", "对象编码": code,
+                         "物理表名": "pp_cai_gou"}]
+        for row in data[S.S_FIELD]:
+            row["对象编码"] = code
+        data[S.S_FORM] = [{"表单key": "create_caigou", "表单名称": "新建采购申请",
+                           "对象编码": code, "表单类型": "新建表单"}]
+        row = {"名称": "采购申请值来源", "对象编码": code, "返回字段": "*", "自动": "是"}
+        if value_key:
+            row["值来源key"] = value_key
+        data[S.S_VALUE] = [row]
+        return data
+
+    # ① 老确认版 Excel（拼音 key + 自动=是）→ 包里只有那一个，没有英文那份
+    for code in ("cai_gou", "caiGou"):
+        body = webui.build_zip(xlsx(legacy(code, "caigou_value")))[0]
+        values = _value_entries(body)
+        assert sorted(values) == ["caigou_value"], (code, sorted(values))
+        assert "purchase_apply_value" not in values, (code, sorted(values))
+        # 返回列与 Excel 里那行一致（返回字段=*）
+        assert _columns(values["caigou_value"]) == legacy_cols, \
+            (code, _columns(values["caigou_value"]))
+        assert f'key="caigou_value"' in values["caigou_value"], code
+
+        # ② 把那一行的 key 清空 → 变成英文那一个（一条，不是两条）
+        body = webui.build_zip(xlsx(legacy(code, None)))[0]
+        values = _value_entries(body)
+        assert sorted(values) == ["purchase_apply_value"], (code, sorted(values))
+
+    # ③ 往返：确认版 Excel 读回再出包，两轮 key 集合都稳定
+    src = xlsx(legacy("cai_gou", "caigou_value"))
+    first = sorted(_value_entries(webui.build_zip(src)[0]))
+    confirm = _read_via_confirm(src)
+    rows = [r for r in read_xlsx_rows(confirm, S.S_VALUE)
+            if str(r.get("值来源key") or "").strip()
+            and not str(r.get("值来源key")).startswith("#")]
+    assert [r["值来源key"] for r in rows] == ["caigou_value"], rows
+    assert [r.get("自动") for r in rows] == ["是"], rows
+    second = sorted(_value_entries(webui.build_zip(confirm)[0]))
+    third = sorted(_value_entries(webui.build_zip(_read_via_confirm(confirm))[0]))
+    assert first == second == third == ["caigou_value"], (first, second, third)
+
+
+@case("VAL27", "value", "词典缺词的对象（设备点检记录）：key 退拼音，提示说清是「点检 / dianjian」", "P0",
+      ["不静默：拼音 key 必须能解释", "naming.pinyin_parts 与 key 同一份归一"])
+def _():
+    """「设备点检」不在英文词典里 → key 只能是 ``equipment_dianjian_value``。
+
+    这条钉的不是「退拼音」本身（那是兜底），而是**提示要说清哪个词、什么拼音、
+    去哪补**——否则用户看到 ``dianjian`` 只会觉得是我们写错了。
+    """
+    data = {
+        S.S_BO: [{"对象名称": "设备点检记录", "对象编码": "sbDianJian",
+                  "物理表名": "pp_sb_dian_jian"}],
+        S.S_FIELD: [field("sbDianJian", "名称", "字符串")],
+        S.S_FORM: [{"表单key": "create_dianjian", "表单名称": "新建设备点检",
+                    "对象编码": "sbDianJian", "表单类型": "新建表单"}],
+        S.S_FORMFIELD: [{"表单key": "create_dianjian", "字段编码": "name",
+                         "显示标签": "名称", "控件类型": "text"}],
+    }
+    body = webui.build_zip(xlsx(data))[0]
+    values = _value_entries(body)
+    assert sorted(values) == ["equipment_dianjian_value"], sorted(values)
+    # 「记录」是 _NOISE 尾巴，不参与命名，也不该被算成兜底
+    assert 'datasetKey="sbDianJian"' in values["equipment_dianjian_value"]
+
+    note = _notice(body)
+    assert "未收录英文词典" in note, note[-800:]
+    assert "已用拼音" in note and "dianjian" in note, note[-800:]
+    assert "「点检」" in note, note[-800:]
+    assert "naming.WORDS" in note, note[-800:]
+
+
+@case("VAL28", "value", "查不到对象名称的提示在「解析页」也看得到（不只 CLI 打印）", "P1",
+      ["用户在设计器里就能知道 key 为什么是编码",
+       "parse_excel 的 notes 与 reader.auto_notes 同源"])
+def _():
+    """6.1_值来源 只填编码（包内 / 系统清单都没有）时，key 只能按编码生成。
+
+    reader 把原因记进 ``auto_notes``，出包报告与 CLI 都会打；但用户实际是在
+    **设计器的解析页**看提示的——那条链路走 ``webui.parse_excel``，这里要确认
+    它把同一句带出来了，否则用户在界面上只看到一条拼音 key，没有任何解释。
+    """
+    data = _cai_gou_sheets()
+    data[S.S_VALUE] = [{"对象编码": "zzBuCunZai"}]
+    view = webui.parse_excel(xlsx(data))
+    assert view["ok"] and view["errorCount"] == 0, view["issues"]
+    notes = [n for n in view["notes"] if "zzBuCunZai" in n]
+    assert any("找不到对象 zzBuCunZai 的名称" in n for n in notes), view["notes"]
+    assert any("key 用对象编码生成" in n for n in notes), view["notes"]
+    assert any(d["key"] == "zzbucunzai_value" for d in view["datasets"]), view["datasets"]

@@ -121,7 +121,16 @@ def sheet_data(proj: Project) -> dict[str, list[list]]:
                 # 读回时按 bo.code 反查 tbl_name，往返一致。
                 _value_bo_code(proj, ds),
                 ds.id_field, ds.name_field, ds.unique_field,
-                ds.result_text(), ds.filter_text(), ds.filter_target,
+                ds.result_text(), ds.filter_text(),
+                # 「过滤目标」也一样：有规则时生成侧完全忽略它，回写必须留空。
+                # 只清「过滤字段」而留着「过滤目标」，用户在 Excel 里看到的是
+                # 「半套配置」（一边空一边有值），会以为规则没生效；之前就是这么
+                # 漏的 —— 口径一致性由 filter_text() 与本格共同保证。
+                "" if ds.filter_rules is not None else ds.filter_target,
+                # 过滤规则（2026-11-20）：None 写空 = 老口径，[] 写「无」，
+                # 其余写 JSON。必须与 spec.COLUMNS[S_VALUE] 的列序一致
+                # （位置在「过滤目标」之后、「自动」之前）。
+                ds.filter_rules_text(),
                 "是" if ds.auto_generated else "否",
                 "",          # 说明：仅备注，不写回
             ])

@@ -711,12 +711,19 @@ def _local_value_dataset(project: Project, dst: str, primary_key: str) -> str:
     优先 ``primary_key``（本次口径的默认那份）；否则挑**没有过滤条件**的那份：
     同一个对象有多份选择器时，带过滤的是给特定控件用的，不带过滤的才是
     「这个对象的全部数据」，也就是这一组字段要的默认那份。
+    ``filter_rules`` 是空列表（Excel 里写 `无`）也算「没有过滤」——那正是
+    「一条过滤都不要」= 全量，不是「已过滤」。只有非空的规则集才要排除。
     """
     if any(d.key == primary_key for d in project.datasets):
         return primary_key
     plain = next((d for d in project.datasets
                   if _ds_targets_code(project, d, dst)
-                  and not d.filter_field and not d.filter_target), None)
+                  and not d.filter_field and not d.filter_target
+                  # 只有**非空** filter_rules 才算「已过滤」，不能当默认那份；
+                  # filter_rules == [] 是「一条过滤都没有」= 全量数据，与不带
+                  # 过滤的普通份等价，可以复用。所以判据是 not d.filter_rules
+                  # （[] 为假 → 放行），不是 is None。
+                  and not d.filter_rules), None)
     return plain.key if plain is not None else ""
 
 

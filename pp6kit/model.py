@@ -258,6 +258,219 @@ def wants_all_results(value: Any) -> bool:
     return str(value or "").strip() == RESULT_ALL
 
 
+# ---------------------------------------------------------------- 过滤规则
+#
+# 一条过滤规则在线上是**四元组**：目标列 + 运算符 + 值来源(source) + 值来源载体
+# (field_source) + 值。`source` 与 `field_source` 是两个维度，线上 333 条规则
+# （266 份模板全库只读统计，2026-11-20）只出现过下面 4 种组合：
+#
+#   (dynamic, formField)         值来自表单控件（今天唯一实现过的形态）
+#   (fixed, formField)           固定字面值（"Y" / 0 / "a,b" / null）
+#   (fixed, sqlSnippet)          整段 SQL：id=field=SQL、operator=""、value=null
+#   (systemVariable, formField)  value 是变量名（线上只见 currentUserId）
+#
+# 白名单外的组合**一律报错**，不降级也不猜：系统怎么解释这四种之外的组合没有
+# 任何线上样本，猜错的表现是「表单上看着配好了、下拉里却是全量或空」，属于最
+# 难查的一类问题（参考 docs/参考-关联对象值来源-20261119.md §2.3）。
+RULE_DYNAMIC = "dynamic"
+RULE_FIXED = "fixed"
+RULE_SYSTEM_VARIABLE = "systemVariable"
+RULE_FORM_FIELD = "formField"
+RULE_SQL_SNIPPET = "sqlSnippet"
+
+RULE_SOURCE_PAIRS = (
+    (RULE_DYNAMIC, RULE_FORM_FIELD),
+    (RULE_FIXED, RULE_FORM_FIELD),
+    (RULE_FIXED, RULE_SQL_SNIPPET),
+    (RULE_SYSTEM_VARIABLE, RULE_FORM_FIELD),
+)
+
+# 运算符枚举：全部取自线上 filter_conditions_ 的真实取值。
+# ``""`` 只给 sqlSnippet 用（线上 58/58 都是空串）。
+RULE_OPERATORS = ("equal", "not_equal", "contains", "not_contains", "in",
+                  "not_in", "less_or_equal", "is_null", "is_not_null", "")
+# 组内逻辑：线上 269 个 AND / 1 个 OR，默认 AND。
+RULE_LOGIC = ("AND", "OR")
+
+# Excel 单元格 JSON 里认识的键（顺序即回写顺序，用户手改时好读）。
+_RULE_JSON_KEYS = ("field", "operator", "source", "field_source", "value",
+                   "control", "type", "input", "label", "rule_id")
+
+
+@dataclass
+class FilterRule:
+    """值来源的一条过滤规则（与线上 ``filterConditions[].filter.rules[]`` 一一对应）。
+
+    字段含义与默认值见 ``docs/架构-值来源过滤条件-20261120.md`` §3：
+
+      field         目标对象**物理列名**（线上 id/field 同值）。
+                    ``field_source=sqlSnippet`` 时这里放**整段 SQL**（沿用线上形态）。
+      operator      见 ``RULE_OPERATORS``；sqlSnippet 固定空串。
+      source        dynamic / fixed / systemVariable
+      field_source  formField / sqlSnippet
+      value         见 ``resolved_value()``；dynamic 时被强制成 "text"
+      control       **本对象**字段编码（表单控件编码），只被 dynamic 用
+      type/input    空 = 按目标列推导（``LinkField.rule_types()``）
+      label         空 = 目标列显示名
+      rule_id       空 = 由 ``links`` 归一化时派生（stable_code，反复出包不变）
+      control_type  归一化产物（``rule_types()[2]``），不来自 Excel：
+                    link_condition 的 type/controlType 要用它，且必须与
+                    filterConditions 那一侧同源，不能再算一遍
+    """
+
+    field: str = ""
+    operator: str = "equal"
+    source: str = RULE_DYNAMIC
+    field_source: str = RULE_FORM_FIELD
+    value: Any = None
+    control: str = ""
+    type: str = ""
+    input: str = ""
+    label: str = ""
+    rule_id: str = ""
+    control_type: str = ""       # 归一化产物，不写进 Excel
+
+    # ---- 判定
+    def pair(self) -> tuple[str, str]:
+        return self.source, self.field_source
+
+    def pair_key(self) -> str:
+        return f"{self.source}/{self.field_source}"
+
+    def pair_allowed(self) -> bool:
+        return self.pair() in RULE_SOURCE_PAIRS
+
+    def is_sql_snippet(self) -> bool:
+        return self.field_source == RULE_SQL_SNIPPET
+
+    def is_dynamic(self) -> bool:
+        return (self.source, self.field_source) == (RULE_DYNAMIC, RULE_FORM_FIELD)
+
+    def is_bindable(self) -> bool:
+        """表单侧要不要为它写一条 link_condition。
+
+        只有「值来自本表单控件」的规则才需要绑定（线上 107 条 mode=bind 全是
+        dynamic）；固定值 / SQL 片段 / 系统变量由值来源自己算，表单侧没有控件
+        可绑。依据：同一份值来源同时含 dynamic + fixed 两条规则时，表单侧
+        ``link_condition`` 长度 = 1（只对应 dynamic 那条）。
+        """
+        return self.is_dynamic() and bool(self.control)
+
+    def resolved_value(self) -> Any:
+        """写进 XML 的 value。
+
+        ```text
+        dynamic + formField          → "text"（线上 191 条全是它，不接受用户值）
+        fixed + sqlSnippet           → None（线上 58/58）
+        fixed + formField            → 字面值原样（数字列要保持 JSON number）
+        systemVariable + formField   → 变量名
+        ```
+        """
+        if self.is_dynamic():
+            return "text"
+        if self.is_sql_snippet():
+            return None
+        return self.value
+
+    # ---- 往返 Excel
+    def to_dict(self) -> dict:
+        """写回 Excel「过滤规则」列的一条（只写有值的键，单元格好读）。"""
+        out: dict = {}
+        for key in _RULE_JSON_KEYS:
+            got = getattr(self, key)
+            if key == "operator" and self.is_sql_snippet():
+                got = ""
+            if got in (None, ""):
+                continue
+            out[key] = got
+        # 空串与 None 不是一回事（固定值可以故意写空串），单独补一次；
+        # 循环里 ``got in (None, "")`` 会把 "" 当没填。
+        if self.value is not None:
+            out["value"] = self.value
+        return out
+
+    @staticmethod
+    def from_dict(item: Any) -> "FilterRule":
+        """Excel JSON 的一条 -> FilterRule。白名单外的组合/运算符直接报错。"""
+        if not isinstance(item, dict):
+            raise ValueError("rules 里的每一项都必须是对象")
+        rule = FilterRule(
+            field=str(item.get("field") or "").strip(),
+            operator=str(item.get("operator") or "equal").strip(),
+            # 前端为了不和「值来源」二义，发的是 fieldSource
+            source=str(item.get("source") or RULE_DYNAMIC).strip(),
+            field_source=str(item.get("fieldSource") or item.get("field_source")
+                             or RULE_FORM_FIELD).strip(),
+            value=item.get("value"),
+            control=str(item.get("control") or "").strip(),
+            type=str(item.get("type") or "").strip(),
+            input=str(item.get("input") or "").strip(),
+            label=str(item.get("label") or "").strip(),
+            rule_id=str(item.get("rule_id") or "").strip(),
+        )
+        if not rule.field and not (rule.is_dynamic() and rule.control):
+            # 「值来自表单控件」允许先只写 control：目标列由 links 按该字段的
+            # 显示名推导（与 auto_filter 同一口径）。其余三种必须有目标列
+            # （SQL 片段则必须是整段 SQL）。
+            raise ValueError("每条过滤规则都要写 field（目标列，SQL 片段则写整段 SQL）")
+        if not rule.pair_allowed():
+            raise ValueError(
+                f"不支持的值来源组合 {rule.pair_key()}（只支持 "
+                f"dynamic/formField、fixed/formField、fixed/sqlSnippet、"
+                f"systemVariable/formField）")
+        if rule.operator and rule.operator not in RULE_OPERATORS:
+            raise ValueError(
+                f"不支持的运算符 {rule.operator}（可用："
+                + "、".join(x for x in RULE_OPERATORS if x) + "）")
+        return rule
+
+
+def parse_filter_rules(value: Any) -> tuple[list[FilterRule] | None, str]:
+    """Excel「过滤规则」单元格 -> (规则列表, 逻辑)。
+
+    三档，必须能原样区分（否则往返一次口径就翻）：
+
+    ```text
+    留空（或列不存在） → None   = 老口径，走 过滤字段/过滤目标/自动 + 同名推导
+    无                 → []     = 一条过滤都不要
+    其余               → JSON   = 完全按规则（忽略 legacy 三件套）
+    ```
+
+    JSON 允许两种写法：``{"logic":"AND","rules":[...]}`` 或裸数组 ``[...]``。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None, "AND"
+    if text == FILTER_NONE:
+        return [], "AND"
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"过滤规则不是合法 JSON（{exc.msg}）") from exc
+    logic = "AND"
+    items: Any = data
+    if isinstance(data, dict):
+        logic = str(data.get("logic") or "AND").strip().upper() or "AND"
+        items = data.get("rules")
+    if logic not in RULE_LOGIC:
+        raise ValueError(f"过滤规则的 logic 只能是 AND / OR，读到的是 {logic}")
+    if not isinstance(items, list):
+        raise ValueError("过滤规则要写成 {\"logic\":\"AND\",\"rules\":[...]} 或直接一个数组")
+    return [FilterRule.from_dict(it) for it in items], logic
+
+
+def filter_rules_json(rules: list[FilterRule] | None, logic: str = "AND") -> str:
+    """规则列表 -> Excel 单元格文本（``filter_rules_text`` 的实现）。"""
+    if rules is None:
+        return ""
+    if not rules:
+        return FILTER_NONE
+    return json.dumps(
+        {"logic": logic if logic in RULE_LOGIC else "AND",
+         "rules": [r.to_dict() for r in rules]},
+        ensure_ascii=False)
+
+
 # ---------------------------------------------------------------- 业务对象
 
 # 类型参数来自 assets/fieldtypes.json（见 pp6kit/fieldtypes.py）
@@ -1108,6 +1321,17 @@ class DataSet:
     # 参照 docs/参考-关联对象值来源-20261119.md §2.3。
     filter_field: str = ""
     filter_target: str = ""
+    # ---- 过滤规则（2026-11-20）：值来源的「值来源」可以是表单控件 / 固定值 /
+    # SQL 片段 / 系统变量，还能多条 AND/OR。三档语义严格区分（见
+    # ``parse_filter_rules``）：
+    #   None  → 老口径：走上面 filter_field/filter_target/auto_filter + 同名推导，
+    #           **产物逐字不变**（兼容红线）；
+    #   []    → 明确「一条过滤都不要」（Excel 写 `无`）；
+    #   非空  → 完全按规则，忽略 legacy 三件套。
+    # 归一化单点在 links.LinkPlan.rules_of()：值来源侧与表单侧读**同一个**
+    # FilterRule 对象，rule_id 才可能两侧一致（各算一遍就会分叉）。
+    filter_rules: list[FilterRule] | None = None
+    filter_logic: str = "AND"
     # 返回列：目标对象的字段编码（也接受物理列名 / 显示名）。
     # 空 = 默认「主键 + 名称」。**主键永远强制包含**——值来源没有主键取不到值，
     # 这是用户明确要求的硬约束。
@@ -1139,11 +1363,24 @@ class DataSet:
         是「按同名推导」，而链接字段 / 自身值来源要的是「一条过滤都不要」，
         两者必须能区分开（与「10_流程节点」的「退回节点=无」同一个路数）。
         """
+        if self.filter_rules is not None:
+            # 已经有「过滤规则」这份真相时，legacy 两列一律留空：
+            # 两处都写会让读者不知道哪一份算数（规则优先，但 Excel 里像两套配置）
+            return ""
         if not self.filter_field:
             return "" if self.auto_filter else FILTER_NONE
         if self.filter_target and self.filter_target != self.filter_field:
             return f"{self.filter_field}={self.filter_target}"
         return self.filter_field
+    def filter_rules_text(self) -> str:
+        """写回 Excel「6.1_值来源」的「过滤规则」列。
+
+        与 ``filter_text()`` 同一套三档语义（见 ``parse_filter_rules``）：
+        没有规则写空（= 老口径）、明确不要过滤写``无``、其余写 JSON。
+        有规则时**不再写** legacy 的「过滤字段/过滤目标」——
+        两处都写会让读者不知道哪一份算数（规则优先，但 Excel 里看着像两套配置）。
+        """
+        return filter_rules_json(self.filter_rules, self.filter_logic)
 
     def result_text(self) -> str:
         """写回 Excel 的「返回字段」列。

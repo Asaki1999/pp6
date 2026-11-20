@@ -168,28 +168,48 @@ const uncheckFirst = {
 out.D4d_seed_then_uncheck = JSON.stringify(st.aiData.bo.fields[0].sourceConfig.resultFields);
 out.D4d_custom_after_click = st.aiData.bo.fields[0].sourceConfig.custom === true;
 
-// ---- 只选「过滤条件」：必须同样先铺默认全选，否则面板显示「一列没勾」、
-// 摘要退回「值来源（自动）」，而产物仍是全部业务字段；用户接着勾一列，
-// 产物就只剩那一列（把默认全字段悄悄缩掉）。
+// ---- 事件桩：面板用 e.target.closest("[data-vsxxx]") 认控件，
+// 桩元素要知道「自己带哪些 data-*」，并实现 hasAttribute（区分字段/运算符/来源）。
+function evEl(attrs, extra) {
+  const names = Object.keys(attrs);
+  const node = Object.assign({ dataset: {}, value: "" }, extra || {});
+  names.forEach((k) => {
+    const camel = k.replace(/^data-/, "").replace(/-([a-z])/g, (m, c) => c.toUpperCase());
+    node.dataset[camel] = attrs[k];
+  });
+  node.hasAttribute = (n) => names.indexOf(n) >= 0;
+  node.closest = (sel) => (sel.split(",").map((s) => s.trim().replace(/^\[|\]$/g, ""))
+    .some((n) => names.indexOf(n) >= 0) ? node : null);
+  return node;
+}
+
+// ---- 加一条过滤规则（= 动过面板）：必须同样先铺默认全选，否则面板显示
+// 「一列没勾」、摘要退回「值来源（自动）」，而产物仍是全部业务字段；
+// 用户接着勾一列，产物就只剩那一列（把默认全字段悄悄缩掉）。
 st.aiData.bo.fields[0].sourceConfig = {};
 ctx.renderAiVsPop();
-q("#aiVsPop").querySelectorAll = (sel) => (sel === "[data-vspick]" ? [
+const popF = q("#aiVsPop");
+popF.querySelectorAll = (sel) => (sel === "[data-vspick]" ? [
   { checked: true, disabled: true, dataset: { vspick: "id_", vscode: "id" } },
   { checked: true, disabled: false, dataset: { vspick: "name_", vscode: "name" } },
   { checked: true, disabled: false, dataset: { vspick: "zhuan_ye_", vscode: "zhuanYe" } },
   { checked: false, disabled: false, dataset: { vspick: "create_time_", vscode: "createTime" } },
 ] : []);
-const filtEventOnly = {
-  target: {
-    value: "xiangMuLeiXing",
-    closest: (s) => (s === "[data-vsfilter]" ? { value: "xiangMuLeiXing" } : null),
-  },
-};
-(q("#aiVsPop")._handlers.change || []).forEach((fn) => fn(filtEventOnly));
-out.D4f_filter_resultFields = JSON.stringify(st.aiData.bo.fields[0].sourceConfig.resultFields);
+(popF._handlers.click || []).forEach((fn) => fn({ target: evEl({ "data-vsaddr": "" }) }));
+const stF = st.aiData.bo.fields[0].sourceConfig;
+out.D4f_rule_added = Array.isArray(stF.filterRules) && stF.filterRules.length === 1;
+// 值来源固定在「表单控件」，再选本表单字段（= 按「项目类型」过滤）
+(popF._handlers.change || []).forEach((fn) =>
+  fn({ target: evEl({ "data-vssrc": "0" }, { value: "dynamic/formField" }) }));
+(popF._handlers.change || []).forEach((fn) =>
+  fn({ target: evEl({ "data-vsval": "0" }, { value: "xiangMuLeiXing" }) }));
+out.D4f_filter_resultFields = JSON.stringify(stF.resultFields);
 out.D4f_filter_summary = ctx.__summary(0);
-out.D4f_filter_custom = st.aiData.bo.fields[0].sourceConfig.custom === true;
-out.D4f_filter_filterField = JSON.stringify(st.aiData.bo.fields[0].sourceConfig.filterField);
+out.D4f_filter_custom = stF.custom === true;
+// 老字段 filterField 不再被面板改写（规则成为唯一真相）。
+// 注意必须兜住 undefined：JSON.stringify(undefined) 会让这个键整个消失。
+out.D4f_filter_filterField = JSON.stringify(stF.filterField ?? "");
+out.D4f_filter_rule = JSON.stringify((stF.filterRules || [])[0] || null);
 
 // 回到「动过面板」的初始态，跑原来的 D4 断言
 st.aiData.bo.fields[0].sourceConfig = {
@@ -218,8 +238,17 @@ const selFrag = (html2.match(/<select class="ai-vs-link"[^>]*data-vslink="zhuan_
 out.D4_link_options = selFrag.replace(/\s+/g, " ").slice(0, 300);
 out.D4_link_can_pick_zhuanYe = /value="zhuanYe"/.test(selFrag);
 
-// ③ 过滤下拉：本对象里其它关联字段（项目类型）要能选
-out.D4_filter_has_xiangMuLeiXing = /<option value="xiangMuLeiXing"/.test(html2);
+// ③ 过滤规则行：「值来源=表单控件」时，值下拉里要能选到本表单的关联字段（项目类型）
+const keepCfg = JSON.stringify(st.aiData.bo.fields[0].sourceConfig);
+st.aiData.bo.fields[0].sourceConfig.filterRules = [
+  { field: "", operator: "equal", source: "dynamic", fieldSource: "formField",
+    value: null, control: "", label: "" },
+];
+ctx.renderAiVsPop();
+out.D4_filter_has_xiangMuLeiXing =
+  q("#aiVsPop").innerHTML.indexOf('<option value="xiangMuLeiXing"') >= 0;
+st.aiData.bo.fields[0].sourceConfig = JSON.parse(keepCfg);
+ctx.renderAiVsPop();
 
 // ④ 事件：勾掉「专业」→ linkage 里的 zhuan_ye_ 必须同步删掉
 const st2 = st.aiData.bo.fields[0].sourceConfig;
@@ -271,14 +300,23 @@ const pkEvent = {
 changeHandlers.forEach((fn) => fn(pkEvent));
 out.D4_resultFields_after_pk_click = JSON.stringify(st2.resultFields);
 
-// ⑦ 换过滤字段 → filterField 落位
-const filtEvent = {
-  target: {
-    value: "xiangMuLeiXing",
-    closest: (s) => (s === "[data-vsfilter]" ? { value: "xiangMuLeiXing" } : null),
-  },
-};
-changeHandlers.forEach((fn) => fn(filtEvent));
-out.D4_filterField = JSON.stringify(st2.filterField);
+// ⑦ 过滤规则：选值来源=固定值 → 选目标列 → 填值，三步都要落到规则上。
+// （2026-11-20 起面板是「规则行列表」，不再有 filterField 那个单选下拉）
+st2.filterRules = [{ field: "", operator: "equal", source: "dynamic",
+  fieldSource: "formField", value: null, control: "", label: "" }];
+changeHandlers.forEach((fn) =>
+  fn({ target: evEl({ "data-vssrc": "0" }, { value: "fixed/formField" }) }));
+changeHandlers.forEach((fn) =>
+  fn({ target: evEl({ "data-vsrule": "0" }, { value: "zhuan_ye_" }) }));
+changeHandlers.forEach((fn) =>
+  fn({ target: evEl({ "data-vsop": "0" }, { value: "not_equal" }) }));
+changeHandlers.forEach((fn) =>
+  fn({ target: evEl({ "data-vsval": "0" }, { value: "Y" }) }));
+out.D4_rule = JSON.stringify((st2.filterRules || [])[0] || null);
+out.D4_filterField = JSON.stringify(st2.filterField ?? "");
+// 删掉唯一一条 → **明确不过滤**（filter_rules=[]），不能退回「按同名推导」
+(pop._handlers.click || []).forEach((fn) => fn({ target: evEl({ "data-vsdel": "0" }) }));
+out.D4_rules_after_delete = JSON.stringify(st2.filterRules);
+out.D4_logic_locked = st2.filterLogic;
 
 console.log(JSON.stringify(out));

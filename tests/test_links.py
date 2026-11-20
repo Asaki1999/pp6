@@ -566,7 +566,20 @@ def lnk16():
     assert out["D4_linkage_after_uncheck"] == "[]", out
     assert _json.loads(out["D4_resultFields_after_uncheck"]) == ["id", "name"], out
     assert _json.loads(out["D4_resultFields_after_check"]) == ["id", "name", "zhuanYe"], out
-    assert _json.loads(out["D4_filterField"]) == "xiangMuLeiXing", out
+
+    # ⑦ 过滤规则（2026-11-20 起面板是「规则行列表」，不再有过滤字段单选下拉）：
+    # 选值来源=固定值 → 选目标列 → 选运算符 → 填值，四步都要落到规则对象上，
+    # 后端 generation 读的就是这一份。老字段 filterField 不再被面板改写。
+    rule = _json.loads(out["D4_rule"])
+    assert rule["field"] == "zhuan_ye_", rule
+    assert rule["source"] == "fixed" and rule["fieldSource"] == "formField", rule
+    assert rule["operator"] == "not_equal", rule
+    assert rule["value"] == "Y", rule
+    assert rule["control"] == "", rule
+    assert _json.loads(out["D4_filterField"]) == "", out
+    # 删掉唯一一条 = 明确「不过滤」（filter_rules=[]），不能退回同名推导
+    assert _json.loads(out["D4_rules_after_delete"]) == [], out
+    assert out["D4_logic_locked"] == "AND", out
 
     # 默认态（用户没动过面板）必须与后端口径一致：**全部业务字段都显示勾上**。
     # 只勾主键+名称的话，用户会以为「只返回 2 列」，随手改一个勾就真的只剩
@@ -585,13 +598,19 @@ def lnk16():
     assert _json.loads(out["D4d_seed_then_uncheck"]) == ["id", "name"], out
     assert out["D4d_custom_after_click"] is True, out
 
-    # 只选「过滤条件」也是动过面板：同样要先铺默认全选（系统列不进种子）。
+    # 加一条过滤规则也是动过面板：同样要先铺默认全选（系统列不进种子）。
     # 不铺的话 custom=true + resultFields=[] → 面板显示「一列没勾」，而产物
     # 仍是全部业务字段（预览≠产物）；用户接着勾一列，产物就只剩那一列。
+    assert out["D4f_rule_added"] is True, out
     assert _json.loads(out["D4f_filter_resultFields"]) == ["id", "name", "zhuanYe"], out
-    assert out["D4f_filter_summary"] == "返回 3 列 · 过滤", out
+    assert out["D4f_filter_summary"] == "返回 3 列 · 过滤 1 条", out
     assert out["D4f_filter_custom"] is True, out
-    assert _json.loads(out["D4f_filter_filterField"]) == "xiangMuLeiXing", out
+    assert _json.loads(out["D4f_filter_filterField"]) == "", out
+    # 值来源=表单控件时，值下拉选的「本表单字段」写成规则的 control（后端据此
+    # 写 link_condition.value）；目标列可以留空，由后端按显示名推导。
+    got_rule = _json.loads(out["D4f_filter_rule"])
+    assert got_rule["source"] == "dynamic" and got_rule["fieldSource"] == "formField", got_rule
+    assert got_rule["control"] == "xiangMuLeiXing", got_rule
 
 
 # ---------------------------------------------------------------- LNK17–LNK19
