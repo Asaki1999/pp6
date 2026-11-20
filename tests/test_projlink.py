@@ -1397,11 +1397,13 @@ def _():
 # 产出的 projectId 定义是否逐键一致。
 
 
-def _probe_frontend() -> dict:
+def _probe_frontend(probe_name: str = "fe_projlink_probe.js") -> dict:
     """真跑 tests/fe_projlink_probe.js（node + 最小 DOM stub），返回结果 dict。
 
     只 grep 源码证明不了「开关能压住 ProjLink 的 linked」「失败会回滚」这类行为，
     所以这里把 app.js 放进 vm 跑一遍。没装 node 就 skip（不装依赖、不联网）。
+
+    probe_name：换一份探针脚本（PL84/PL85 用 fe_projlink_snapshot_probe.js）。
     """
     import json as _json
     import shutil
@@ -1412,7 +1414,7 @@ def _probe_frontend() -> dict:
     if not node:
         skip("没装 node：前端行为探针跳过（PL37 的函数级断言仍然生效）")
     app = Path(webui.STATIC) / "app.js"
-    probe = Path(__file__).resolve().parent / "fe_projlink_probe.js"
+    probe = Path(__file__).resolve().parent / probe_name
     assert probe.is_file(), f"缺少前端探针 {probe}"
     proc = subprocess.run([node, str(probe), str(app)],
                           capture_output=True, text=True, timeout=180)
@@ -2945,7 +2947,7 @@ def _():
 
 # ---------------------------------------------------------------- AI 路径的「XX选择」
 #
-# 这一组守的是 2026-11-21 用户报的那个 bug：「强制加『XX选择』没生效——我选择
+# 这一组守的是 2026-11-20 用户报的那个 bug：「强制加『XX选择』没生效——我选择
 # 关联项目时，生成的字段里面没有项目选择字段」。
 # 标准 Excel 那条路靠 builder.ensure_project_links 补字段，而 AI 这条路
 # （一句话生成 / 需求文档解析 / 确认版 Excel）**完全不经过 build**，
@@ -3220,7 +3222,7 @@ def _():
 # ---------------------------------------------------------------- AI 路径：补漏断言
 #
 # PL73–PL76 覆盖的是「补字段」与「三条拒绝」。下面四条补的是同一批改动里**最
-# 容易漏的另外四件事**（2026-11-21 复验时逐条跑出来的）：
+# 容易漏的另外四件事**（2026-11-20 复验时逐条跑出来的）：
 #   ① 不带决策头时必须与改动前一模一样——AI 路径以前一个字段都不加，现在也不能；
 #   ② 用户会连点两次「导出」，第二次不许把字段补成两条、sn 也不许漂；
 #   ③ AI 自己已经给过「所属项目」时要**复用**它，编码与显示名都不许改（改编码
@@ -3556,3 +3558,112 @@ def _():
                     create)
     assert row and row.group(1) == "24", \
         f"链接控件没有独占整行（span={row.group(1) if row else '未找到'}）"
+
+
+# ---------------------------------------------------------------- PL83–PL85
+# 2026-11-20 用户报的 bug：上传 Word、第 1 步选了「关联项目」，AI 生成的字段里没有
+# 「项目选择」。根因在**前端**：没连库时 askProjectZip 只给「导入项目 zip」，
+# 用户手上没有 zip 就点取消 → 关联没生效 → 请求不带 X-Project-Link →
+# 后端不会补 projectId（后端与 AI 本身是对的）。
+# 这三条守的就是：随包快照能被当成「可用快照」直接用、来源标注不再冒充目标库、
+# 以及万一关联还是没生效，预览里必须醒目说出来。
+
+
+@case("PL83", "projlink", "没连库也没本地缓存：随包快照的来源标成 package_snapshot，不是 target_db",
+      "P0", ["assets/project_fields.json 里的 source=target_db 不许冒充「目标库」",
+             "sourceLabel 变「随包快照」，UI 才不会让人以为库是连着的",
+             "字段数仍 ≥ 30、status 仍是 ok（判档不许被改坏）"])
+def _():
+    """随包那份 JSON 是 `dump_project_fields.py` 从库里导的，文件里 source 写的是
+    `target_db`；`_load_file` 会照文件覆盖传入的档位。不显式纠正的话
+    `/api/project-snapshot` 在干净环境返回 `source=target_db`，界面显示
+    「当前快照：目标库」却又要求导入项目 zip —— 自相矛盾。
+    """
+    asset = Path(projlink.resource_root()) / "assets" / "project_fields.json"
+    if not asset.is_file():
+        skip("没有 assets/project_fields.json：随包快照用例跳过")
+
+    real = projlink.snapshot_cache_path
+    # 指到一个不存在的临时路径 = 干净环境（没有连库刷过的缓存），不碰真实用户目录
+    tmp = Path(tempfile.mkdtemp()) / "no-such-dir" / "project_fields.json"
+    projlink.snapshot_cache_path = lambda: tmp
+    projlink.clear_cache()
+    try:
+        snap = projlink.load_snapshot()
+    finally:
+        projlink.snapshot_cache_path = real
+        projlink.clear_cache()
+
+    assert snap.source == "package_snapshot", \
+        f"随包快照被标成了 {snap.source}（会显示成「目标库」）"
+    assert snap.label() == "随包快照", snap.label()
+    assert snap.project.get("code") == "project", snap.project
+    assert len(snap.fields) >= projlink.MIN_SNAPSHOT_FIELDS, len(snap.fields)
+    assert snap.status == "ok", f"{snap.status}（{len(snap.fields)} 字段）"
+    assert not any(snap.source == s for s in ("target_db", "unavailable")), snap.source
+
+
+@case("PL84", "projlink", "没连库但随包快照够用：弹窗给「使用随包快照」并 resolve true，不再逼导 zip",
+      "P0", ["#psCancel 文案是「使用随包快照（51 个字段）」且点击 resolve true",
+             "主按钮是「使用随包快照」（primary），「导入 zip（刷新）」降为次按钮——别把「去找 zip」做成主推",
+             "标题不再写「导入项目 zip」，改成「关联项目：选择字段来源」",
+             "快照不可用时退回「取消」→ resolve false，主/次按钮还原",
+             "每次打开显式重设处理器：上一次的「使用随包快照」不漏到下一次"])
+def _():
+    """用户「没有 zip」时点取消就丢掉了关联，这是本次 bug 的断点。
+    探针真跑 app.js（node + 最小 DOM stub），不是 grep 字符串。
+    """
+    out = _probe_frontend("fe_projlink_snapshot_probe.js")
+    ok = out["E_usable"]
+    assert ok["maskHidden"] is False, "弹窗没打开"
+    assert ok["cancelText"].startswith("使用随包快照"), ok["cancelText"]
+    assert "51" in ok["cancelText"], ok["cancelText"]
+    assert ok["cancelIsFn"] is True, "#psCancel 没有挂处理器"
+    assert out["E_usableResolve"] is True, out["E_usableResolve"]
+    assert "刷新" in ok["pickText"], ok["pickText"]
+    # 主/次不能反：推荐动作是「直接用随包快照」，去找 zip 是补充选项
+    assert ok["cancelPrimary"] is True and ok["cancelGhost"] is False, \
+        f"「使用随包快照」不是主按钮：{ok}"
+    assert ok["pickPrimary"] is False and ok["pickGhost"] is True, \
+        f"「导入项目 zip（刷新）」还占着主按钮：{ok}"
+    assert ok["title"] == "关联项目：选择字段来源", ok["title"]
+    assert "未配置数据库" in ok["sub"] and "随包" in ok["sub"], ok["sub"]
+    assert "不做同名/相似字段对齐" in ok["lead1"], ok["lead1"]
+    assert "如需完整对齐" in ok["lead2"], ok["lead2"]
+    assert "随包快照" in ok["status"], ok["status"]
+    assert "目标库" not in ok["status"], f"还在冒充目标库：{ok['status']}"
+
+    bad = out["E_unavailable"]
+    assert bad["cancelText"] == "取消", bad["cancelText"]
+    assert out["E_unavailableResolve"] is False, out["E_unavailableResolve"]
+    assert bad["pickText"] == "选择项目 zip", bad["pickText"]
+    assert bad["title"] == "导入项目 zip", bad["title"]
+    # 不可用时主/次必须还原，否则上一次的主按钮会留在那儿
+    assert bad["pickPrimary"] is True and bad["pickGhost"] is False, bad
+    assert bad["cancelPrimary"] is False and bad["cancelGhost"] is True, bad
+    assert "当前没有可用的项目字段快照" in bad["status"], bad["status"]
+
+    # A→B→A：两个方向都验证「每次打开显式重设」，否则旧处理器/旧主按钮会漏过来
+    again = out["E_reopen"]
+    assert "使用随包快照" in again["cancelText"], again["cancelText"]
+    assert out["E_reopenResolve"] is True, out["E_reopenResolve"]
+    assert again["cancelPrimary"] is True and again["pickGhost"] is True, again
+    assert again["title"] == "关联项目：选择字段来源", again["title"]
+
+
+@case("PL85", "projlink", "选了关联却没生成「项目选择」：预览里必须醒目提示（三种正常情况不提示）",
+      "P0", ["state.plPre=on 且字段里没有 isLink → 出现「没有生成「项目选择」字段」",
+             "后端 d.notices 原数组不被改（只动渲染副本）",
+             "有 isLink 字段 / 对象就是关联目标 / 关联关掉 → 都不提示"])
+def _():
+    """这是兜底：万一「关联」还是没生效，用户必须在预览这一步就看见，
+    而不是下载 Excel、甚至导入系统后才发现少字段。
+    """
+    out = _probe_frontend("fe_projlink_snapshot_probe.js")
+    warned = out["F_warned"]
+    assert warned["hasWarn"] is True, "预览里没有「没有生成「项目选择」字段」提示"
+    assert warned["keepsNotices"] is True, "原有 notices 被吞了"
+    assert warned["noticesLen"] == 1, f"后端返回的 notices 数组被改了：{warned}"
+    assert out["F_linkOk"] is True, "有 isLink 字段时不该提示"
+    assert out["F_selfTarget"] is True, "生成对象就是关联目标时不该提示"
+    assert out["F_offSilent"] is True, "关掉关联时不该提示"

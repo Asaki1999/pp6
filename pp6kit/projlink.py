@@ -906,6 +906,12 @@ def load_snapshot(upload_token: str | None = None, force: bool = False,
         snap = _load_file(resource_root() / "assets" / "project_fields.json",
                           "package_snapshot", force)
         if snap is not None:
+            # 随包那份 JSON 是 `dump_project_fields.py` 从库里导出来的，文件里
+            # "source" 写的是 target_db；但走到这一档就说明它不是「当前连上的库」，
+            # 而是打进包里的冻结副本（_load_file 会把文件里的 source 盖回来）。
+            # 不纠正的话界面会显示「当前快照：目标库 · 51 个字段」，
+            # 同时又要求用户导入项目 zip —— 自相矛盾，用户以为库是连着的。
+            snap.source = "package_snapshot"
             return snap
     label = "项目" if target.is_project else target.name
     return Snapshot(
@@ -1599,7 +1605,7 @@ def ensure_link_field(bo: Bo, target: TargetObject | None = None,
     （一句话生成 / 需求文档解析 → 确认版 Excel）里有两种产物根本不走 ``build()``：
       ① ``/api/ai/bo``、``/api/ai/sheet`` 返回的**预览**；
       ② ``ai_apply_bo`` 导出的那份 Excel（用户拿着它回头出包，也可能线下改）。
-    两处都不补的后果就是 2026-11-21 用户报的那句「我选择关联项目时，生成的字段
+    两处都不补的后果就是 2026-11-20 用户报的那句「我选择关联项目时，生成的字段
     里面没有项目选择字段」：开关亮了、预览和 Excel 里却一个字段都没多出来。
     ``build()`` 里那道兜底保留不动——确认版 Excel、存量包修订页还要靠它。
 

@@ -288,7 +288,7 @@ async function handleFile(file, { fromAi = false, quiet = false } = {}) {
   if (state.plPre === "on" && !(await ensureLinkTarget())) {
     toast(state.plTargetKind === "other"
       ? "关联对象还没核对通过，文件未解析：请先在第 1 步输入名称并点「核对」"
-      : "项目字段池还没准备好，文件未解析：请先导入项目 zip", 9000);
+      : "项目字段池还没准备好，文件未解析：请先在第 1 步选「使用随包快照」或导入项目 zip", 9000);
     return;
   }
   state.file = file;
@@ -513,7 +513,7 @@ function syncPlTargetUI() {
     hint.textContent = state.plPre !== "on"
       ? "导入前先选：关联=这份 Excel 里的对象都关联到所选业务对象；不关联=一个都不关联。"
       : (state.plTargetKind === "project"
-        ? "关联=这份 Excel 里的对象都关联项目；项目字段池优先用库里快照，没连库时上传项目 zip。"
+        ? "关联=这份文件里的对象都关联项目；项目字段池优先用库里快照，没连库时用随包项目字段快照（要最新字段可导入项目 zip 刷新）。"
         : `关联=这份 Excel 里的对象都关联「${plTargetLabel()}」；先输名称点「核对」，没连库时上传该对象的 zip。`);
   }
   syncAiNextLabel();
@@ -698,7 +698,7 @@ function bindPlPre() {
           syncPlPreInputs();
           toast(state.plTargetKind === "other"
             ? "关联对象还没核对通过，已保持原来的设置"
-            : "未导入项目包，已保持原来的关联项目设置");
+            : "关联项目没生效，已保持原来的设置（未连库时可在弹窗里选「使用随包快照」）");
           return;
         }
         if (g.patch) state.plPrePatch = value;
@@ -984,10 +984,12 @@ function jumpToProjectLink() {
   setTimeout(() => box.classList.remove("pl-flash"), 1800);
 }
 
-/* ---------------- 项目字段快照：没连库时导入一份项目 zip ----------------
+/* ---------------- 项目字段快照：没连库时的两档来源 ----------------
  * 关联项目要对齐 pp_project 的字段池。有库用库，没库时：
- *   ① 先看随包快照有没有；
- *   ② 仍然提示用户导入一份项目 zip（随包快照可能是旧版本的，字段对不上）。
+ *   ① 随包快照（assets/project_fields.json）够用就直接用——能补「项目选择」
+ *      链接字段，只是不做同名/相似字段对齐；
+ *   ② 想完整对齐就导入一份项目 zip（随包快照可能是旧版本的，字段对不上）。
+ * 弹窗里两个都摆出来，主按钮是「使用随包快照」，不再逼用户找 zip。
  * 上传成功后 token 记在 state，parse/build 都会随 X-Project-Link.snapshot 发回。
  */
 async function projectSnapshotStatus(force = false) {
@@ -1000,6 +1002,9 @@ async function projectSnapshotStatus(force = false) {
 }
 
 let psPending = null;
+// 弹窗主按钮是不是「刷新」口径：有可用随包快照时为 true，
+// 上传失败/重试后按钮文案要跟弹窗口径一致，不能自己缩回「选择项目 zip」。
+let psPickRefresh = false;
 
 function closeProjectZipModal(ok) {
   const mask = $("#psMask");
@@ -1010,6 +1015,13 @@ function closeProjectZipModal(ok) {
   if (done) done(!!ok);
 }
 
+/* 项目快照够不够用：与后端 projlink.MIN_SNAPSHOT_FIELDS（30）同一个阈值。
+ * 够用就不再拦用户去导 zip —— 随包快照能补「项目选择」链接字段，
+ * 只是不做同名/相似字段对齐。 */
+function projectSnapshotUsable(st) {
+  return !!(st && st.status === "ok" && Number(st.fieldCount) >= 30);
+}
+
 function askProjectZip(st, targetName = "") {
   return new Promise((resolve) => {
     const mask = $("#psMask");
@@ -1018,31 +1030,83 @@ function askProjectZip(st, targetName = "") {
     const isProject = state.plTargetKind === "project";
     const name = String(targetName || "").trim() || plTargetLabel();
     const target = isProject ? "项目" : `「${name}」`;
+    // 没连库 + 随包有一份够用的项目字段快照 → 直接让用户「用它继续」，
+    // 不要逼着导 zip（用户手上没有 zip 时只会取消，关联就白选了）。
+    const usable = isProject && projectSnapshotUsable(st);
+    psPickRefresh = usable;
+    const nField = (st && st.fieldCount) ? String(st.fieldCount) : "";
+    const at = (st && st.generatedAt) ? String(st.generatedAt).slice(0, 10) : "";
     const title = $("#psTitle");
     const sub = $("#psSub");
     const lead1 = $("#psLead1");
     const lead2 = $("#psLead2");
     const pick = $("#psPick");
-    if (title) title.textContent = isProject ? "导入项目 zip" : `导入${target}业务对象 zip`;
-    if (sub) sub.textContent = `关联${target}需要该对象的字段定义`;
+    const cancel = $("#psCancel");
+    if (title) {
+      // 有可用快照时标题不能还写「导入项目 zip」：用户第一眼会以为必须去找 zip
+      title.textContent = usable
+        ? "关联项目：选择字段来源"
+        : (isProject ? "导入项目 zip" : `导入${target}业务对象 zip`);
+    }
+    if (sub) {
+      sub.textContent = usable
+        ? "未配置数据库：可以直接用随包项目字段快照继续，也可以导入项目 zip 刷新字段"
+        : `关联${target}需要该对象的字段定义`;
+    }
     if (lead1) {
-      lead1.innerHTML = (st && st.dbConfigured)
-        ? `数据库里没有名称完全一致的${esc(target)}业务对象，读不到它的字段定义。`
-        : `当前 App 没有配置数据库连接，读不到系统里${esc(target)}对象的字段。`;
+      if (usable) {
+        lead1.innerHTML = `当前没有可用的数据库连接，但随包自带项目字段快照`
+          + `（${esc(nField)} 个字段${at ? `，${esc(at)}` : ""}）。`
+          + `直接用它只会补「项目选择」链接字段，不做同名/相似字段对齐；`
+          + `要完整对齐请导入项目 zip。`;
+      } else {
+        lead1.innerHTML = (st && st.dbConfigured)
+          ? `数据库里没有名称完全一致的${esc(target)}业务对象，读不到它的字段定义。`
+          : `当前 App 没有配置数据库连接，读不到系统里${esc(target)}对象的字段。`;
+      }
     }
     if (lead2) {
+      // 有可用快照时这段是「补充选项」，不是唯一出路：加一句说明它的定位
+      const zipLead = usable ? "如需完整对齐：" : "";
       lead2.innerHTML = isProject
-        ? `请导入一份<strong>项目 zip</strong>（包里 <code>bo/*.xml</code> 有 <code>code="project"</code> 的同步包；项目对象、项目列表/表单导出的包都可以）。导入后用它和你的 Excel 对比，找出同名与相似字段。`
+        ? `${zipLead}请导入一份<strong>项目 zip</strong>（包里 <code>bo/*.xml</code> 有 <code>code="project"</code> 的同步包；项目对象、项目列表/表单导出的包都可以）。导入后用它和你的 Excel 对比，找出同名与相似字段。`
         : `请导入一份<strong>${esc(target)}对象 zip</strong>（包里 <code>bo/*.xml</code> 的名称与「${esc(name)}」完全一致）。导入后用它和你的 Excel 对比，找出同名与相似字段。`;
     }
-    if (pick) pick.textContent = isProject ? "选择项目 zip" : `选择${target} zip`;
+    if (pick) {
+      pick.textContent = usable
+        ? "导入项目 zip（刷新）"
+        : (isProject ? "选择项目 zip" : `选择${target} zip`);
+    }
+    /* 取消键每次打开都要重设文案与处理器：bindProjectSnapshotModal() 默认绑的是
+     * closeProjectZipModal(false)，上一次的「使用随包快照」不能漏到下一次。 */
+    if (cancel) {
+      if (usable) {
+        cancel.textContent = `使用随包快照（${nField} 个字段）`;
+        cancel.onclick = () => closeProjectZipModal(true);
+      } else {
+        cancel.textContent = "取消";
+        cancel.onclick = () => closeProjectZipModal(false);
+      }
+    }
+    /* 主按钮跟着「推荐动作」走：有可用快照时推荐的是「直接用」，不是「去找 zip」。
+     * 两个按钮每次打开都重设主/次，否则上一次的主按钮会留在那儿误导人。 */
+    if (usable) {
+      if (cancel) { cancel.classList.add("primary"); cancel.classList.remove("ghost"); }
+      if (pick) { pick.classList.add("ghost"); pick.classList.remove("primary"); }
+    } else {
+      if (pick) { pick.classList.add("primary"); pick.classList.remove("ghost"); }
+      if (cancel) { cancel.classList.add("ghost"); cancel.classList.remove("primary"); }
+    }
     const status = $("#psStatus");
     if (status) {
       status.classList.remove("bad");
       const bits = [];
-      if (st && st.sourceLabel) bits.push(`当前快照：${st.sourceLabel}`);
+      // 「无」不算来源：那一档要说的是「当前没有可用快照」，别写成「当前快照：无」
+      if (st && st.sourceLabel && st.sourceLabel !== "无") {
+        bits.push(`当前快照：${st.sourceLabel}`);
+      }
       if (st && st.fieldCount) bits.push(`${st.fieldCount} 个字段`);
-      if (st && st.generatedAt) bits.push(String(st.generatedAt).slice(0, 10));
+      if (at) bits.push(at);
       status.textContent = bits.length
         ? bits.join(" · ")
         : (isProject ? "当前没有可用的项目字段快照。" : `当前没有「${name}」的字段快照。`);
@@ -1123,7 +1187,8 @@ function bindProjectSnapshotModal() {
         if (btn) {
           btn.disabled = false;
           btn.textContent = state.plTargetKind === "project"
-            ? "选择项目 zip" : `选择「${plTargetLabel()}」zip`;
+            ? (psPickRefresh ? "导入项目 zip（刷新）" : "选择项目 zip")
+            : `选择「${plTargetLabel()}」zip`;
         }
       }
     };
@@ -1187,7 +1252,7 @@ function projLinkHeader() {
  * 为什么不能直接用 projLinkHeader()：它按**对象编码**记开关
  * （state.plLinked[code]），而 AI 这条路在点「开始生成」时还不知道对象编码——
  * 结果 objects 为空 → 整个头返回 null → 服务端以为用户没勾「关联」，
- * 生成的字段里自然就没有「项目选择」（2026-11-21 用户报的 bug）。
+ * 生成的字段里自然就没有「项目选择」（2026-11-20 用户报的 bug）。
  *
  * 格式与 projLinkHeader 完全一致（version/objects/target/snapshot），只是
  * objects 留空：服务端把「带头了」当成「这次要关联」，
@@ -2095,8 +2160,20 @@ function renderAiBo(d) {
     </tr>`;
   }).join("");
 
-  const notes = (d.notices || []).length
-    ? `<div class="ai-notes">${d.notices.map((n) => `<div>· ${esc(n)}</div>`).join("")}</div>` : "";
+  /* 选了「关联」却没生成链接字段 → 十有八九是第 1 步的关联没真正生效
+   * （未连库时项目字段池没准备好），必须在预览里说出来：否则用户要等下载
+   * Excel、甚至导入之后才发现少了「项目选择」。
+   * 两种正常情况不提示：关掉了关联；生成的对象本身就是关联目标（自关联不补）。 */
+  const notesList = [...(d.notices || [])];
+  const hasLink = (bo.fields || []).some((f) => f.isLink);
+  const selfTarget = !!(d.linkTarget && d.linkTarget.code === bo.code);
+  if (state.plPre === "on" && !hasLink && !selfTarget) {
+    notesList.unshift("⚠ 已选「关联项目」，但这次没有生成「项目选择」字段。"
+      + "常见原因：第 1 步的关联没有真正生效（未连库时需使用随包快照或导入项目 zip），"
+      + "或关联目标解析失败。请回到第 1 步确认「关联」仍处于选中状态后重新生成。");
+  }
+  const notes = notesList.length
+    ? `<div class="ai-notes">${notesList.map((n) => `<div>· ${esc(n)}</div>`).join("")}</div>` : "";
 
   const steps = (d.steps || []).map((s) => s.error
     ? `<span class="ai-step bad">${esc(s.step)}失败</span>`
