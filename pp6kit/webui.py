@@ -21,12 +21,13 @@ from urllib.parse import quote
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import ai_bo, ai_form, ai_list, ai_sheet, ai_wf, fieldtypes, objects
+from . import ai_bo, ai_form, ai_list, ai_sheet, ai_wf, blueprint, fieldtypes, objects
 from . import patch as bo_patch
 from .builder import build, ensure_default_workflow, ensure_project_links, package_name
 from .model import (
     FORM_BUNDLE,
     FORM_CREATE,
+    FORM_DETAIL,
     EMPTY_OPERATORS,
     HIDE_OPERATORS,
     OP_BY_LABEL,
@@ -36,6 +37,7 @@ from .model import (
     WF_STATE_BY_KIND,
     Bo,
     BoField,
+    DataSet,
     Form,
     FormField,
     HideRule,
@@ -46,6 +48,7 @@ from .gen_form import Snippets, _plan_groups, _plan_rows, _span_of
 from .inspect import inspect_path
 from . import modules as mod_def
 from . import spec
+from .model import object_name_of, value_source_key, value_source_key_notes
 from .reader import read_workbook
 from .template import build_workbook, demo_project
 from .nlq import engine as nlq_engine
@@ -157,8 +160,14 @@ def _snippets() -> dict:
 
 
 def _field_payload(bo) -> list[dict]:
+    """对象卡片上的字段清单。顺序 = 预览里看到的顺序。
+
+    「XX选择」链接字段（项目选择 / 合同选择）排第一：用户口径是这个字段要
+    置顶，进表单后也是先选它、再由联动带出其它字段。只改**预览顺序**，不动
+    ``sn``——sn 决定的是物理列顺序，存量包一改就等于要求线上 ALTER。
+    """
     out = []
-    for f in sorted(bo.fields, key=lambda x: x.sn):
+    for f in sorted(bo.fields, key=lambda x: (0 if getattr(x, "is_link", False) else 1, x.sn)):
         p = f.resolved()
         item = {
             "code": f.code,
@@ -243,16 +252,27 @@ def mod_payload(proj) -> list[dict]:
         "bo": len(proj.bos),
         "form": len(proj.forms),
         "list": len(proj.lists),
-        "dataset": sum(1 for d in proj.datasets if d.ds_type != mod_def.DS_FILTER),
-        "filter": sum(1 for d in proj.datasets if d.ds_type == mod_def.DS_FILTER),
+        # 三个都出自 proj.datasets，按 ds_type 分流（判据只在
+        # modules.module_of_dataset 一处，别在这里另写一遍 if）：
+        # 值来源单独一项，数据集不再把它算进去。
+        "dataset": sum(1 for d in proj.datasets
+                       if mod_def.module_of_dataset(d.ds_type) == "dataset"),
+        "value": sum(1 for d in proj.datasets
+                     if mod_def.module_of_dataset(d.ds_type) == "value"),
+        "filter": sum(1 for d in proj.datasets
+                      if mod_def.module_of_dataset(d.ds_type) == "filter"),
         "workflow": len(proj.workflows),
     }
     detail: dict[str, list[str]] = {
         "bo": [f"{b.name}（{b.code}）" for b in proj.bos],
         "form": [f"{f.name}" for f in proj.forms],
         "list": [f"{x.name}" for x in proj.lists],
-        "dataset": [f"{d.name}" for d in proj.datasets if d.ds_type != mod_def.DS_FILTER],
-        "filter": [f"{d.name}" for d in proj.datasets if d.ds_type == mod_def.DS_FILTER],
+        "dataset": [f"{d.name}" for d in proj.datasets
+                    if mod_def.module_of_dataset(d.ds_type) == "dataset"],
+        "value": [f"{d.name}" for d in proj.datasets
+                  if mod_def.module_of_dataset(d.ds_type) == "value"],
+        "filter": [f"{d.name}" for d in proj.datasets
+                   if mod_def.module_of_dataset(d.ds_type) == "filter"],
         "workflow": [w.name for w in proj.workflows],
     }
     out = []
@@ -267,7 +287,7 @@ def mod_payload(proj) -> list[dict]:
             "zipped": m.zipped,
             "count": counts.get(m.code, 0),
             "items": detail.get(m.code, []),
-            # 表单/列表在没有业务对象时导不进去；数据集与筛选器只按表名取数，不强制
+            # 表单/列表在没有业务对象时导不进去；值来源/数据集/筛选器按表名取数，不强制
             "needs": ["bo"] if m.code in ("form", "list") else [],
         })
     return out
@@ -467,14 +487,26 @@ def parse_excel(data: bytes, projlink_header: str | None = None) -> dict:
     notices.extend(
         f"自动生成默认流程：{line}" for line in ensure_default_workflow(proj)
     )
+    # 预览=产物：出包时每个对象都会多一份「自身的值来源」（见
+    # blueprint.ensure_self_value_sources）。预览不建的话，勾选树里「值来源」
+    # 永远是 0 项，用户以为这个模块没有内容。
+    notices.extend(blueprint.ensure_self_value_sources(proj))
     stats = {
         "业务对象": len(proj.bos),
         "字段": sum(len(b.fields) for b in proj.bos),
         "表单": len(proj.forms),
         "表单控件": sum(len(f.fields) for f in proj.forms),
         "列表": len(proj.lists),
-        "数据集": sum(1 for d in proj.datasets if d.ds_type != mod_def.DS_FILTER),
-        "筛选器": sum(1 for d in proj.datasets if d.ds_type == mod_def.DS_FILTER),
+        # 选择器单独一项（实例表是 6.1_值来源）：「数据集」把它们算进去的话，
+        # 用户对着「数据集 3」去 6_数据集 数只会数到 1 行。
+        # 键用「选择器」而不是「值来源」：模块叫选择器，一行实例才叫「xx值来源」
+        # （用户 2026-11-20 口径，逐字对齐勾选树的标签）。
+        "数据集": sum(1 for d in proj.datasets
+                      if mod_def.module_of_dataset(d.ds_type) == "dataset"),
+        "选择器": sum(1 for d in proj.datasets
+                      if mod_def.module_of_dataset(d.ds_type) == "value"),
+        "筛选器": sum(1 for d in proj.datasets
+                      if mod_def.module_of_dataset(d.ds_type) == "filter"),
         "流程": len(proj.workflows),
     }
     issues = ([Issue("error", "读取", e) for e in read_errors] + align_errors
@@ -549,7 +581,13 @@ def parse_excel(data: bytes, projlink_header: str | None = None) -> dict:
             for lst in proj.lists
         ],
         "datasets": [
-            {"key": ds.key, "name": ds.name, "table": ds.from_table, "type": ds.ds_type}
+            # module：这份数据源归哪个模块（dataset / value / filter）。
+            # 前端拿它分色/分组，别在 JS 里再按 type 字符串判一遍——
+            # 判据只有 modules.module_of_dataset 一处。
+            {"key": ds.key, "name": ds.name, "table": ds.from_table,
+             "type": ds.ds_type, "module": mod_def.module_of_dataset(ds.ds_type),
+             "auto": bool(ds.auto_generated),
+             "results": ds.result_text()}
             for ds in proj.datasets
         ],
         "issues": [
@@ -677,7 +715,7 @@ def build_zip(data: bytes, codes: list[str] | None = None,
                 "        流程对象的父子关系要能找到已存在的父对象）。",
                 "  流程固定为 开始 → 审核 → 通过；本工具不生成流程图 / 流程 XML。",
                 "",
-                "  ⚠ 本包**不含**普通业务对象——那部分走左侧「普通模式」出包。",
+                "  ⚠ 本包不含普通业务对象——那部分走左侧「普通模式」出包。",
                 "",
             ]
         lines += [
@@ -802,6 +840,12 @@ def confirmed_excel(data: bytes, relations_header: str | None = None,
             proj.link_target = target
             _projlink.apply(proj, align_decisions, target=target)
         for note in ensure_project_links(proj):
+            if note not in rel_notices:
+                rel_notices.append(note)
+        # 确认版 Excel 是用户的下一份底稿：每个对象的「自身的值来源」也要
+        # 在 6.1_值来源 里看得见（自动=是），否则他打开后改的是一份缺行，
+        # 再上传回来又得重新生成一遍。
+        for note in blueprint.ensure_self_value_sources(proj):
             if note not in rel_notices:
                 rel_notices.append(note)
 
@@ -976,7 +1020,12 @@ def import_module(data: bytes, code: str,
         _projlink.apply(proj, decisions, target=target)
     work = _tmp_dir("import-build")
     try:
-        res = build(proj, _snippets(), work, codes=[code], db_align=True)
+        # demote_unavailable_links=False：这条路是「按模块逐个上传」的排查用法
+        # （例：先导 data_template 的值来源，再导 form）。点「表单」这一行的
+        # 「导入」时包里当然没有值来源，但用户在另一个包里会导——提前把
+        # linkdata 降级成对象选择器，等于把联动/过滤整条链砍掉。
+        res = build(proj, _snippets(), work, codes=[code], db_align=True,
+                    demote_unavailable_links=False)
         if not res.deliverables:
             raise ValueError(f"「{mod_def.label(code)}」没有可导入的内容")
         d = res.deliverables[0]
@@ -1130,6 +1179,120 @@ def _resolve_link_target(decisions: dict | None):
         (decisions or {}).get("snapshot") or "")
 
 
+# ---------------------------------------------------------------- AI 路径的「XX选择」
+#
+# 标准 Excel 那条路靠 parse_excel → builder.ensure_project_links 补「项目选择」；
+# AI 这条路（一句话生成 / 需求文档解析 / 确认版 Excel）**完全不经过 build**，
+# 所以必须在这里补，而且是**两处都补**：
+#   ① 生成预览（ai_generate_bo / ai_from_sheet / ai_refine）：用户当场看的就是它，
+#      少了这个字段 = 用户报的「勾了关联项目，生成的字段里没有项目选择」；
+#   ② 导出的 Excel（ai_apply_bo）：用户拿这份回头出包时，1_业务对象 的
+#      「关联项目」必须已经是「是」，否则 ensure_project_links 连门都不进，
+#      字段永久丢失（线上就是没有「项目选择」，也没有数据库列）。
+# 只补①：预览好看，出包还是没字段；只补②：用户先看到的预览里没有，以为没生效。
+# 决策头格式与 parse/build 同一套（X-Project-Link），不新造格式。
+
+
+def _ai_link_target(projlink_header: str | None):
+    """AI 路径的目标解析：返回 ``(target, decisions)``，没带头时是 ``(None, None)``。
+
+    决策头非法（不是 JSON / version≠1）在这里就抛 ValueError —— 与 /api/parse
+    同口径，让路由回 400，而不是静默当成「没勾关联项目」（那正是用户投诉的形态：
+    开关亮了、结果没变化）。
+    """
+    if not projlink_header:
+        return None, None
+    from .projlink import parse_decisions as _pl_decisions
+
+    decisions = _pl_decisions(projlink_header)
+    if decisions is None:
+        return None, None
+    return _resolve_link_target(decisions), decisions
+
+
+def _ai_should_link(decisions: dict | None, code: str) -> bool:
+    """这个（刚生成的）对象要不要强制补「XX选择」。语义见 projlink 里那份实现。"""
+    from .projlink import decisions_link_object as _pl_link_object
+
+    return _pl_link_object(decisions, code)
+
+
+def _attach_ai_link(bo, target, decisions: dict | None,
+                    notices: list[str] | None = None,
+                    name: str = "") -> "BoField | None":
+    """给 AI 生成的对象补/复用「XX选择」链接字段，返回那个字段（不需要补时 None）。
+
+    复用 ``projlink.ensure_link_field`` —— 幂等规则、报错文案、sn 口径与
+    builder.ensure_project_links 共用同一份实现，两条路不会各说一套。
+    """
+    from . import projlink as _pl
+
+    if target is None or not _ai_should_link(decisions, bo.code):
+        return None
+    field, _created, note = _pl.ensure_link_field(bo, target, name=name)
+    if notices is not None:
+        notices.append(note)
+    return field
+
+
+def _prepend_link_control(form_payload: dict | None, field) -> bool:
+    """把「XX选择」控件放到 AI 设计的新建表单**第一行**（已有则挪位，不重建）。
+
+    为什么不交给 AI 表单设计器：它会把这个字段排到自认为合适的分组里，而用户
+    口径是「先选项目、再由联动带出其它字段」，顺序反了联动就不成立。控件类型也
+    只能是 ``linkdata``（挂值来源 + 联动 + 过滤），不能是普通下拉。
+
+    具体改写（fields + rows 两份都要动）在 ``ai_form.prepend_control``：预览页签与
+    导出的「4_表单控件」读的是同一份 payload，必须一次改全。
+    没带表单布局（form_payload 为空）时不用管：ai_apply_bo 会退回「标准全套」，
+    builder.ensure_project_links → _ensure_link_control 会补控件并置顶。
+    """
+    if not form_payload or not field:
+        return False
+    return ai_form.prepend_control(
+        form_payload, field.code, field.name, field.object_type or "")
+
+
+def object_field_options(code: str) -> dict:
+    """目标对象的字段清单，给「值来源」面板勾选返回列 / 过滤列。
+
+    三级来源与出包完全一致（本包 > 目标库 > 快照 > 离线），所以界面里能选的
+    列就是包里能生成的列——两边各查一次、口径不同的话，用户勾了「专业」却
+    生成不出来，属于最难解释的那种问题。
+    """
+    from . import links as _links
+
+    code = str(code or "").strip()
+    if not code:
+        return {"ok": False, "error": "缺少对象编码", "code": "", "fields": []}
+    plan = _links.LinkPlan(None)
+    target = plan.target(code)
+    if target is None:
+        return {"ok": True, "code": code, "label": code, "source": "none", "fields": []}
+
+    fields = []
+    for f in target.fields:
+        if f.type_new == "table":
+            continue                    # 子表不能当返回列
+        fields.append({
+            "code": f.code,
+            "name": f.label,
+            "column": f.column,
+            "type": f.type_new,
+            "objectType": f.object_type,
+            # system 的判定必须与生成侧**同一份**（links.LinkField.is_system）：
+            # 面板拿它决定「默认勾不勾」，而「返回全部业务字段」= 非系统列。
+            # 两边口径不同的话，面板把 create_time_/process_* 勾上、产物里却没有，
+            # 用户会觉得「勾了不生效」。
+            "system": f.is_system,
+            "key": f.column == target.id_column,
+        })
+    # 主键永远排第一：面板里它是要置灰必选的，放最前面最不容易被忽略
+    fields.sort(key=lambda x: (not x["key"], x["system"], x["code"]))
+    return {"ok": True, "code": code, "label": target.label,
+            "table": target.table, "source": target.source, "fields": fields}
+
+
 def link_target_status(name: str = "", code: str = "") -> dict:
     """界面「核对业务对象名称」用：库精确匹配 + 快照可用性。"""
     from . import projlink as _pl
@@ -1276,11 +1439,16 @@ def nlq_test_llm(payload: dict) -> dict:
 # ---------------------------------------------------------------- AI 生成业务对象
 
 
-def ai_generate_bo(payload: dict) -> dict:
+def ai_generate_bo(payload: dict, projlink_header: str | None = None) -> dict:
     """一句话 → 业务对象 + 表单 + 列表（三步流水线）。
 
     分三步而不是一次问完：每步输出小、成功率高、出错好定位。
     with_form / with_list 可以关掉某一步，只要对象。
+
+    projlink_header：X-Project-Link 请求头（与 /api/parse 同一套）。带了它 = 用户
+    在「第 1 步」选了关联业务对象，生成阶段就补「项目选择 / 合同选择」并置顶，
+    而不是等出包（AI 这条路不经过 build，等出包就永远等不到，2026-11-21 用户报的
+    就是这个）。目标解析/字段复用规则见 _ai_link_target / _attach_ai_link。
     """
     desc = " ".join((payload.get("description") or "").split())
     if not desc:
@@ -1294,11 +1462,19 @@ def ai_generate_bo(payload: dict) -> dict:
     notices: list[str] = []
     steps: list[dict] = []
 
+    # 目标对象要在生成**之前**解析好：解析不了（用户手输的名称在库里查不到）就直接
+    # 报错回 400，不能先花钱调三次模型再报「关联对象无效」。
+    link_target, link_decisions = _ai_link_target(projlink_header)
+
     pool = objects.ensure()
     bo_res = ai_bo.generate(desc, cfg, known_objects=pool)
     bo = bo_res["bo"]
     notices.extend(bo_res["notices"])
     steps.append({"step": "对象", "model": bo_res["model"], "seconds": bo_res["seconds"]})
+
+    # 链接字段插在**表单/列表设计之前**：设计器看得见它，才会把它当成本对象的
+    # 一部分（列宽、分组、列表列都跟着它走），否则预览里对象有字段、表单却没有控件。
+    link_field = _attach_ai_link(bo, link_target, link_decisions, notices)
 
     form_payload = None
     if want_form:
@@ -1311,6 +1487,9 @@ def ai_generate_bo(payload: dict) -> dict:
             # 表单失败不该让整个生成失败——对象已经生成了，用户还能用
             notices.append(f"表单设计没成功（{str(exc)[:60]}），已用默认布局代替")
             steps.append({"step": "表单", "error": str(exc)[:120]})
+        # 控件位置由我们定（置顶 + linkdata），不交给模型
+        if _prepend_link_control(form_payload, link_field):
+            notices.append(f"表单里已把「{link_field.name}」放到第一行（先选它，再由联动带出其它字段）")
 
     if want_form:
         notices.append("出包时会自动补一张只读详情表单：新建走新建表单，查看/流程走详情表单")
@@ -1349,6 +1528,9 @@ def ai_generate_bo(payload: dict) -> dict:
         "objectSource": objects.status(),
         "existObject": objects.lookup(bo.name),
         "relationships": relationships,
+        # 本次关联的目标对象（没关联时为 None）：前端据此显示「已关联：合同」，
+        # 出包/导出时也用它确认两边说的是同一个对象。
+        "linkTarget": (link_target.to_dict() if link_target is not None else None),
         "model": bo_res["model"],
         "seconds": round(sum(s.get("seconds", 0) for s in steps), 2),
     }
@@ -1366,18 +1548,26 @@ def ai_workflow(data: bytes, instruction: str, focus: str = "") -> tuple[bytes, 
 
 
 def ai_from_sheet(data: bytes, hint: str = "", with_form: bool = True,
-                  with_list: bool = True, sheet: str = "") -> dict:
+                  with_list: bool = True, sheet: str = "",
+                  projlink_header: str | None = None) -> dict:
     """非标准 Excel → 标准「对象 + 表单 + 列表」。
 
     和 ai_generate_bo 的区别只在「需求从哪来」：
     那边是一句话，这边是项目经理自己整理的表格。
     后半段（表单/列表设计、出 Excel）完全复用，保证两条路产物一致。
+
+    projlink_header：X-Project-Link 请求头。与 ai_generate_bo 同口径——两条 AI
+    入口都是「生成预览」，用户不会因为这次是上传表格而不是说一句话，就少一个
+    「项目选择」字段（少一处就是用户报的那个 bug）。
     """
     if not data:
         raise ValueError("没收到文件")
     cfg = _llm_conf()
     notices: list[str] = []
     steps: list[dict] = []
+
+    # 与 ai_generate_bo 同理：目标先解析，解析不了就别浪费三次模型调用
+    link_target, link_decisions = _ai_link_target(projlink_header)
 
     summary = ai_sheet.summarize(data, only=sheet or None)
     if not summary["sheets"]:
@@ -1408,6 +1598,9 @@ def ai_from_sheet(data: bytes, hint: str = "", with_form: bool = True,
     notices.extend(res["notices"])
     steps.append({"step": "映射字段", "model": res["model"], "seconds": res["seconds"]})
 
+    # 链接字段插在表单/列表设计之前（理由见 ai_generate_bo 同名注释）
+    link_field = _attach_ai_link(bo, link_target, link_decisions, notices)
+
     form_payload = None
     if with_form:
         try:
@@ -1418,6 +1611,8 @@ def ai_from_sheet(data: bytes, hint: str = "", with_form: bool = True,
         except Exception as exc:
             notices.append(f"表单设计没成功（{str(exc)[:60]}），已用默认布局代替")
             steps.append({"step": "表单", "error": str(exc)[:120]})
+        if _prepend_link_control(form_payload, link_field):
+            notices.append(f"表单里已把「{link_field.name}」放到第一行（先选它，再由联动带出其它字段）")
 
     list_payload = None
     if with_list:
@@ -1452,6 +1647,8 @@ def ai_from_sheet(data: bytes, hint: str = "", with_form: bool = True,
         "objectSource": objects.status(),
         "existObject": objects.lookup(bo.name),
         "relationships": relationships,
+        # 与 ai_generate_bo 同口径：本次关联的目标对象（没关联 = None）
+        "linkTarget": (link_target.to_dict() if link_target is not None else None),
         "model": res["model"],
         "sourceColumns": res.get("sourceColumns") or {},
         "sheets": [s["name"] for s in summary["sheets"]],
@@ -1479,13 +1676,146 @@ def _field_options(f: dict) -> dict:
     return opts
 
 
-def ai_apply_bo(payload: dict, relations_header: str | None = None) -> tuple[bytes, str]:
+def _source_configs(fields: list[dict]) -> dict[str, dict]:
+    """预览里「值来源」面板配的东西：字段编码 -> 配置。
+
+    形状（前端 state 原样回传）：
+
+        {"custom": true, "datasetKey": "", "filterField": "xiangMuLeiXing",
+         "filterTarget": "", "resultFields": ["id", "name", "zhuanYe"],
+         "linkage": [{"name": "zhuan_ye_", "field": "zhuanYe", "label": "专业"}]}
+
+    没配过的字段不在返回里；下游据此决定「自动推导」还是「按配置出」。
+
+    ``custom`` 是「用户动过面板没有」的标记（2026-11-20）：
+    面板在用户没动过时会把**全部业务字段**显示成勾上（那是后端的默认口径
+    「返回全部业务字段 + 主键、不加过滤」），如果把这批默认勾选当成用户配置
+    写进 6_数据集，后端就不再加全字段了——用户什么也没改，产物却从 38 列
+    变成他屏幕上看着的那几列。所以 ``custom !== true`` 时**忽略 resultFields**，
+    只认过滤字段与联动（那两项非动手不会出现）。
+
+    ``custom === true`` 但 ``resultFields`` 是空数组：用户把业务列**全取消**了
+    （只剩锁定的主键），或者是别的入口产出了空列表。这时不能写「返回字段为空」
+    ——空列表在生成侧等于「没配过」，产物落回默认全字段，于是又出现
+    「面板说 1 列、包里 38 列」。按「只返回主键 + 名称」处理（``["id"]``，
+    名称由 ``links.LinkTarget.result_list`` 强制补），并让调用方出一条 notice。
+    """
+    out: dict[str, dict] = {}
+    for f in fields or []:
+        if not isinstance(f, dict):
+            continue
+        code = str(f.get("code") or "").strip()
+        cfg = f.get("sourceConfig")
+        if not code or not isinstance(cfg, dict):
+            continue
+        custom = cfg.get("custom") is True
+        wanted = ([str(x).strip() for x in (cfg.get("resultFields") or []) if str(x).strip()]
+                  if custom else [])
+        linkage = [it for it in (cfg.get("linkage") or []) if isinstance(it, dict)]
+        fallback = False
+        if custom and not wanted:
+            # 见 docstring：空返回列不能当「没配过」，否则口径倒回全字段
+            wanted, linkage, fallback = ["id"], [], True
+        if not (wanted or linkage or str(cfg.get("filterField") or "").strip()):
+            continue
+        out[code] = {
+            "datasetKey": str(cfg.get("datasetKey") or "").strip(),
+            "filterField": str(cfg.get("filterField") or "").strip(),
+            "filterTarget": str(cfg.get("filterTarget") or "").strip(),
+            "resultFields": wanted,
+            "linkage": linkage,
+            "resultFallback": fallback,
+        }
+    return out
+
+
+def _apply_source_configs(proj, bo, fields: list[dict]) -> list[str]:
+    """把值来源配置落成值来源的行（+ 控件联动在表单段里带走）。
+
+    落的是 ``DataSet(ds_type=valueSource)``，写 Excel 时由 template.sheet_data
+    按 ds_type 分流到 ``6.1_值来源``（列表数据集 / 筛选器仍在 ``6_数据集``）。
+
+    为什么要在这里建 DataSet、而不是等 blueprint 自动建：自动建只按「同名
+    字段」推一套配置，用户在界面上勾的返回列 / 过滤字段 / 联动映射必须显式
+    写进 Excel，否则下次打开或换台机器就丢了（预览=产物这条铁律）。
+
+    同一目标对象 + 同一套配置复用一份值来源；配置不同就另起 `<key>_2`——
+    两个控件过滤条件不同却共用一份值来源时，导入后必有一个是错的。
+    """
+    from .modules import DS_VALUE
+
+    cfgs = _source_configs(fields)
+    if not cfgs:
+        return []
+    notices: list[str] = []
+    used: dict[str, tuple[str, str]] = {}     # 配置指纹 -> (target, key)
+    taken = {d.key for d in proj.datasets}
+    by_code = {f.code: f for f in bo.fields}
+    for code, cfg in cfgs.items():
+        bf = by_code.get(code)
+        target = (bf.object_type if bf is not None else "") or ""
+        if not target:
+            continue
+        fp = json.dumps([target, cfg["filterField"], cfg["filterTarget"],
+                         cfg["resultFields"]], ensure_ascii=False, sort_keys=True)
+        if fp in used:
+            continue
+        # 面板上传的键名还叫 datasetKey（前端契约，没改），语义是「这份值来源的
+        # key」。留空就按统一规则生成 <对象名翻英文>_value（冲突才 _2/_3）——
+        # 与 blueprint/reader 同一处真相，别在这里再拼一遍。名字优先、编码兜底：
+        # 对象编码本身可能是拼音（caiGou），拿它拼就是 caigou_value。
+        target_name = object_name_of(proj, target) or target
+        base = cfg["datasetKey"] or value_source_key(target, bo_name=target_name)
+        key = base
+        n = 2
+        while key in taken:
+            key = f"{base}_{n}"
+            n += 1
+        used[fp] = (target, key)
+        taken.add(key)
+        proj.datasets.append(DataSet(
+            key=key,
+            name=f"值来源_{bf.name}",
+            from_table=target,
+            ds_type=DS_VALUE,
+            filter_field=cfg["filterField"],
+            filter_target=cfg["filterTarget"],
+            result_fields=cfg["resultFields"],
+        ))
+        notices.append(f"值来源 {key}：按界面配置生成（过滤：{cfg['filterField'] or '自动'}，"
+                       f"返回 {len(cfg['resultFields']) or 2} 列）")
+        if not cfg["datasetKey"]:
+            # key 是工具生成的：词典缺词退拼音时要说清（用户才知道该去补词）
+            notices.extend(value_source_key_notes(key, target_name))
+        if cfg.get("resultFallback"):
+            # 用户把返回列全取消了：按「只返回主键 + 名称」生成，必须说出来。
+            # 不提示的话导入后发现下拉只有「名称」一列，用户会以为配置丢了。
+            notices.append(f"值来源 {key}：已按你的选择只返回主键/名称"
+                           f"（面板里把返回列都取消了）")
+    return notices
+
+
+def ai_apply_bo(payload: dict, relations_header: str | None = None,
+                notices: list[str] | None = None,
+                projlink_header: str | None = None) -> tuple[bytes, str]:
     """把 AI 生成的「对象 + 表单 + 列表」落成一份 Excel。
 
     前端会把 /api/ai/bo 的完整结果回传（含 form/list），
     这样用户看到的预览和下载到的 Excel 是同一份东西。
     没带 form/list 时（旧调用）退回默认布局，保证还能用。
     relations_header：用户在确认区做的关系决定，写进这份 Excel 的父子三列。
+    projlink_header：X-Project-Link（与 /api/parse 同一套）。这份 Excel 必须自己
+    带上「关联项目 = 是」+ 链接字段，原因有两层：
+      ① 用户下载后可能**线下改完再拖回来**，那时前端还会带一次头，能补救；
+      ② 但用户也可能拿着它去出包/给实施，这份 Excel 就是唯一的底稿——里面若
+         没有该字段、「关联项目」写着「否」，builder.ensure_project_links 连门
+         都不会进，字段就永久丢了（而且重新上传也补不回来）。
+    没带头时兜底：预览回传的字段里带 isLink 的，照样保留并置「关联项目=是」
+    （用户勾过、前端漏带头时不能把字段吃掉）。
+    notices：出参（可选）。值来源配置的提示（例如「你把返回列全取消了，
+    已按只返回主键/名称生成」）需要有人能看见——本函数的返回是一份二进制
+    xlsx，HTTP 那条路没有提示通道；调用方传一个 list 进来就能拿到，
+    同时这些行也会写进 app 日志，方便实施事后核对。
     """
     data = payload.get("bo") or {}
     if not data.get("code"):
@@ -1498,10 +1828,38 @@ def ai_apply_bo(payload: dict, relations_header: str | None = None) -> tuple[byt
     proj.module_id = demo.module_id
     proj.type_id = demo.type_id
 
+    # 关联业务对象：目标先解析（解析不了就别生成半份 Excel）
+    link_target, link_decisions = _ai_link_target(projlink_header)
+    proj.link_target = link_target
+    # 这次要不要**按目标**补链接字段（有目标 + 决策没说关）。
+    # 只有这种情况才把预览回传的那条「XX选择」从循环里摘出去：
+    # 它要按 sn = max+1 的口径重新注入，不能顺着数组顺序占掉 sn=1。
+    inject_link = (link_target is not None
+                   and _ai_should_link(link_decisions, data["code"]))
+    # 预览回传的「XX选择」字段（可能没有）：显示名要保住（用户/AI 改过）
+    payload_fields = data.get("fields") or []
+    link_payload = next(
+        (f for f in payload_fields if f.get("isLink")), None)
+    link_payload_code = str((link_payload or {}).get("code") or "")
+    link_payload_name = str((link_payload or {}).get("name") or "").strip()
+
     from .model import table_name_for
     bo = Bo(code=data["code"], name=data.get("name") or data["code"],
             tbl_name=table_name_for(data["code"]), desc=data.get("desc") or "")
-    for i, f in enumerate(data.get("fields") or [], start=1):
+    sn = 0
+    for i, f in enumerate(payload_fields, start=1):
+        # 只有「就是范式那条」（编码 == target.link_code）才摘出去，在循环后按
+        # sn = max+1 重注入。**复用来的非范式编码必须留在循环里**：AI 常自己给一个
+        # 「所属项目」（suoShuXiangMu），预览侧按口径复用它并打了 isLink；若这里
+        # 把它也摘掉，ensure_link_field 在 bo 里就找不到它、只能新建 projectId——
+        # 等于悄悄把列名从 suoShuXiangMu 改成 projectId（预览≠产物，线上要 ALTER），
+        # 而且 sn 会从 1 漂到 2、列表列与表单控件一起换掉。
+        if (inject_link and link_payload_code
+                and link_payload_code == link_target.link_code
+                and (not f.get("objectType") or f.get("objectType") == link_target.code)
+                and str(f.get("code") or "") == link_payload_code):
+            continue                 # 范式链接字段统一在循环后按 max+1 注入
+        sn += 1
         _groups = dict(f.get("choiceGroups") or {})
         _choices = list(f.get("choices") or [])
         # 分组里的子项必须都在 choices 里，否则 Excel 写出去会缺项
@@ -1531,9 +1889,50 @@ def ai_apply_bo(payload: dict, relations_header: str | None = None) -> tuple[byt
             # 表格字段的子列：AI 给的 columns 原样带进模型，下载到的 Excel
             # 才会在「2.1_表格列」里把列一行行写出来（否则用户只看到一张空子表）
             table_columns=ai_bo._clean_columns(f.get("columns")),
-            sn=i,
+            sn=sn,
         ))
     proj.bos.append(bo)
+
+    # ---- 「XX选择」链接字段：必须是这份 Excel 的一部分，不能等出包时补
+    # ① 带了决策头 → 按目标补/复用（与 builder.ensure_project_links 同一份
+    #    plan_link_field，已有指向目标的字段就复用，绝不加第二个）；
+    # ② 没带头、但预览回传里带 isLink → 把标记与「关联项目=是」保住。
+    #    前端漏带头时不至于把用户看到的字段吃掉（少一处会怎样的另一半）。
+    if inject_link:
+        _field = _attach_ai_link(bo, link_target, link_decisions, notices,
+                                name=link_payload_name)
+        # 控件也要进这张 Excel 的「4_表单控件」：否则用户在新建表单里选不到目标
+        # 对象（字段有、控件没有 = 下拉框根本不存在）
+        _prepend_link_control(data.get("form"), _field)
+    elif link_payload is not None:
+        _restore = bo.field_by_code(link_payload_code)
+        if _restore is not None:
+            # 没带头（或头里说这个对象不关联）但预览里明明有这个字段：
+            # 字段留着、标记打上、「关联项目」写「是」——用户看到过的东西不能凭空消失。
+            # is_link 到这里只是**内部标记**（Excel 里不存在这一列），
+            # 下次出包时 builder.ensure_project_links 会重新按目标判定并复用同一字段。
+            _restore.is_link = True
+            bo.project_link = True
+            if notices is not None:
+                notices.append(
+                    f"业务对象 {bo.code}: 已按预览保留链接字段 {_restore.code}"
+                    f"（{_restore.name}），1_业务对象 的「关联项目」写「是」")
+    # 界面上配的「值来源」先落成数据集：表单段要靠它接 linkdata，
+    # Excel 也要靠它把配置写进 6.1_值来源（预览=产物）。
+    src_notices = _apply_source_configs(proj, bo, data.get("fields") or [])
+    if src_notices:
+        if notices is not None:
+            notices.extend(src_notices)
+        # 提示不能只活在返回值里：这个接口回的是 xlsx，前端没有展示位。
+        # 落一行日志，用户反馈「下拉里怎么只有名称」时能对得上。
+        try:
+            from . import applog
+            log = applog.get("pp6kit.ai")
+            for line in src_notices:
+                log.info("%s", line)
+        except Exception:            # noqa: BLE001 —— 日志坏了不许影响出 Excel
+            pass
+    src_cfgs = _source_configs(data.get("fields") or [])
 
     # ---- 表单：优先用 AI 设计好的布局
     # 有效字段集合要在表单/列表两段之前算好：
@@ -1563,6 +1962,8 @@ def ai_apply_bo(payload: dict, relations_header: str | None = None) -> tuple[byt
         # 校验会报「控件引用的字典在对象里不存在」直接中止出包
         # （2026-11-12 用户截图：innovationPipeline 等四个控件全中招）。
         src_of = {}
+        # 关联对象字段：新建表单里必须是 linkdata（详情表单另按对象字段重出）
+        object_codes = {f.code for f in bo.fields if f.type_new == "object"}
         for f in bo.fields:
             if f.type_new == "dic":
                 # dic 一律用 dict_key()（对象编码_字段编码），**绝不**采信
@@ -1578,9 +1979,13 @@ def ai_apply_bo(payload: dict, relations_header: str | None = None) -> tuple[byt
             ftype = ff.get("type") or "text"
             if fname and ftype not in CONTAINERS and fname not in valid:
                 continue
-            if fname in src_of and ftype in ("select", "dictionary"):
+            if fname in src_of and ftype in ("select", "dictionary", "linkdata", "selectObject"):
                 # dic/object 控件：取值来源永远重算，陈旧值直接丢弃
                 vs = src_of[fname]
+                # 新建表单里的关联对象一律 linkdata（样本 config-sync-20261119184322）：
+                # AI 常给 "select"，那是旧口径——带不了值来源、联动和过滤条件。
+                if fname in object_codes:
+                    ftype = "linkdata"
             else:
                 vs = ff.get("valueSource") or src_of.get(fname) or ""
             form.fields.append(FormField(
@@ -1595,6 +2000,9 @@ def ai_apply_bo(payload: dict, relations_header: str | None = None) -> tuple[byt
                 readonly=bool(ff.get("readonly")),
                 full_row=bool(ff.get("fullRow")),
                 group=(ff.get("group") or "").strip(),
+                # 值来源的联动映射：界面面板上配的「返回列 → 本表单控件」。
+                # 没配就留空，生成阶段按物理列名自动对上（见 links._linkage）。
+                linkage=((src_cfgs.get(fname) or {}).get("linkage") or []),
             ))
         # 条件隐藏：前端没带就为空，带了就落成规则（引用了不存在的控件直接扔掉）
         names = {ff.name for ff in form.fields}
@@ -1639,6 +2047,19 @@ def ai_apply_bo(payload: dict, relations_header: str | None = None) -> tuple[byt
             key=f"create_{bo.code}", name=f"新建{bo.name}", bo_code=bo.code,
             kind=FORM_BUNDLE, form_type="form", layout=2,
         ))
+    else:
+        # AI 只画「新建」这一张，详情表单得按对象字段补一张：
+        #   · 关联对象在详情里必须是**原本字段类型** selectObject（样本
+        #     PP6/表单/项目详情表单 1.zip），不是新建页那种带值来源的 linkdata；
+        #   · 不补的话，AI 路径出的包没有详情页，列表「点开详情」无处可去。
+        from dataclasses import replace as _replace
+
+        from . import blueprint as _bp
+        _base = proj.forms[-1] if proj.forms else None
+        if _base is not None and _base.kind == FORM_CREATE and \
+                not any(f.bo_code == bo.code and f.kind == FORM_DETAIL for f in proj.forms):
+            proj.forms.append(_bp._make(
+                bo, FORM_DETAIL, _replace(_base, fields=[]), group_src=_base))
 
     # ---- 列表：优先用 AI 配的列和视图
     list_data = payload.get("list")
@@ -2321,6 +2742,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/objects":
             # 业务对象目录：接了库就是目标库里的真实对象，没接就是随包快照
             self._json({"ok": True, **objects.status(), "objects": objects.ensure()})
+        elif path == "/api/objects/fields":
+            # 值来源面板：目标对象有哪些列能当返回列 / 过滤列
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            self._json(object_field_options((qs.get("code") or [""])[0]))
         elif path == "/api/project-snapshot":
             # 关联项目要用「项目对象字段」：优先库、其次随包、再次用户上传的项目 zip。
             # 前端拿 dbConfigured 判断要不要弹「导入项目包」。
@@ -2333,8 +2759,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, **link_target_status(
                 (qs.get("name") or [""])[0],
                 (qs.get("code") or [""])[0])})
-        elif path == "/api/objects/lookup":
-            # 用户填了名字 → 查库里有没有：有就返回 id 和已有模板 key
+        elif path == "/api/objects/lookup":            # 用户填了名字 → 查库里有没有：有就返回 id 和已有模板 key
             from urllib.parse import parse_qs, urlparse
             qs = parse_qs(urlparse(self.path).query)
             name = (qs.get("name") or [""])[0]
@@ -2507,12 +2932,21 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     self._json({"ok": False, "error": f"文档解析失败：{exc}"})
             elif self.path == "/api/ai/bo":
-                self._json(ai_generate_bo(json.loads(self._body())))
+                # 与 /api/parse、/api/build 同一个决策头：AI 生成也要能「关联项目」。
+                # 头非法 → parse_decisions 抛 ValueError → 统一 400（不静默当成没勾）。
+                self._json(ai_generate_bo(json.loads(self._body()),
+                                          _projlink_header(self.headers)))
             elif self.path == "/api/ai/refine":
-                # 预览后不满意 → 在现有结果上按新指令改，不用从头重来
+                # 预览后不满意 → 在现有结果上按新指令改，不用从头重来。
+                # 微调也必须带同一个头：不然「改一句话」之后链接字段就掉档成普通
+                # object 字段（不置顶、值来源不是全字段），用户以为我们偷偷改了。
                 from . import ai_refine
                 try:
-                    self._json(ai_refine.refine(json.loads(self._body()), _llm_conf()))
+                    link_target, link_decisions = _ai_link_target(
+                        _projlink_header(self.headers))
+                    self._json(ai_refine.refine(json.loads(self._body()), _llm_conf(),
+                                                link_target=link_target,
+                                                link_decisions=link_decisions))
                 except Exception as exc:
                     self._json({"ok": False, "error": str(exc)}, 400)
             elif self.path.startswith("/api/ai/sheet"):
@@ -2524,10 +2958,14 @@ class Handler(BaseHTTPRequestHandler):
                 with_form = (qs.get("form") or ["1"])[0] != "0"
                 with_list = (qs.get("list") or ["1"])[0] != "0"
                 self._json(ai_from_sheet(self._body(), hint=hint, sheet=sheet,
-                                         with_form=with_form, with_list=with_list))
+                                         with_form=with_form, with_list=with_list,
+                                         projlink_header=_projlink_header(self.headers)))
             elif self.path == "/api/ai/bo/apply":
+                # 这条以前只收 X-Relations：导出的 Excel 因此永远写着「关联项目=否」，
+                # 用户拿它回头出包时 ensure_project_links 不补字段（2026-11-21 报的坑）。
                 body, name = ai_apply_bo(json.loads(self._body()),
-                                         _relations_header(self.headers))
+                                         _relations_header(self.headers),
+                                         projlink_header=_projlink_header(self.headers))
                 self._send(200, body,
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", name)
             elif self.path.startswith("/api/import/") and self.command == "POST":

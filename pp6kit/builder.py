@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import blueprint, gen_bo, gen_form, gen_tpl, gen_workflow, modules as mod_def
+from . import blueprint, gen_bo, gen_form, gen_tpl, gen_workflow, links, modules as mod_def
 from .gen_form import Snippets
 from .ids import new_id
 from .model import (
@@ -323,7 +323,7 @@ def ensure_system_fields(bo: Bo) -> list[str]:
 
 
 def _ensure_link_control(project: Project, bo: Bo, field: BoField) -> int:
-    """让该对象的每张表单都有「所属项目」下拉控件，返回新增条数。
+    """让该对象的每张表单都有「XX选择」下拉控件并在**第一行**，返回新增条数。
 
     两条路径共用这里（新增 projectId / 复用用户已有的 proj 字段）：
       - 只补字段不补控件 → 用户在新建/详情表单里根本选不到项目（实测抓到的坑：
@@ -331,28 +331,51 @@ def _ensure_link_control(project: Project, bo: Bo, field: BoField) -> int:
       - 去重只看控件 name == 字段编码 → 幂等：同一 Project 连续 build 两次
         （预览 + 出包，或确认版 Excel）不会 append 第二个同名控件。
 
+    位置：用户口径是「这个字段要在预览字段列表里置顶」，表单上也必须排第一
+    （新建表单里先选项目、再由联动带出专业/金额，顺序反过来就不成立）。
+    已经存在的控件只**挪位置**、不重建——否则用户手调的必填/只读/占宽会被
+    我们覆盖掉。
+
     value_source 先填对象编码（project），随后 blueprint._ensure_value_sources
-    会把它接到系统已有的 project 值来源数据集（没有才新建 project_value）。
+    会把它接到真正的值来源数据集（本包/系统已有则引用，没有才新建）。
+
+    控件类型按**表单种类**取（``blueprint.control_for(field, form.kind)``）：
+    新建/导入表单 → ``linkdata``（挂值来源 + 联动 + 过滤），
+    详情/展开详情/条件专用 → ``selectObject``（系统原本的字段类型，只带
+    boCode + store=id）。2026-11-19 对齐线上导出包 config-sync-20261119184322：
+    同一个字段在这两种表单里就是两种控件，以前这里硬编码 ``select``，
+    结果是新建表单的关联控件没有 linkdata/link_linkage/link_condition（下拉点开
+    是空的）、详情表单又带着值来源（页面形态与线上不一致）。
+
+    form.kind 用在这里是安全的：build() 里 ``blueprint.expand`` 排在
+    ``ensure_project_links`` 之前，标准全套已经展开成 create/detail/condition，
+    不会出现 kind=bundle 的表单。
     """
     added = 0
     for form in project.forms:
         if form.bo_code != bo.code:
             continue
-        if any(x.name == field.code for x in form.fields):
+        existing = next((x for x in form.fields if x.name == field.code), None)
+        if existing is not None:
+            # 幂等 + 置顶：不新增、只把它挪到首位（已经是首位就不动）
+            if form.fields and form.fields[0] is not existing:
+                form.fields.remove(existing)
+                form.fields.insert(0, existing)
             continue
-        form.fields.append(FormField(
+        form.fields.insert(0, FormField(
             form_key=form.key,
             name=field.code,
             label=field.name,
-            field_type="select",
+            field_type=blueprint.control_for(field, form.kind),
             value_source=field.object_type or "project",
         ))
         added += 1
     return added
 
 
-def ensure_project_links(project: Project) -> list[str]:
-    """给勾了「关联项目」的对象补「所属项目」链接字段（+ 表单控件）。
+def ensure_project_links(project: Project,
+                          announce_value_sources: bool = True) -> list[str]:
+    """给勾了「关联项目」的对象补「项目选择 / 合同选择」链接字段（+ 表单控件）。
 
     为什么补字段放在 builder 而不是 projlink.apply（架构 D3）
     --------------------------------------------------------
@@ -376,7 +399,7 @@ def ensure_project_links(project: Project) -> list[str]:
         if not getattr(bo, "project_link", False):
             continue
         if getattr(bo, "skip_link_field", False):
-            # 决策里明确说「只对齐、不补」（所属项目）链接字段——尊重它，别硬塞字段
+            # 决策里明确说「只对齐、不补」（XX选择）链接字段——尊重它，别硬塞字段
             continue
         plan = projlink.plan_link_field(bo, pool, target)
         if plan.action == "reject_self":
@@ -394,15 +417,24 @@ def ensure_project_links(project: Project) -> list[str]:
             existing = bo.field_by_code(plan.code)
             notices.append(f"业务对象 {bo.code}: {plan.note}")
             if existing is not None:
+                # 复用也是「本对象的 XX选择 字段」：打上 is_link 才会置顶、
+                # 值来源才按「全部业务字段 + 主键、不默认过滤」出。
+                # 用户原来的字段名/编码**不动**（存量包铁律：改列名等于 ALTER）。
+                existing.is_link = True
                 if _ensure_link_control(project, bo, existing):
                     notices.append(
                         f"业务对象 {bo.code}: 已给复用的链接字段 {existing.code}"
                         f"（{existing.name}）补上表单下拉控件")
             continue
         if bo.field_by_code(target.link_code) is not None:
-            # 幂等：parse 阶段已经补过一次（同一份 Excel 先预览再出包），
-            # 这次只补缺失的表单控件，不再追加第二个同编码字段
-            _ensure_link_control(project, bo, bo.field_by_code(target.link_code))
+            # 幂等：parse 阶段已经补过一次（同一份 Excel 先预览再出包，
+            # 或用户在「确认版 Excel」里把这一行写回来了），这次只补缺失的表单控件、
+            # 并把已有控件挪到首位；is_link 要重新打——Excel 往返不保存这个标记
+            # （它是我们内部的生成口径，不是系统字段），不打就会丢掉置顶与
+            # 「返回全部业务字段」两条口径。
+            existing = bo.field_by_code(target.link_code)
+            existing.is_link = True
+            _ensure_link_control(project, bo, existing)
             continue
         sn = max([f.sn for f in bo.fields], default=0) + 1
         field = projlink.link_field(name=plan.name, sn=sn, target=target)
@@ -413,8 +445,11 @@ def ensure_project_links(project: Project) -> list[str]:
             f"（{field.resolved_field_name()} varchar 64，sn={sn}）")
         # 已有表单也要看得见链接下拉，否则用户在新建/详情表单里选不到目标对象
         _ensure_link_control(project, bo, field)
-    # 幂等：把 select 控件的取值来源接到 project_value（命中系统已有则复用）
-    notices.extend(blueprint._ensure_value_sources(project))
+    # 幂等：把 select 控件的取值来源接到 project_value（命中系统已有则复用）。
+    # announce_value_sources=False 时只建模型、不报「已自动创建…」（没勾「选择器」
+    # 模块时那些值来源不进包，报出来会与「本次包里不含任何值来源」自相矛盾）。
+    notices.extend(blueprint._ensure_value_sources(
+        project, announce=announce_value_sources))
     return notices
 
 
@@ -925,12 +960,55 @@ def avoid_unupdatable_forms(project: Project) -> list[str]:
     return notices
 
 
+def _guard_template_key_clash(project: Project, plan) -> None:
+    """包里会出现两条同 key 的 ``data_template/*.xml`` → 直接报错。
+
+    为什么非拦不可：列表、数据集、值来源三者都落成 ``data_template/{key}.xml``
+    （只是 type 不同），导入端按 key 建模板，撞了就是**后写的那条静默盖掉前一条**
+    —— 包里两条、导入后一条，界面不报错，表现成「少了几个下拉」。
+
+    为什么在 build 里还要查一遍（``validate`` 已经查过）：validate 跑在补值来源
+    之前，而 ``ensure_self_value_sources`` 是 build 里才把 ``<对象>_value`` 加进来
+    的；用户列表 key 习惯写成 ``<对象>_value``，正好与自动生成的那份撞车。
+
+    只查**本次真会写进包**的模块：没勾列表时，不该被列表的 key 挡住。
+    """
+    taken: dict[str, tuple[str, str]] = {}
+    entries: list[tuple[str, str, str]] = []      # (key, 表名, 叫什么)
+    if plan.has("list"):
+        entries += [(x.key, "5_列表", f"列表「{x.name or x.key}」") for x in project.lists]
+    for ds in project.datasets:
+        code = mod_def.module_of_dataset(ds.ds_type)
+        if not plan.has(code):
+            continue
+        sheet = "6.1_值来源" if code == "value" else "6_数据集"
+        kind = "选择器" if code == "value" else "数据集"
+        entries.append((ds.key, sheet, f"{kind}「{ds.name or ds.key}」"))
+    for key, sheet, label in entries:
+        if not str(key or "").strip():
+            continue
+        prev = taken.get(key)
+        if prev is not None:
+            raise ValueError(
+                f"key「{key}」在 {prev[0]} 和 {sheet} 里都用了（{prev[1]} / {label}）："
+                f"两者都会写成 data_template/{key}.xml，导入时后一条会静默覆盖前一条，"
+                f"请改掉其中一个（例如列表 key 改叫 {key}_list）")
+        taken[key] = (sheet, label)
+
+
 def build(project: Project, snippets: dict, out_dir: Path | None = None,
-          codes: list[str] | None = None, db_align: bool = False) -> BuildResult:
-    """codes：要出包的模块（bo/form/list/dataset/filter）；None = 全部。
+          codes: list[str] | None = None, db_align: bool = False,
+          demote_unavailable_links: bool = True) -> BuildResult:
+    """codes：要出包的模块（bo/form/list/dataset/value/filter/workflow）；None = 全部。
 
     db_align：GUI/CLI 出包时按目标库已有对象对齐字段类型（更新导入不能改类型）。
     回归测试用 PP6_OFFLINE=1 强制关掉，保证产物与连库与否无关。
+
+    demote_unavailable_links：没勾「选择器」模块时，要不要把编辑态里的 linkdata
+    控件降级成 selectObject（避免指向包里不存在的值来源）。默认要降级——
+    出包页的勾选树就是「这一次包里到底有什么」，缺了就得说清楚。
+    **按模块逐个上传的老路要传 False**（见 webui.import_module）：那条路上用户
+    是分几次导的，值来源在另一个包里，提前降级会把联动整条链砍掉。
     """
     if os.environ.get("PP6_OFFLINE", "").strip() in ("1", "true", "yes"):
         db_align = False
@@ -950,6 +1028,15 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
     # 导出 XML 后原样上传」已经过时了（现在能真生成）。
     if plan.has("workflow") and not project.workflows:
         res.notices.append("选了「流程」但 9_流程 是空的，跳过流程生成")
+    # 没勾「选择器」时先说清楚。位置在最前面：后面的 ensure_project_links 仍会
+    # 在模型里建值来源（表单接线要用），只是不再对外报「已自动创建」——
+    # 由 announce_value_sources=False 关掉（见 blueprint._ensure_value_sources）。
+    # 这里必须是一条「不含」的明确结论，否则用户会去包里翻那几份他以为存在的东西。
+    if not plan.has("value") and demote_unavailable_links:
+        res.notices.append(
+            "没勾选「选择器」模块：本次包里不含任何值来源"
+            "（data_template 下只有列表 / 数据集 / 筛选器），"
+            "编辑态里挂值来源的控件会降级为对象选择器")
 
     # 手册：物理表名 = PP_ + 编码，由系统生成，无需手填
     for bo in project.bos:
@@ -962,8 +1049,10 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
     # 而反解来的旧 key 又留着，一个对象出两套互相覆盖的模板。
     res.notices.extend(normalize_derived_keys(project))
 
-    # 先按规范展开「标准全套」表单
-    res.notices.extend(blueprint.expand(project))
+    # 先按规范展开「标准全套」表单。
+    # 值来源那两句「已自动创建…」只在真会进包时才报（见下面的 plan 注释）。
+    res.notices.extend(blueprint.expand(
+        project, announce_value_sources=plan.has("value")))
 
     # 业务对象 options.formKey 必须指向它的「条件专用表单」，
     # 自动化/条件选择时才能动态取到已配好显示类型的字段
@@ -1027,15 +1116,38 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
             if added:
                 res.notices.append(f"业务对象 {bo.code}: 已自动补齐系统字段 {', '.join(added)}")
 
-        # 关联项目：补「所属项目」链接字段 + 表单控件 + 接 project_value。
+        # 关联项目：补「项目选择」链接字段 + 表单控件 + 接 project_value。
         # 位置很关键：进程字段/系统字段都已补完 → 链接字段 sn 必然最大（PRD A2）；
         # 在 objects.resolve_object_fields 之前 → object_type 参与归一；
         # 在详情表单与 gen_bo 之前 → 字段与控件都会被生成。
-        for line in ensure_project_links(project):
+        for line in ensure_project_links(project,
+                                         announce_value_sources=plan.has("value")):
             res.notices.append(line)
 
         # 更新导入：目标库已有字段的类型/长度锁回去（平台不支持 ALTER COLUMN）
         res.notices.extend(align_existing_object_fields(project, adopt=db_align))
+
+    # ---- 选择器 / 值来源（用户 2026-11-19、11-20 口径）
+    #
+    # 位置必须在 ensure_project_links 之后：那时系统字段、流程字段、链接字段
+    # 都已定稿，自身值来源「返回主键 + N 个自建字段」里的 N 才是最终数
+    # （返回列本身在渲染时才展开，这里只是把开关打开，见
+    # blueprint.ensure_self_value_sources 的说明）。
+    # 也必须在 _ensure_value_sources 之后：那个函数会给「指向别的对象」的值来源
+    # 按同名推导加过滤，先建自身那份的话它会被当成 <目标对象>_value 复用上过滤。
+    if plan.has("value"):
+        res.notices.extend(blueprint.ensure_self_value_sources(project))
+    elif demote_unavailable_links:
+        # 没勾「值来源」→ 包里不会写任何 data_template 值来源，
+        # 编辑态里挂值来源的 linkdata 必须先降级，否则控件指向空气
+        # （上面 plan 那一步已经先说明过了）。
+        res.notices.extend(blueprint.demote_links_without_value_package(project))
+
+    # 护栏：包里真的会出现两条同名 data_template/*.xml 就拦住（P2-3）。
+    # 位置必须在 ensure_self_value_sources 之后 —— validate 跑在 build_zip 的
+    # 「读表 → 对齐 → validate → build」第三步，那时自动生成的自身值来源还没进
+    # 模型，只在 validate 里查会漏掉「列表 key 撞 <对象>_value」这条最可能撞的。
+    _guard_template_key_clash(project, plan)
 
     # 库里已有同名对象 → 用它的 id，导入才是「更新」；否则新 id = 「新增」。
     # 判断依据就是目标库 iform_bo_def.id，填错就会多出一份同名字段的对象。
@@ -1135,7 +1247,10 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
                 form_key=dkey,
                 name=x.code,
                 label=x.name,
-                field_type=blueprint.control_for(x),
+                # 必须显式传 FORM_DETAIL：关联对象在详情表单是 selectObject
+                # （系统原本的字段类型，不带值来源），不传就是普通下拉 select，
+                # 与线上详情表单的形态不一致（样本 project_summary）。
+                field_type=blueprint.control_for(x, FORM_DETAIL),
                 # 同一处真相：dic 的取值来源要分全局/自定义两支
                 value_source=x.value_source(),
                 placeholder="",
@@ -1172,6 +1287,11 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
                                       len(xml.encode("utf-8")), "bo", xml))
 
     # ---- 表单
+    # 一份 LinkPlan 贯穿整个出包：目标对象字段清单只解析一次，且**值来源与
+    # 表单控件用的过滤列/返回列/rule_id 出自同一份计划**——两边各算一遍
+    # 时，rule_id 或过滤列一旦分叉，导入后筛选条件静默失效。
+    # 表单先渲染，所以计划必须在表单循环之前建好。
+    link_plan = links.LinkPlan(project)
     for form in project.forms if plan.has("form") else []:
         form.type_id = form.type_id or project.type_id
         bo = project.bo(form.bo_code)
@@ -1185,6 +1305,7 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
             # form.width 只作为用户显式指定时的逃生口。
             extend_patch=({"width": form.width} if form.width_explicit else {}),
             script=project.form_scripts.get(form.key, ""),
+            link=link_plan,
         )
         res.notices.extend(notices)
         zp, entry = _write_zip(out / "form", "form", f"{prefix}-{form.key}.xml", xml)
@@ -1218,7 +1339,7 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
         bo = project.bo(ds.from_table) or next(
             (b for b in project.bos if b.tbl_name == ds.from_table), None
         )
-        xml, notices = gen_tpl.render_dataset(ds, bo, snippets, tenant)
+        xml, notices = gen_tpl.render_dataset(ds, bo, snippets, tenant, link=link_plan)
         res.notices.extend(notices)
         zp, entry = _write_zip(out / "data_template", "data_template", f"{prefix}-{ds.key}.xml", xml)
         res.artifacts.append(Artifact(mod_def.of(code).label, ds.key, zp, entry,

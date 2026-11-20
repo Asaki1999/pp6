@@ -236,24 +236,30 @@ def _snake(word: str) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", "_", word).lower()
 
 
-def _english_words(text: str) -> list[str]:
-    """把中文名切成英文词：词典最长匹配，连续没命中的一段整体退拼音。"""
+def _english_tokens(text: str) -> list[tuple[str, str, bool]]:
+    """把中文名切成英文片段：``[(片段, 中文原文, 是否拼音兜底)]``。
+
+    第三个字段是「这段是怎么来的」，``pinyin_parts`` / ``has_pinyin`` 靠它
+    判断拼音兜底——用**切词时的原始归属**做判据，比事后拿结果反查词典靠谱：
+    结果按 ``_`` 切开后，「test_case」这种词典值自己就带下划线，反查会把一段
+    拆成两段；而拼音兜底的整段（kemu）也未必拼不出一个英文词形。
+    """
     text = _PUNCT.sub("", text)
-    out: list[str] = []
+    out: list[tuple[str, str, bool]] = []
     i, n = 0, len(text)
     top = max(len(w) for w in WORDS)
     while i < n:
         # 英文/数字片段原样保留（MAH、PPT、5G 这类），别被拼音吃掉
         m = re.match(r"[A-Za-z][A-Za-z0-9]*", text[i:])
         if m:
-            out.append(m.group(0).lower())
+            out.append((m.group(0).lower(), m.group(0), False))
             i += m.end()
             continue
         step = 0
         for length in range(min(top, n - i), 0, -1):
             hit = WORDS.get(text[i:i + length])
             if hit:
-                out.append(_snake(hit))
+                out.append((_snake(hit), text[i:i + length], False))
                 step = length
                 break
         if step:
@@ -265,9 +271,33 @@ def _english_words(text: str) -> list[str]:
         while j < n and not re.match(r"[A-Za-z]", text[j]) and not any(
                 text[j:j + ln] in WORDS for ln in range(1, min(top, n - j) + 1)):
             j += 1
-        out.append(_pinyin_fallback(text[i:j]))
+        out.append((_pinyin_fallback(text[i:j]), text[i:j], True))
         i = j
     return out
+
+
+def _english_words(text: str) -> list[str]:
+    """把中文名切成英文词：词典最长匹配，连续没命中的一段整体退拼音。"""
+    return [w for w, _cn, _py in _english_tokens(text) if w]
+
+
+def _object_name_text(name: str) -> str:
+    """对象名称归一：去括号补充说明、剥掉「记录 / 表 / 信息」这类无义尾巴。
+
+    ``object_code`` 与 ``pinyin_parts`` **必须走同一份归一**：两处各写一遍，
+    迟早出现「key 是 equipment_dianjian，提示里却说是别的词」这种对不上的情况。
+    """
+    text = (name or "").strip()
+    if not text:
+        return ""
+    # 括号里多是补充说明，带进编码只会让表名又长又碎
+    text = re.sub(r"[（(][^）)]*[）)]", "", text).strip() or text
+    # 「项目风险项表 / 合同记录」这类尾巴不参与命名（长后缀优先）
+    for suf in sorted(_SUFFIX_ITEM + _NOISE, key=len, reverse=True):
+        if text.endswith(suf) and len(text) > len(suf):
+            text = text[: -len(suf)]
+            break
+    return text
 
 
 def object_code(name: str) -> str:
@@ -296,19 +326,35 @@ def object_code(name: str) -> str:
         if "_" in cleaned and not cleaned.isupper():
             return cleaned.lower()
         return _snake(cleaned)
-    # 括号里多是补充说明，带进编码只会让表名又长又碎
-    text = re.sub(r"[（(][^）)]*[）)]", "", text).strip() or text
-    # 「项目风险项表 / 合同记录」这类尾巴不参与命名（长后缀优先）
-    for suf in sorted(_SUFFIX_ITEM + _NOISE, key=len, reverse=True):
-        if text.endswith(suf) and len(text) > len(suf):
-            text = text[: -len(suf)]
-            break
+    text = _object_name_text(text)
     words = [w for w in _english_words(text) if w]
     out = re.sub(r"[^a-z0-9_]", "", "_".join(words))
     out = re.sub(r"_+", "_", out).strip("_")
     if out and not out[0].isalpha():
         out = "bo_" + out
     return out[:40].rstrip("_")
+
+
+def pinyin_parts(name: str) -> list[tuple[str, str]]:
+    """``object_code(name)`` 里**退成拼音**的片段：``[(中文原文, 拼音)]``。
+
+    「项目预算科目」→ ``[("科目", "kemu")]``（项目/预算都命中了词典）；
+    「设备点检记录」→ ``[("点检", "dianjian")]``（「记录」是 ``_NOISE`` 尾巴，
+    本来就不参与命名，所以不算兜底）。
+
+    为什么需要它：词典缺词时 silently 出拼音，用户看到 ``project_budget_kemu``
+    只会觉得「这名字怪」，不会知道是自己该补词。有了这段归属信息，提示就能
+    精确说出「哪个中文词、退成了什么拼音」。
+    """
+    text = _object_name_text(name)
+    if not text or not _CJK.search(text):
+        return []                     # 纯英文对象名不走词典，谈不上拼音兜底
+    return [(cn, en) for en, cn, is_pinyin in _english_tokens(text) if is_pinyin]
+
+
+def has_pinyin(name: str) -> bool:
+    """``object_code(name)`` 里有没有拼音兜底出来的片段（用于出提示，见上）。"""
+    return bool(pinyin_parts(name))
 
 
 def short_code(code: str, limit: int = 32) -> str:

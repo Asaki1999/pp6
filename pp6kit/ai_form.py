@@ -370,3 +370,78 @@ def to_dict(form: Form) -> dict:
         "cascades": {ff.name: ff.cascade_parent for ff in form.fields if ff.cascade_parent},
         "rows": rows,
     }
+
+
+def prepend_control(form_payload: dict | None, name: str, label: str,
+                    value_source: str, field_type: str = "linkdata",
+                    full_row: bool = True) -> bool:
+    """把某个控件放到表单的**第一行**（已有则挪位，不重建），返回有没有动。
+
+    为什么要有这个函数：AI 设计的表单里，「先选项目/合同、再由联动带出其它字段」
+    这个顺序是业务要求，不能交给模型随缘排。而 ``to_dict`` 里的 ``rows``（分组
+    渲染用）与 ``fields``（顺序权威）两份都要跟着动，否则前端两个面板显示不一致。
+
+    ``form_payload`` 是 ``to_dict(form)`` 的产物（也就是前端回传给
+    /api/ai/bo/apply 的那份）。没带表单布局（None / 没有 fields）时返回 False：
+    调用方会退回「标准全套」，builder._ensure_link_control 会补控件并置顶。
+
+    「已有则挪位」分支**同时重算** type / valueSource / fullRow，不能因为
+    「它已经在第一行了」就早退：
+      · 复用场景下模型给的旧控件是 ``select``，不改成 ``linkdata`` 就没有
+        值来源/联动（导出侧被 ai_apply_bo 兜住，但预览里已经是另一副样子）；
+      · ``build_form`` 给的默认 ``fullRow=False``，只挪位置不改它，导出的新建
+        表单里这个控件就只占半行（span 12，和隔壁字段并排），而同一份 payload
+        的 ``rows`` 写的是整行 —— 预览和产物对不上。
+    """
+    if not form_payload:
+        return False
+    fields = form_payload.get("fields")
+    if not isinstance(fields, list):
+        return False
+    changed = False
+    existing = next((x for x in fields if str(x.get("name") or "") == name), None)
+    if existing is None:
+        fields.insert(0, {
+            "name": name,
+            "label": label,
+            "type": field_type,
+            "valueSource": value_source,
+            "readonly": False,
+            "required": False,
+            # 整行：链接字段后面常跟着由它联动带出的字段，半行会和它们挤在一起
+            "fullRow": full_row,
+            "cascadeParent": "",
+            "placeholder": "",
+            "group": "",
+        })
+        changed = True
+    else:
+        for key, want in (("type", field_type), ("valueSource", value_source),
+                          ("fullRow", bool(full_row))):
+            if existing.get(key) != want:
+                existing[key] = want
+                changed = True
+        if fields[0] is not existing:
+            fields.remove(existing)
+            fields.insert(0, existing)
+            changed = True
+    # rows 是「分组渲染」的数据源：不同步的话，用户在「表单布局」页签里看到的
+    # 还是原顺序/半行，会以为我们没把它置顶。整表重算再比一次，天然幂等。
+    want_rows: list[list[dict]] = []
+    for row in (form_payload.get("rows") or []):
+        if not isinstance(row, list):
+            continue
+        keep = [c for c in row if str(c.get("name") or "") != name]
+        if keep:
+            want_rows.append(keep)
+    want_rows.insert(0, [{"label": label, "name": name, "type": field_type,
+                          "valueSource": value_source, "required": False,
+                          "readonly": False, "placeholder": "", "fullRow": True,
+                          # span 与「本行只有一个控件」一致（gen_form._span_of 的口径）
+                          "span": 24, "group": ""}])
+    if want_rows != (form_payload.get("rows") or []):
+        form_payload["rows"] = want_rows
+        changed = True
+    if changed:
+        form_payload["fieldCount"] = len(fields)
+    return changed

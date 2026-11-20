@@ -43,6 +43,7 @@ import hashlib
 import uuid
 
 from . import gen_bo
+from . import links as _links
 from .gen_form import Snippets, node_field_meta
 from .model import (
     WF_BRANCH,
@@ -141,6 +142,10 @@ def render(wf: Workflow, bo: Bo, project: Project, snip: Snippets,
     def note(text: str) -> None:
         notices.append(f"流程 {wf.name}: {text}")
 
+    # 节点权限里的控件快照必须和表单产物逐键一致——关联对象的那几个键
+    # （linkdata/link_linkage/link_condition）要靠同一份计划才对齐。
+    link_plan = _links.LinkPlan(project)
+
     nodes = _ordered_nodes(wf, note)
     if not nodes:
         note("没有可用的节点（10_流程节点 是空的，或节点重复），已跳过这条流程")
@@ -219,7 +224,7 @@ def render(wf: Workflow, bo: Bo, project: Project, snip: Snippets,
         wrap("designer", [flow_def], indent=1),
         el("layout", "", _esc_text(_layout_json(nodes, ordered, tid_of, levels)), indent=1),
         el("nodePermissions", "",
-           _esc_text(_permissions_json(nodes, bo, snip, form_of, note)), indent=1),
+           _esc_text(_permissions_json(nodes, bo, snip, form_of, note, link_plan)), indent=1),
         "</workflowDefinition>",
     ]
     return "\n".join(body) + "\n", notices
@@ -840,7 +845,7 @@ def _layout_json(nodes: list[WfNode], edges: list[dict], tid_of: dict[int, int],
 
 
 def _permissions_json(nodes: list[WfNode], bo: Bo, snip: Snippets,
-                      form_of: dict[str, Form | None], note) -> str:
+                      form_of: dict[str, Form | None], note, link=None) -> str:
     """nodePermissions：每个 NormalActivity 一份字段权限。
 
     - 键 = 非判断节点的 activity Id（样本 v30 是 10 个键，判断节点不在里面）；
@@ -864,7 +869,7 @@ def _permissions_json(nodes: list[WfNode], bo: Bo, snip: Snippets,
             for ff in form.fields:
                 if ff.field_type in _SKIP_TYPES:
                     continue
-                ftype, options, fallback = node_field_meta(form, ff, snip)
+                ftype, options, fallback = node_field_meta(form, ff, snip, link, bo)
                 if fallback:
                     note(f"节点「{node.name}」的控件 {ff.name}：样例里没有 {ftype} 骨架，"
                          f"字段权限用了 text 兜底，导入后请核对")

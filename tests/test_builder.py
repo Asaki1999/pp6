@@ -45,9 +45,12 @@ def _():
 def _():
     body, _ = build(one_form_package())
     names = sorted(unzip(body))
+    # 序号是**生成顺序**（bo → form → list → data_template），
+    # 不是按目录名字典序，所以这里只要求「1..N 各出现一次」，
+    # 不再按 names 的字典序去比（bo/data_template/form 排序会把两边打乱）。
     nums = [int(m.group(1)) for n in names
             if (m := re.match(r"\w+/(\d+)-", n))]
-    assert nums == list(range(1, len(nums) + 1)), names
+    assert sorted(nums) == list(range(1, len(nums) + 1)), names
 
 
 @case("BLD03", "builder", "包内每个 XML 都能解析", "P0",
@@ -663,10 +666,13 @@ def _():
 
     first = None
     for name, text in texts(body).items():
-        if name.startswith("data_template/"):
-            node = next(ET.fromstring(text).iter("dataTemplateTpl"))
-            cols = json.loads(node.get("displayColumns") or "[]")
-            first = cols[0]
+        # data_template/ 下现在有两类：列表模板 + 值来源（值来源没有
+        # displayColumns）。这里只取列表那一份，按 key 认，别按「最后一个」。
+        if not name.startswith("data_template/") or 'key="purchase_list"' not in text:
+            continue
+        node = next(ET.fromstring(text).iter("dataTemplateTpl"))
+        cols = json.loads(node.get("displayColumns") or "[]")
+        first = cols[0]
     assert first is not None, "没有列表模板"
     assert first["name"] == "name_", "级联列没补到第一列"
     assert first["label"] == "名称" and first["objName"] == "pp_purchase"

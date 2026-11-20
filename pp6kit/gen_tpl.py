@@ -9,6 +9,9 @@ from .ids import new_id
 from .model import Bo, DataSet, ListDef
 from .xmlw import DECL_STANDALONE, el, json_attr, wrap
 
+# 值来源的过滤/返回列推导只信 links 一处（rule_id 必须与表单 link_condition 同源）
+from . import links as _links
+
 _VIEW_LABEL = {"grid": "表格视图", "board": "看板视图", "gantt": "甘特视图", "chart": "图表视图"}
 
 # 系统里的时间戳格式：2025-05-22T14:52:26+08:00（带时区偏移）
@@ -448,6 +451,34 @@ def render_list(listdef: ListDef, bo: Bo, form_key: str, snip: dict, tenant: str
     return xml, notices
 
 
+def _object_code_of(target) -> tuple[str, str]:
+    """值来源的 ``datasetKey`` / ``boCode``：**目标对象编码**（两处必须同值）。
+
+    返回 ``(对象编码, 推导说明)``；推导说明非空时由调用方出 notice。
+
+    为什么要单独抽出来：``datasetKey`` 以前写成了 ``ds.key``（这份值来源自己的
+    标识），与线上样本对不上——``out/ref-20261119/data_template/005-zlyglxmlx.xml``
+    是 ``datasetKey="project" key="zlyglxmlx" boCode="project"``，
+    ``docs/线上抓取-20261112/selector_list.json`` 那 203 条选择器**没有一条**
+    ``datasetKey == key``（如 ``key=pp_classification_value`` /
+    ``datasetKey=classification``）。写成 key 等于让「数据集外键」指向自己。
+
+    优先级与 ``links.LinkPlan.target`` 的解析链一致：
+      ① 本包对象 / 系统清单 / 字段快照 → ``target.code`` 就是对象编码，直接用；
+      ② 都没有（反解包、手写 Excel 只给了物理表名）→ ``target.code`` 是表名，
+         按平台命名规则去掉 ``pp_`` 前缀当编码，**并在 notice 里说明是推导的**
+         —— 宁可说出来，也不能静默把表名或 key 塞进 datasetKey。
+    """
+    code = str(getattr(target, "code", "") or "").strip()
+    if str(getattr(target, "source", "") or "") != "offline":
+        return code, ""
+    if not code.startswith("pp_") or len(code) <= 3:
+        return code, ""
+    derived = code[3:]
+    return derived, (f"datasetKey / boCode 由物理表名 {code} 推导为 {derived}"
+                     f"（对象编码既不在本包，也没在系统清单 / 字段快照里找到）")
+
+
 def _dataset_element(snip: dict, key: str, name: str, table: str, tenant: str) -> str:
     """列表/值来源底层的 dataSet 节点（系统导出中始终存在）。"""
     ds_attrs = dict(snip.get("dataSet") or {})
@@ -582,26 +613,179 @@ def _gantt_range(bo: Bo, listdef: ListDef):
     return start, end
 
 
-def render_dataset(ds: DataSet, bo: Bo | None, snip: dict, tenant: str = "-999") -> tuple[str, list[str]]:
-    """值来源 / 数据集：下拉框数据来源。"""
+def _result_column(target, f) -> dict:
+    """值来源的返回列（resultColumns 的一项）。
+
+    逐键对照样本 005-zlyglxmlx.xml：rights/same/field_type/field_options 是
+    「原始列、所有角色可见」的固定写法，objName 是**目标对象的表名**（不是本对象）。
+    """
+    label = f.label or f.code
+    return {
+        "rights": [{"type": "all"}],
+        "same": "Y",
+        "field_type": "orig",
+        "field_options": {},
+        "origLabel": label,
+        "label": label,
+        "name": f.column,
+        "dataType": f.datatype or "varchar",
+        "objName": target.table,
+        "objLabel": target.label,
+        "align": "center",
+    }
+
+
+def _filter_conditions(ds: DataSet, filt) -> list[dict]:
+    """filterConditions：值来源按表单控件过滤。
+
+    与表单 link_condition 共用同一个 rule_id（links.stable_code 派生），
+    两侧一旦不同，系统就认不出「这个条件听表单哪个控件」——下拉里永远是全量，
+    而表单上看着是配好的。
+    """
+    rule = {
+        "id": filt.column,
+        "field": filt.column,
+        "label": filt.label,
+        "type": filt.type,
+        "input": filt.input,
+        "operator": "equal",
+        "source": "dynamic",
+        "value": "text",
+        "field_source": "formField",
+        "field_date_type": "",
+        "field_custom_format": "",
+        "field_type": filt.type,
+        "field_input": "text",
+        "rule_id": filt.rule_id,
+        "desc": filt.rule_id,
+        "date_type": "",
+        "custom_format": "",
+        "origLabel": filt.label,
+    }
+    return [{
+        "label": "默认条件",
+        "key": _links.filter_key(f"{ds.key}:{filt.column}"),
+        "type": "condition",
+        "rights": [{"type": "all"}],
+        "filter": {"condition": "AND", "rules": [rule]},
+        "addType": {"isTrusted": True},
+        "combinationName": "",
+        "formFieldSource": "template",
+    }]
+
+
+def render_dataset(ds: DataSet, bo: Bo | None, snip: dict, tenant: str = "-999",
+                   link=None) -> tuple[str, list[str]]:
+    """值来源 / 数据集：下拉框数据来源。
+
+    形状逐键对照 docs/参考-关联对象值来源-20261119.md §2：
+
+      · dataTemplateDef   type=valueSource，unique/uniqueField **默认主键 id_**
+      · dataTemplateField 首条是**表名**（无 fieldType），其后每个需要选择控件/
+        候选值的列一条（带 fieldType/fieldOptions/sn）
+      · dataTemplateTpl   filterConditions + resultColumns（JSON），
+        resultColumns **强制包含主键**（没有主键值来源取不到值）
+
+    ``link`` 是 links.LinkPlan：目标对象可能不在本包里（project/customer 之类
+    的系统对象），要靠它去系统元数据/离线兜底里取字段清单。
+    """
     notices: list[str] = []
+    if link is not None and getattr(link, "project", None) is not None:
+        target = link.target(ds.from_table) or (
+            _links.target_from_bo(bo) if bo is not None else None)
+    else:
+        # 直接调（回归夹具/单测）没有 project 上下文：本包对象从 bo 拿，
+        # 其余走离线兜底，保证不因为没有项目上下文就把值来源出成空列。
+        target = (_links.target_from_bo(bo) if bo is not None else None) \
+            or _links.offline_target(ds.from_table, ds.name)
+    if target is None or not target.code:
+        target = _links.offline_target(ds.from_table or ds.key, ds.name)
+    # datasetKey / boCode 用同一个值：**目标对象编码**。解析链（本包 → 系统清单 →
+    # 字段快照 → 离线兜底）在 links.LinkPlan 里，这里只处理「只剩物理表名」那一档。
+    object_code, code_note = _object_code_of(target)
+    if code_note:
+        notices.append(f"值来源 {ds.key}: {code_note}")
+
+    results, explicit = target.result_list(ds.result_fields,
+                                           all_fields=ds.result_all)
+    # 过滤条件要从「谁在用这份值来源」那一侧推导：ds 只记目标对象，
+    # 源对象必须回查表单（见 links.LinkPlan.source_of）。显式配了
+    # `过滤字段=目标列` 的，目标列直接定；只写源字段的按同名推导。
+    src_bo, src_bf = link.source_of(ds.key) if link is not None else (None, None)
+    # 返回列与表单侧 link_linkage 必须同一份（见 links.with_linked_columns）：
+    # 自动联动到的列（专业/合同金额这种）也要真的出现在 resultColumns 里，
+    # 否则联动的是一条值来源不返回的列，选了值带不过来。
+    results = _links.with_linked_columns(target, src_bo, src_bf, results, explicit)
+    filt = _links.filter_of(ds, target, src_bo, src_bf)
+    if filt is not None and not ds.filter_target:
+        # 回写目标列：gen_form 的 link_condition 与 dataTemplateField 的
+        # 候选列都读这一个值，不回写就会两边各算一遍、有分叉风险。
+        ds.filter_target = filt.column
+    if filt is not None and filt.rebound_from:
+        # 配置里写的过滤字段在出包时已经不存在（对齐改名 / 反解包换了编码），
+        # 已按推导出的同名字段绑定。必须说出来：否则用户对着 Excel 里的
+        # 「过滤字段=xiangMuLeiXing」看，会以为过滤条件是他当初配的那一列。
+        notices.append(
+            f"值来源 {ds.key}: 过滤字段 {filt.rebound_from} 已不存在"
+            f"（可能被对齐改名），已按「{filt.source_label}」绑定")
+    if ds.filter_field and filt is None:
+        notices.append(
+            f"值来源 {ds.key}: 过滤字段 {ds.filter_field} 在目标对象 {target.code} 里"
+            f"找不到对应的列，已按不过滤生成（请到 6.1_值来源 补「过滤目标」，或写「过滤字段=目标列」）")
+    if explicit and not any(f.column == target.name_column for f in results):
+        notices.append(f"值来源 {ds.key}: 名称列 {target.name_column} 已强制加入返回列"
+                       f"（控件上显示的就是它）")
+
+    # 值来源底层的物理表：dataSet.from 与首条 dataTemplateField 的 name/objName
+    # 必须是同一个值（样本 005-zlyglxmlx.xml：<dataSet … from="pp_project"> 配
+    # <dataTemplateField name="pp_project" objName="pp_project"/>）。ds.from_table
+    # 里我们自己的行写的是**对象编码**（6_数据集 的「主表名」），反解来的包可能
+    # 已经带 pp_ 前缀，两种都认；值来源最终是拿这张表取数的，写编码等于 FROM
+    # 一张不存在的表。
+    ds_table = str(ds.from_table or "")
+    if not ds_table.startswith("pp_"):
+        ds_table = target.table
+
     tpl_id = new_id()
     def_src = dict(snip["def"].get(ds.ds_type) or {})
     attrs = json.loads(def_src.get("attrs") or "{}")
     attrs.setdefault("uniqueType", "varchar")
     attrs.setdefault("uniqueFieldType", "varchar")
+    # 样本 dataTemplateDef 的 attrs 里还有 title（= 值来源名称）：
+    # {"title":"值来源_过滤项目类型","uniqueType":"varchar","uniqueFieldType":"varchar"}。
+    # 缺了它，设计器里这份值来源的标题是空的，用户对着「值来源_xxx」的列表
+    # 分不出哪份是自己刚建的。
+    attrs.setdefault("title", ds.name)
 
     def_attrs = dict(def_src)
     def_attrs.update({
         "id": tpl_id,
-        "datasetKey": ds.key,
+        # boCode / dataAuthMode：值来源归属哪个对象、数据权限模式（0=按数据权限）。
+        # 样本 005-zlyglxmlx.xml 两个键都在；缺 boCode 时设计器里看不出这份
+        # 值来源是给哪个对象的，数据权限也会退回默认值。
+        # ⚠ boCode 与 datasetKey **必须是同一个值**（目标对象编码）；只有 key 是
+        # 这份值来源自己的标识。线上 203 条没有一条 datasetKey == key。
+        "boCode": object_code,
+        "dataAuthMode": def_src.get("dataAuthMode") or "0",
+        # datasetKey = **目标对象的编码**，不是这份值来源自己的 key！
+        # 依据（别再来回改）：
+        #   · 线上 203 条选择器（docs/线上抓取-20261112/selector_list.json）全是
+        #     datasetKey=对象编码、key=这份选择器自己的 slug；
+        #   · 样本 out/ref-20261119/data_template/005-zlyglxmlx.xml：
+        #     dataTemplateDef datasetKey="project" key="zlyglxmlx" boCode="project"，
+        #     底下 <dataSet key="project" name="项目" from="pp_project">。
+        # 以前写成 ds.key，等于让「数据集外键」指向自己、而底下那份 dataSet 的
+        # key 又是另一个值——设计器里这份选择器挂不到真正的数据集上。
+        # 列表那条（render_list）不动：样本 004-lllkk 的 datasetKey 是列表自己
+        # 的 key（glxmd1111），与选择器是两套口径。
+        "datasetKey": object_code,
         "name": ds.name,
         "key": ds.key,
         "type": ds.ds_type,
         "showType": def_src.get("showType") or "list",
         "composeType": def_src.get("composeType") or "treeList",
-        "unique": ds.unique_field,
-        "uniqueField": ds.unique_field,
+        "unique": ds.unique_field or target.id_column,
+        "uniqueField": ds.unique_field or target.id_column,
         "attrs": json_attr(attrs),
     })
     # 同 render_list：typeId / 时间戳不能继承骨架里的旧值（骨架来自某个具体样例，
@@ -613,29 +797,71 @@ def render_dataset(ds: DataSet, bo: Bo | None, snip: dict, tenant: str = "-999")
     def_attrs["createBy"] = ""
     def_attrs["updateBy"] = ""
     body = [wrap("dataTemplateDef", [el("tenantId", "", tenant, indent=3)], def_attrs, indent=2)]
+
+    # 首条 = 表名（系统导出里每份 dataTemplate 都有一条 objName/name 同值的表行）。
+    # name / objName 是**物理表名**（与 dataSet.from 同一个值），label 是**目标
+    # 对象显示名**（样本是「项目」），不是值来源名——写成对象编码 + 值来源名的话，
+    # 同一份 XML 里 dataSet 说 pp_project、这一行说 project，设计器按表名对数时
+    # 对不上，界面上这份值来源就挂不到表上。
     body.append(el("dataTemplateField", {
         "id": new_id(),
         "templateId": tpl_id,
-        "name": ds.from_table,
-        "label": ds.name,
-        "objName": ds.from_table,
+        "name": ds_table,
+        "label": target.label or target.code,
+        "objName": ds_table,
     }, indent=2))
 
-    result_columns = [
-        {"origLabel": "主键", "label": "主键", "name": ds.id_field, "dataType": "varchar",
-         "objName": ds.from_table, "objLabel": ds.name},
-        {"origLabel": "名称", "label": "名称", "name": ds.name_field, "dataType": "varchar",
-         "objName": ds.from_table, "objLabel": ds.name},
-    ]
-    body.append(wrap("dataTemplateTpl", [el("tenantId", "", tenant, indent=3)], {
+    # 其后：需要「选择控件 + 候选值」的列各一条。过滤列也写一条——
+    # 设计器的过滤条件面板就是按这些列选字段的，缺了它过滤条件选不出来。
+    picker_cols: list = []
+    filter_field = target.field(ds.filter_target) if ds.filter_target else None
+    if filter_field is not None and filter_field.needs_picker():
+        picker_cols.append(filter_field)
+    for col in results:
+        if col.needs_picker() and all(col.column != c.column for c in picker_cols):
+            picker_cols.append(col)
+    for col in picker_cols:
+        attr = {
+            "id": new_id(),
+            "templateId": tpl_id,
+            "name": col.column,
+            "label": col.label or col.code,
+            "objName": ds_table,
+            "fieldType": "select",
+            "fieldOptions": json_attr(col.picker_options(target.code)),
+        }
+        if col.sn:
+            attr["sn"] = col.sn
+        body.append(el("dataTemplateField", attr, indent=2))
+
+    tpl_attrs = {
         "id": new_id(),
         "templateId": tpl_id,
-        "resultColumns": json_attr(result_columns),
+        "resultColumns": json_attr([_result_column(target, f) for f in results]),
         "attrs": json_attr({"sqlOptimize": True, "toRepeat": True}),
-    }, indent=2))
+    }
+    if filt is not None:
+        # 样本里 filterConditions 在 resultColumns 之前
+        tpl_attrs = {
+            "id": tpl_attrs["id"],
+            "templateId": tpl_id,
+            "filterConditions": json_attr(_filter_conditions(ds, filt)),
+            "resultColumns": tpl_attrs["resultColumns"],
+            "attrs": tpl_attrs["attrs"],
+        }
+    body.append(wrap("dataTemplateTpl", [el("tenantId", "", tenant, indent=3)],
+                     tpl_attrs, indent=2))
 
-    ds_attrs = dict(snip.get("dataSet") or {})
-    body.append(_dataset_element(snip, key=ds.key, name=ds.name, table=ds.from_table, tenant=tenant))
+    # 同一份 XML 里表名只有一个真相：dataSet.from、首条表名行、各列的 objName
+    # 都用 ds_table（物理表），否则设计器按表名对数时会认为自己挂错表。
+    # dataSet 的 key/name 跟着 datasetKey 走（= 目标对象编码 / 对象名），与
+    # dataTemplateDef.datasetKey 是同一个值——样本 005：
+    # <dataTemplateDef datasetKey="project"> + <dataSet key="project" name="项目" from="pp_project">。
+    # 写成 ds.key/ds.name 的话，两条选择器会各自声明一份不同 key 的 dataSet，
+    # 而外键指向的 project 谁也不认，导入后这份选择器取不到数。
+    body.append(_dataset_element(snip, key=object_code,
+                                 name=target.label or object_code,
+                                 table=ds_table, tenant=tenant))
 
     xml = "\n".join([
         DECL_STANDALONE,

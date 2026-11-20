@@ -75,6 +75,24 @@ def _is_banned_import_field(ff) -> bool:
     return any(k in label for k in _BANNED_IMPORT_LABELS)
 
 
+def _value_source_auto(bo: Bo | None, ff) -> bool:
+    """这个下拉/关联控件的取值来源会不会被**自动**接上？
+
+    接上之后再报「未填取值来源」就是噪音：object 字段的取值来源统一由
+    ``blueprint._ensure_value_sources`` 建/接（目标在本包、在系统清单、有字段
+    快照、离线兜底，四条路都有人兜），用户既改不掉也不需要改。何况本函数跑在
+    「关联对象/字典」被 resolve 之前，编码都还没定，这时他就算想填也不知道填什么。
+
+    只豁免 object 字段：非 object 的手写 select（比如把某个选项字段做成了下拉）
+    没填取值来源就是真的漏了，那条警告要留着。
+    关联对象填错/留空另有 ``_check_object_ref`` 的专门提示，不会被这条豁免吃掉。
+    """
+    if bo is None or ff is None:
+        return False
+    bf = bo.field_by_code(ff.name)
+    return bf is not None and bf.type_new == "object"
+
+
 def _widget_issues(form, bo, where: str, proj: Project) -> list[Issue]:
     """控件层面的检查，跟「表单是标准全套还是单张」无关，两种入口都要跑。
 
@@ -170,6 +188,48 @@ def _layout_notes(form) -> tuple[list[str], list[str]]:
             f"分了 {len(groups)} 个区（{'、'.join(t for t, _ in groups[:8])}…），"
             f"详情页要滚很久，建议合并到 {_GROUP_SOFT_LIMIT} 个以内")
     return wide, notes
+
+
+def _template_sheet_of(ds) -> str:
+    """一份 DataSet 是从 Excel 哪张表来的（报错要指到用户能改的那一格）。"""
+    from . import modules as _mod
+
+    return "6.1_值来源" if _mod.module_of_dataset(ds.ds_type) == "value" else "6_数据集"
+
+
+def _check_cross_module_keys(proj: Project, issues: list[Issue]) -> None:
+    """列表 / 数据集 / 值来源的 key 必须**跨表**唯一。
+
+    三者最终都落成 ``data_template/{key}.xml``（列表 type=default、值来源
+    type=valueSource、数据集同理），导入端按 key 建模板 —— 撞了就是**后一条
+    静默覆盖前一条**：包里明明有两条 XML，导入后只剩一条，界面不报错、数据看着
+    也「少了几个下拉」。表内查重（上面的 used_list / used_ds）拦不住这种撞法，
+    所以这里按「5_列表 vs 6_数据集 vs 6.1_值来源」再查一遍。
+
+    为什么是 error 不是 warn：没有任何一种「两个模块共用同一个 key」是安全的，
+    用户真正想要的多半是「复制一份再改」（改个 key 就行）。
+    """
+    seen: dict[str, tuple[str, str]] = {}
+    for lst in proj.lists:
+        key = str(lst.key or "").strip()
+        if key:
+            seen.setdefault(key, ("5_列表", f"列表「{lst.name or key}」"))
+    for ds in proj.datasets:
+        key = str(ds.key or "").strip()
+        if not key:
+            continue
+        sheet = _template_sheet_of(ds)
+        kind = "选择器" if sheet == "6.1_值来源" else "数据集"
+        label = f"{kind}「{ds.name or key}」"
+        prev = seen.get(key)
+        if prev is not None:
+            issues.append(Issue(
+                "error", f"{sheet} {key}",
+                f"key「{key}」在 {prev[0]} 和 {sheet} 里都用了"
+                f"（{prev[1]} / {label}）：两者都会写成 data_template/{key}.xml，"
+                f"导入时后一条会静默覆盖前一条，请改掉其中一个"))
+            continue
+        seen[key] = (sheet, label)
 
 
 def validate(proj: Project) -> list[Issue]:
@@ -280,7 +340,8 @@ def validate(proj: Project) -> list[Issue]:
                 continue
             if bo is not None and bo.field_by_code(ff.name) is None and ff.name not in ("id", "version", "pinyin"):
                 issues.append(Issue("warn", w, f"控件 {ff.name} 在对象字段中不存在，可能无法保存数据"))
-            if ff.field_type in ("select", "linkdata") and not ff.value_source:
+            if ff.field_type in ("select", "linkdata") and not ff.value_source \
+                    and not _value_source_auto(bo, ff):
                 issues.append(Issue("warn", w, f"控件 {ff.name} 是下拉类控件但未填取值来源"))
             # 字典控件引用的 key 必须能在对象里找到。
             # 引错了（比如没带对象前缀）会退化成「固定值 + 候选值」两套，
@@ -350,6 +411,8 @@ def validate(proj: Project) -> list[Issue]:
         used_ds.add(ds.key)
         if not ds.from_table:
             issues.append(Issue("error", w, "主表名为空"))
+
+    _check_cross_module_keys(proj, issues)
 
     # 父子/平行关系专项校验：父对象必须真实存在、关联字段必须属于本对象。
     # 库里 226 个 object 字段里有 2 条 objectType 是无效编码的历史脏数据，

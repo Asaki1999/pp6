@@ -8,7 +8,7 @@ from openpyxl.styles.differential import DifferentialStyle
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
-from . import fieldtypes, spec
+from . import fieldtypes, modules as mod_def, spec
 from .model import LABEL_BY_OP, Project
 
 HEADER_FILL = PatternFill("solid", fgColor="2F5597")
@@ -95,6 +95,7 @@ def sheet_data(proj: Project) -> dict[str, list[list]]:
                 "是" if ff.required else "否", "是" if ff.readonly else "否",
                 "是" if ff.full_row else "否", "是" if ff.newline else "否",
                 ff.group, ff.cascade_parent, _dump_json(ff.options),
+                ff.linkage_text(),
             ])
 
     for lst in proj.lists:
@@ -104,8 +105,35 @@ def sheet_data(proj: Project) -> dict[str, list[list]]:
         ])
 
     for ds in proj.datasets:
+        # 值来源单独一张表（6.1_值来源），列表数据集 / 筛选器仍在 6_数据集。
+        # 分流的判据是 ds_type 而不是「有没有过滤列」：值来源和数据集在系统里
+        # 是同一个导入入口，但配置项是两套，混在一张表里用户分不清哪行是哪种。
+        #
+        # 这一行的「值来源key」是控件「取值来源」引用的 key（**对象名翻英文**，
+        # 采购申请 → purchase_apply_value；未收录的词退拼音并提示），
+        # 而下面「对象编码」列 / 包里的 datasetKey 仍是**对象编码**（caiGou）：
+        # key 是这份值来源自己的标识，datasetKey 是它取哪个对象的数据。
+        if ds.ds_type == mod_def.DS_VALUE:
+            out[spec.S_VALUE].append([
+                ds.key, ds.name,
+                # 「对象编码」写**对象编码**（6_数据集 的「主表名」写物理表名）：
+                # 值来源是「取哪个对象的数据」，用户脑子里是对象不是表；
+                # 读回时按 bo.code 反查 tbl_name，往返一致。
+                _value_bo_code(proj, ds),
+                ds.id_field, ds.name_field, ds.unique_field,
+                ds.result_text(), ds.filter_text(), ds.filter_target,
+                "是" if ds.auto_generated else "否",
+                "",          # 说明：仅备注，不写回
+            ])
+            continue
         out[spec.S_DATASET].append([
             ds.key, ds.name, ds.from_table, ds.ds_type, ds.unique_field, ds.id_field, ds.name_field,
+            ds.filter_text(),
+            # 列表数据集 / 筛选器没有「返回列」这档配置（筛选器只挑条件），
+            # 保持以前的写法（只写显式列过的，否则留空）；值来源行才走三档口径
+            # （显式清单 / `*` / `id,name`），见 model.DataSet.result_text。
+            ds.result_text() if ds.ds_type == mod_def.DS_VALUE
+            else ",".join(ds.result_fields),
         ])
 
     for fkey, script in proj.form_scripts.items():
@@ -227,6 +255,20 @@ def _dump_json(value: dict) -> str:
     import json
 
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _value_bo_code(proj: Project, ds) -> str:
+    """值来源的目标对象 → 写进 Excel 的「对象编码」。
+
+    ``DataSet`` 只记目标表（``from_table``，可能是对象编码也可能是物理表名，
+    反解来的包两种都有），Excel 这一列统一写**对象编码**：
+      · 本包对象 → bo.code（读回时按它反查 tbl_name，往返才一致）；
+      · 系统对象（project / customer 这类不在本包里的）→ 原值照写，
+        reader 反查不到就原样用，生成的 ``dataSet.from`` 由目标解析兜底。
+    """
+    tbl = str(ds.from_table or "").strip()
+    bo = proj.bo(tbl) or next((b for b in proj.bos if b.tbl_name == tbl), None)
+    return bo.code if bo is not None else tbl
 
 
 def _style_sheet(ws, cols: list[spec.Col]) -> list[int]:

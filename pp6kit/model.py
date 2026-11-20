@@ -7,7 +7,23 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import naming
+
 # ---------------------------------------------------------------- 工具函数
+
+# 数据集/值来源在 Excel 里表达「默认口径」的两个符号。
+#
+# 为什么需要它们：值来源有三档配置，光靠「留空 / 填值」表达不了——
+#   过滤：留空 = 按同名自动推导；`无` = 一条过滤都不要（自身值来源、XX选择）
+#   返回：留空 = 只有主键 + 名称；`*` = 主键 + 名称 + 全部自建字段
+# 精确到「一个符号一档」，往返 Excel 才不会把两档悄悄合并成同一档
+# （沿用 10_流程节点 里「退回节点=无」的写法，用户一看就懂）。
+FILTER_NONE = "无"
+RESULT_ALL = "*"
+# 「只要主键 + 名称」必须**显式写出来**：`6.1_值来源` 的「返回字段」留空已经
+# 表示「全部自建字段」（用户口径：返回结果默认 = 主键 + 全部自建字段），
+# 留空与最小列不能是同一格，否则往返一次口径就翻。
+RESULT_MIN = "id,name"
 
 
 def slug(text: str) -> str:
@@ -42,6 +58,204 @@ def parse_json(value: Any, where: str, errors: list[str]) -> dict:
 def split_list(value: Any) -> list[str]:
     text = str(value or "").replace("，", ",").replace("、", ",")
     return [x.strip() for x in text.split(",") if x.strip()]
+
+
+def value_source_key_base(bo_code: str, bo_name: str = "") -> str:
+    """值来源 key 的词干：**中文对象名翻英文**优先，没有名字才退对象编码。
+
+    为什么用 ``naming.object_code`` 而不是 ``naming.to_english``
+    ------------------------------------------------------------
+    ``to_english`` 是**拼音优先**的（专给字段编码 / 物理列名用，规则可预测），
+    拿它翻「采购申请」得到 ``cai_gou_shen_qing``；而对象编码这一层早就是
+    「英文词典优先、查不到才退拼音」（``naming.py:282`` 那段说明讲的就是
+    为什么——对象编码会派生物理表名 ``pp_<code>``，拼音在系统里一张表都找不到）。
+    选择器的 key 是给人看、给控件引用的机器标识，跟对象编码同一族最省心：
+    ``采购申请 → purchase_apply`` → key ``purchase_apply_value``。
+
+    对象的编码恰恰**可能是拼音**（``caiGou`` / ``cai_gou`` 这类历史编码），
+    直接拿编码拼就是 ``caigou_value``——用户 2026-11-20 明确问「key 怎么是拼音」，
+    这个函数就是那条口径的落点：**用名字翻英文，编码只做兜底**。
+    """
+    name = str(bo_name or "").strip()
+    if name:
+        got = naming.object_code(name)
+        if got:
+            return got
+    return str(bo_code or "").strip().lower() or "bo"
+
+
+def value_source_key(bo_code: str, taken=None, bo_name: str = "") -> str:
+    """对象 → 它那份值来源的 key：``<对象名翻英文>_value``，第二份起 ``_2`` / ``_3``。
+
+    **key 由我们生成，不让用户算**（用户 2026-11-20 口径）。三条约束合起来才是这个实现：
+
+      1. 平台/校验要求 dataTemplate 的 key 小写开头、只含小写/数字/下划线
+         （``validate.KEY_RE``）。词干走 ``naming.object_code``，出来的必然
+         符合这个形状——哪怕对象编码是驼峰（``caiGou``）也一样，因为**编码
+         只在不传名字时才用**，那时才需要 ``lower()``。
+      2. 线上 203 条选择器的 key 全是小写英文 slug
+         （``classification_value`` / ``customer_value`` …），``<英文名>_value``
+         是它们的默认形态。
+      3. 同一个对象可以有多份选择器（全部 / 按项目类型过滤 / …），key 不能撞：
+         传 ``taken`` 进来就按出现顺序取第一个空位 ``_value`` → ``_2`` → ``_3``。
+
+    ``bo_name`` 是**对象名称**（采购申请），``bo_code`` 是**对象编码**（caiGou）：
+    两者是两回事，key 只跟名字走，``datasetKey`` / ``boCode`` 仍写编码
+    （见 gen_tpl.render_dataset）。名字查不到时调用方应出一条提示（不静默）。
+    """
+    base = f"{value_source_key_base(bo_code, bo_name)}_value"
+    used = set(taken or ())
+    if base not in used:
+        return base
+    n = 2
+    while f"{base}_{n}" in used:
+        n += 1
+    return f"{base}_{n}"
+
+
+def value_source_key_notes(key: str, bo_name: str) -> list[str]:
+    """key 生成后的可查痕迹：词典缺词、退成拼音时说清楚是哪几个词。
+
+    不静默的理由：``project_budget_kemu`` 这种 key 用户只会觉得怪，不知道
+    该去补词；说出来（哪个中文词、退成什么拼音、去哪补）才是可修的提示。
+    """
+    parts = naming.pinyin_parts(bo_name)
+    if not parts:
+        return []
+    shown = "、".join(f"「{cn}」（拼音 {py}）" for cn, py in parts)
+    return [f"选择器 {key}: 名称里的{shown}未收录英文词典，已用拼音兜底"
+            f"（可在 naming.WORDS 里补词表）"]
+
+
+def value_source_missing_name_note(key: str, bo_code: str) -> str:
+    """查不到对象名称时的提示原文（key 只能按编码生成）。
+
+    单独一个函数是因为**调用方不同**：reader 从 Excel 只拿到编码、blueprint 从
+    清单拿名字。文案在这里只有一份，界面 / CLI / 回归断言才对得上。
+    """
+    return (f"选择器 {key}: 找不到对象 {bo_code} 的名称，key 用对象编码生成"
+            f"（如需英文请补对象名称）")
+
+
+def object_name_of(project, code: str) -> str:
+    """对象编码 → 对象名称：**本包**优先，其次系统清单，都没有就空串。
+
+    值来源的 key 要按名字翻英文，所以每个调用点都得先拿到名字。四处调用点
+    （blueprint / reader / webui）各写一遍「先查包内 BO、再查 catalog」迟早
+    出现某一路径用编码生成 key 的分叉，收敛到这里一处。
+    """
+    text = str(code or "").strip()
+    if not text:
+        return ""
+    bo = project.bo(text) if project is not None else None
+    if bo is None and project is not None:
+        bo = next((b for b in project.bos if b.tbl_name == text), None)
+    if bo is not None and bo.name:
+        return bo.name
+    try:                       # 系统清单：离线时也有随包快照，查不到就返回空
+        from . import objects as _objects
+        for it in _objects.catalog():
+            if it.get("code") == text:
+                return str(it.get("name") or "")
+    except Exception:          # noqa: BLE001
+        return ""
+    return ""
+
+
+def value_source_name(obj_name: str, key: str, purpose: str = "", taken=None) -> str:
+    """实例名称：``<对象名>值来源``，同对象多份时带用途后缀。
+
+    用户口径是「名称用用途后缀区分」（``采购申请值来源_全部`` /
+    ``采购申请值来源_过滤项目类型``）—— 一份叫「全部」的、一份被过滤的，
+    在设计器的列表里一眼能分开；而 key 是机器标识（``purchase_apply_value_2``），
+    不该让人从 key 去猜用途。
+
+    ``purpose`` 为空时按``_2``/``_3`` 兜底（至少不重名）；重名时继续加序号。
+    """
+    base = f"{obj_name or ''}值来源"
+    if key.endswith("_value"):
+        return base                        # 每个对象的第一份（默认那份）
+    tag = purpose.strip() or key.rsplit("_", 1)[-1]   # 没给用途就退成 2/3…
+    text = f"{base}_{tag}"
+    used = set(taken or ())
+    if text not in used:
+        return text
+    n = 2
+    while f"{text}_{n}" in used:
+        n += 1
+    return f"{text}_{n}"
+
+
+def parse_linkage(value: Any) -> list[dict]:
+    """Excel「联动字段」列 -> [{"name","field","label"}]。
+
+    两种写法都收：
+      · ``zhuan_ye_=zhuanYe,name_=`` （目标列=本控件，空=只回显）
+      · ``[{"name":"zhuan_ye_","field":"zhuanYe","label":"专业"}]``
+    留空 = 自动推导（见 links._linkage）。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return []
+    if text.startswith("[") or text.startswith("{"):
+        try:
+            got = json.loads(text)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(got, dict):
+            got = [got]
+        out: list[dict] = []
+        for item in got if isinstance(got, list) else []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or item.get("column") or "").strip()
+            if not name:
+                continue
+            out.append({"name": name,
+                        "field": str(item.get("field") or "").strip(),
+                        "label": str(item.get("label") or "").strip()})
+        return out
+    out = []
+    for part in re.split(r"[,;，；]", text):
+        if not part.strip():
+            continue
+        if "=" in part:
+            name, _, fld = part.partition("=")
+        else:
+            name, fld = part, ""
+        name = name.strip()
+        if name:
+            out.append({"name": name, "field": fld.strip(), "label": ""})
+    return out
+
+
+def parse_filter_field(value: Any) -> tuple[str, str]:
+    """Excel「过滤字段」列 -> (本对象字段编码, 目标对象物理列)。
+
+    写法：``xiangMuLeiXing`` 或 ``xiangMuLeiXing=classification_id_``。
+    目标列留空时由生成阶段按「显示名相同」推导。
+
+    特殊值 ``无`` = **一条过滤都不要**（自身值来源 / 「XX选择」链接字段的默认
+    口径），返回 ``("", "")`` 且调用方要据此把 ``auto_filter`` 置 False：
+    留空的含义是「按同名推导」，两者不是一回事。
+    """
+    text = str(value or "").strip()
+    if not text or text == FILTER_NONE:
+        return "", ""
+    if "=" in text:
+        left, _, right = text.partition("=")
+        return left.strip(), right.strip()
+    return text, ""
+
+
+def wants_no_filter(value: Any) -> bool:
+    """「过滤字段」列是否明确写了「无」（= 不要任何过滤，含不要自动推导）。"""
+    return str(value or "").strip() == FILTER_NONE
+
+
+def wants_all_results(value: Any) -> bool:
+    """「返回字段」列是否写成了 ``*``（= 主键 + 名称 + 全部自建字段）。"""
+    return str(value or "").strip() == RESULT_ALL
 
 
 # ---------------------------------------------------------------- 业务对象
@@ -311,6 +525,17 @@ class BoField:
     sn: int = 0
     is_system: bool = False
     readonly: bool = False          # 表单上只读展示（文档写「自动带出/只读文本」）
+    # 是不是本次出包的「XX选择」链接字段（关联项目→项目选择 / 关联其它对象→合同选择）。
+    #
+    # 为什么需要这个标记，而不是靠「object_type == 目标对象编码」现算：
+    #   ① 预览字段列表与生成的三张表单都要求它**置顶**，而 `sn` 不能动
+    #      （存量包铁律：sn 一变，线上已有的属性顺序/列顺序都要跟着改）；
+    #   ② 值来源要按「全部业务字段 + 主键、不默认过滤」出，而普通关联字段
+    #      （项目类型 → classification）必须保持老口径（主键+名称、按同名推导过滤）。
+    #      两者都是 object 字段，只能靠这个标记区分。
+    # 只由 builder.ensure_project_links / projlink.link_field 设置，用户 Excel
+    # 里自己写的关联字段一律为 False。
+    is_link: bool = False
     # 选项值（dic 类型专用）：Excel 里逗号分隔填，生成时内嵌进 bo XML 的
     # dictionaryTypeList / dictionaryList，导入后系统里就有这些候选值
     choices: list[str] = field(default_factory=list)
@@ -738,6 +963,25 @@ class FormField:
     # 表单 XML 里同一个表格要写两份 columns（控件一份、configurableColumns 一份），
     # 都从这里来；流程 nodePermissions 的控件快照也用它，保证三处一致。
     table_columns: list[TableColumn] = field(default_factory=list)
+    # 联动映射：值来源返回列 → 本表单控件（gen_form 写进 link_linkage）。
+    # 每项 {"name": 目标对象物理列名, "field": 本表单控件编码, "label": 显示名}。
+    # 空列表 = 自动推导（返回列的物理列名与本对象某字段的物理列名对上，见
+    # links.LinkPlan）——样本里项目的 zhuan_ye_ 自动带到表单的 zhuanYe。
+    linkage: list[dict] = field(default_factory=list)
+
+    def linkage_text(self) -> str:
+        """写回 Excel「联动字段」列。
+
+        全部只有「目标列=控件」两段时写成紧凑串（人好读好改）；
+        带自定义显示名时转成 JSON，否则标签会在 Excel <-> 模型之间丢掉。
+        """
+        items = [it for it in (self.linkage or [])
+                 if isinstance(it, dict) and str(it.get("name") or "").strip()]
+        if not items:
+            return ""
+        if any(str(it.get("label") or "").strip() for it in items):
+            return json.dumps(items, ensure_ascii=False, separators=(",", ":"))
+        return ",".join(f"{it['name']}={it.get('field') or ''}" for it in items)
 
 
 # 条件隐藏：系统里叫「表单规则（formRules）」，存在 formDef 的 extendAttr 里。
@@ -857,6 +1101,65 @@ class DataSet:
     unique_field: str = "id_"
     id_field: str = "id_"
     name_field: str = "name_"
+    # ---- 以下是值来源（type=valueSource）的可选配置 ----------------
+    # 过滤：本对象用哪个字段去过滤目标对象（filter_field 是**本对象字段编码**），
+    # filter_target 是目标对象里被过滤的物理列（留空按同名推导）。
+    # 两个都空 = 不加 filterConditions（值来源出全量）。
+    # 参照 docs/参考-关联对象值来源-20261119.md §2.3。
+    filter_field: str = ""
+    filter_target: str = ""
+    # 返回列：目标对象的字段编码（也接受物理列名 / 显示名）。
+    # 空 = 默认「主键 + 名称」。**主键永远强制包含**——值来源没有主键取不到值，
+    # 这是用户明确要求的硬约束。
+    result_fields: list[str] = field(default_factory=list)
+    # 「XX选择」链接字段专用：返回目标对象的**全部业务字段**（主键第一位 + 名称
+    # + 其余非系统列），而不是默认的主键 + 名称。
+    #
+    # 为什么这必须与 auto_filter 一起记在数据集上，而不是各生成器自己算：
+    # 表单侧 link_linkage 与值来源侧 resultColumns 必须引用**同一份**返回列。
+    # 两边各推导一遍，联动就会指向一条值来源没返回的列——界面上看着配好了，
+    # 选了值却带不出任何东西，线上极难查（见 links.with_linked_columns 的说明）。
+    result_all: bool = False
+    # 要不要按「本对象有同名关联字段指向同类对象」自动推导过滤条件。
+    # 「XX选择」链接字段要 False：用户口径是**默认不加任何过滤**，等到 app 面板
+    # 里自己选才加；普通关联字段（项目类型 → classification）保持 True。
+    auto_filter: bool = True
+    # 这份值来源是**系统按默认口径生成**的（Excel「6.1_值来源」的「自动」列=是），
+    # 不是用户手加的。只在两个地方读：
+    #   ① 出包时判断「要不要沿用默认口径」——自动生成的那份允许被 blueprint
+    #      重新按默认口径生成（幂等），用户手加的不许动；
+    #   ② 往返 Excel 时把「自动」列原样写回去，重复出包不再反复刷同一条提示。
+    # 它不影响 XML：包里有没有这个键用户看不到。
+    auto_generated: bool = False
+
+    def filter_text(self) -> str:
+        """写回 Excel「6_数据集」的「过滤字段」列：``本字段`` 或 ``本字段=目标列``。
+
+        ``auto_filter=False`` 且没显式填过滤时写 ``无``：留空在 6_数据集 里
+        是「按同名推导」，而链接字段 / 自身值来源要的是「一条过滤都不要」，
+        两者必须能区分开（与「10_流程节点」的「退回节点=无」同一个路数）。
+        """
+        if not self.filter_field:
+            return "" if self.auto_filter else FILTER_NONE
+        if self.filter_target and self.filter_target != self.filter_field:
+            return f"{self.filter_field}={self.filter_target}"
+        return self.filter_field
+
+    def result_text(self) -> str:
+        """写回 Excel 的「返回字段」列。
+
+        三档，必须能在 Excel 里区分并原样读回来：
+          · 显式列了字段            → ``id,name,zhuanYe``
+          · ``result_all``（全字段） → ``*``
+          · 都不要（只剩主键+名称） → ``id,name``（= ``RESULT_MIN``）
+
+        为什么最小列不能写空：**留空已经表示「全部自建字段」**（用户口径：
+        返回结果默认包含主键 + 生成业务对象的全部自建字段）。两条口径抢同一格，
+        往返一次就会翻——留空写回、读回变全字段，或者反过来。
+        """
+        if self.result_fields:
+            return ",".join(self.result_fields)
+        return RESULT_ALL if self.result_all else RESULT_MIN
 
 
 # ---------------------------------------------------------------- 流程

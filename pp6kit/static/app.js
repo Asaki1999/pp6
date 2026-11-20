@@ -732,6 +732,10 @@ function renderAll() {
     ["表单控件", d.stats["表单控件"] || 0],
     ["列表", d.stats["列表"] || 0],
     ["数据集", d.stats["数据集"] || 0],
+    // 选择器是独立模块（一行实例叫「xx值来源」，Excel 表是 6.1_值来源）：
+    // 单独显示、别并进数据集，否则用户对着「数据集 3」去 6_数据集 只数到 1 行
+    ["选择器", d.stats["选择器"] || 0],
+    ["筛选器", d.stats["筛选器"] || 0],
     // 流程是裸 XML、单独下载，统计里不显示会让人以为没生成
     ["流程", d.stats["流程"] || 0],
   ].filter(([, n]) => n > 0);
@@ -766,7 +770,7 @@ function renderAll() {
       where = String(firstErr.where || "").trim();
       const msg = String(firstErr.message || "").trim();
       const hit = ["1_业务对象", "2_字段", "3_表单", "4_表单控件",
-                   "5_列表", "6_数据集", "7_表单脚本", "8_隐藏规则"]
+                   "5_列表", "6_数据集", "6.1_值来源", "7_表单脚本", "8_隐藏规则"]
         .find((t) => where.indexOf(t) >= 0 || msg.indexOf(t) >= 0);
       if (hit) tab = hit;
     }
@@ -1169,6 +1173,39 @@ function projLinkHeader() {
   // 没连库时用的是用户上传的对象包快照；预览和出包都认这个 token
   if (state.plSnapshotToken) payload.snapshot = state.plSnapshotToken;
   return JSON.stringify(payload);
+}
+
+/* AI 生成/导出这条链的决策头（对象还不存在时用）。
+ *
+ * 为什么不能直接用 projLinkHeader()：它按**对象编码**记开关
+ * （state.plLinked[code]），而 AI 这条路在点「开始生成」时还不知道对象编码——
+ * 结果 objects 为空 → 整个头返回 null → 服务端以为用户没勾「关联」，
+ * 生成的字段里自然就没有「项目选择」（2026-11-21 用户报的 bug）。
+ *
+ * 格式与 projLinkHeader 完全一致（version/objects/target/snapshot），只是
+ * objects 留空：服务端把「带头了」当成「这次要关联」，
+ * 若头里明确写了该编码 linked:false 才不补（见 projlink.decisions_link_object）。
+ *
+ * 第一档选「不关联」时返回 null —— 三个 AI 入口（生成预览 / 上传表格分析 /
+ * 导出 Excel）必须同时看这一个函数，否则会出现「预览有、Excel 没有」这种
+ * 只有导入后才发现的不一致。
+ */
+function aiLinkHeader() {
+  if (state.plPre !== "on") return null;
+  const payload = { version: 1, objects: {} };
+  if (state.plTargetKind === "other" && state.plTarget && state.plTarget.code) {
+    payload.target = { name: state.plTarget.name, code: state.plTarget.code };
+  }
+  // 没连库时字段池来自用户上传的对象包；不带 token，服务端就没有字段池可用
+  if (state.plSnapshotToken) payload.snapshot = state.plSnapshotToken;
+  return JSON.stringify(payload);
+}
+
+/* aiLinkHeader() 的 header 形态。三个 AI 入口都用它，避免各写一份判断
+ * （各写一份的下场就是「预览有字段、导出的 Excel 没有」）。 */
+function aiHeaders() {
+  const pl = aiLinkHeader();
+  return pl ? { "X-Project-Link": pl } : {};
 }
 
 /* 弹窗里「按勾选覆盖」：把勾选结果并进 state.plAlign，然后带决策头重新解析。
@@ -1613,11 +1650,14 @@ function renderLists() {
 
   const dsCards = datasets.length
     ? `<div class="card">
-        <div class="card-head"><div><h3>数据集 / 值来源</h3><div class="sub">下拉框的取数来源</div></div></div>
-        <table><thead><tr><th>名称</th><th>Key</th><th>主表</th><th>类型</th></tr></thead>
+        <div class="card-head"><div><h3>数据集 / 选择器</h3><div class="sub">下拉框的取数来源：选择器是独立模块，一行实例叫「xx值来源」，Excel 表是 6.1_值来源</div></div></div>
+        <table><thead><tr><th>名称</th><th>Key</th><th>主表</th><th>类型</th><th>返回字段</th></tr></thead>
         <tbody>${datasets.map((d) => `<tr>
-          <td>${esc(d.name)}</td><td><code>${esc(d.key)}</code></td>
-          <td><code>${esc(d.table)}</code></td><td>${esc(d.type)}</td></tr>`).join("")}
+          <td>${esc(d.name)}${d.auto ? ' <span class="chip">自动</span>' : ""}</td>
+          <td><code>${esc(d.key)}</code></td>
+          <td><code>${esc(d.table)}</code></td>
+          <td>${esc(d.module === "value" ? "选择器" : d.type)}</td>
+          <td><code>${esc(d.results || "主键+名称")}</code></td></tr>`).join("")}
         </tbody></table></div>`
     : "";
 
@@ -1815,7 +1855,7 @@ async function buildZip(codes, trigger) {
       where = String(firstErr.where || "").trim();
       const msg = String(firstErr.message || "").trim();
       const hit = ["1_业务对象", "2_字段", "3_表单", "4_表单控件",
-                   "5_列表", "6_数据集", "7_表单脚本", "8_隐藏规则"]
+                   "5_列表", "6_数据集", "6.1_值来源", "7_表单脚本", "8_隐藏规则"]
         .find((t) => where.indexOf(t) >= 0 || msg.indexOf(t) >= 0);
       if (hit) tab = hit;
       if (!where && msg) where = msg.slice(0, 40);
@@ -1922,10 +1962,12 @@ async function inspectZip(file) {
 
 /* ------------------------------------------------ AI 生成业务对象 */
 
-async function apiPost(path, payload) {
+async function apiPost(path, payload, extraHeaders) {
   const res = await fetch(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    // extraHeaders：AI 这条链要把「关联项目」决策发过去（X-Project-Link）。
+    // 与 apiPostBlob 同一个形状，别在这里另造一套。
+    headers: Object.assign({ "Content-Type": "application/json" }, extraHeaders || {}),
     body: JSON.stringify(payload),
   });
   const d = await res.json().catch(() => ({}));
@@ -1972,14 +2014,23 @@ function renderAiBo(d) {
       if (cur && !objSet.has(cur)) {
         opts.push(`<option value="${esc(cur)}" selected>⚠ ${esc(cur)}（对象库中不存在）</option>`);
       }
-      rel = `<select class="ai-in ai-obj" data-k="objectType">${opts.join("")}</select>`;
+      rel = `<div class="ai-objrow">
+        <select class="ai-in ai-obj" data-k="objectType">${opts.join("")}</select>
+        <button type="button" class="ai-choice-btn ai-vs-btn" data-vtoggle="${i}"
+                title="值来源：过滤条件 / 返回结果 / 联动数据">
+          <span data-vsum="${i}">${aiVsSummary(f)}</span>
+          <span class="ai-caret">▾</span>
+        </button>
+      </div>`;
     } else {
       rel = '<span class="muted">—</span>';
     }
     return `
     <tr data-fi="${i}" class="${f.type === "object" && f.objectType && !objSet.has(f.objectType) ? "bad" : ""}">
       <td><input class="ai-in" data-k="name" value="${esc(f.name)}"></td>
-      <td><code>${esc(f.code)}</code></td>
+      <td><code>${esc(f.code)}</code>${f.isLink
+        ? `<span class="chip accent" title="选了「关联」自动加的「XX选择」字段：字段列表置顶、表单第一行，值来源返回目标对象全部业务字段">关联字段</span>`
+        : ""}</td>
       <td><code class="muted">${esc(f.fieldName)}</code></td>
       <td><select class="ai-in" data-k="type">${typeOpts}</select></td>
       <td><input class="ai-in ai-num" data-k="length" value="${f.length ?? ""}"></td>
@@ -2298,6 +2349,242 @@ function renderAiActions(d) {
   renderAiRelations(d);
 }
 
+/* ---------------- 值来源配置面板 ----------------
+ * 一个「关联对象」字段在新建表单里会出成 linkdata（关联数据），下拉里的候选
+ * 来自值来源。用户要能自己决定「按哪个字段过滤」「返回哪几列」「哪一列联动到
+ * 本表单哪个控件」，所以字段表里给一个浮层，定位/关闭与选项面板同源。
+ *
+ * 配置写到 f.sourceConfig，随「套用并下载 Excel」回传：
+ *   {custom, filterField, filterTarget, resultFields:[], linkage:[{name,field,label}]}
+ *
+ * 默认口径（后端生成器的口径，2026-11-20 用户确认）：
+ *   **返回全部业务字段 + 主键、不加任何过滤**。所以面板在用户没动过
+ *   （custom !== true）时，要把所有非系统列都显示成勾上——否则用户看到
+ *   「只返回 2 列」，随手改一个勾就真的只剩 2 列，预览与产物不一致。
+ *   任何勾选 / 选过滤 / 改联动都会把 custom 置 true，此后按用户的选择生成。
+ */
+let aiVsIdx = -1;
+
+function aiVsCfg(f) {
+  if (!f.sourceConfig || typeof f.sourceConfig !== "object") f.sourceConfig = {};
+  const c = f.sourceConfig;
+  if (!Array.isArray(c.resultFields)) c.resultFields = [];
+  if (!Array.isArray(c.linkage)) c.linkage = [];
+  return c;
+}
+
+/* 用户动过面板没有：没动过 = 「按默认口径（全部业务字段、不过滤）」 */
+function aiVsCustom(f) {
+  return !!(f && f.sourceConfig && f.sourceConfig.custom === true);
+}
+
+function aiVsSummary(f) {
+  const c = f.sourceConfig || {};
+  if (c.custom !== true) return "值来源（默认：全部字段）";
+  const n = (c.resultFields || []).length;
+  if (!n) return "值来源（自动）";
+  return `返回 ${n} 列${c.filterField ? " · 过滤" : ""}`;
+}
+
+function updateAiVsSummary(i) {
+  const f = state.aiData && state.aiData.bo && state.aiData.bo.fields[i];
+  const el = document.querySelector(`[data-vsum="${i}"]`);
+  if (f && el) el.textContent = aiVsSummary(f);
+}
+
+async function aiObjFields(code) {
+  state.objFieldCache = state.objFieldCache || {};
+  if (!code) return { fields: [] };
+  if (state.objFieldCache[code]) return state.objFieldCache[code];
+  let got = { fields: [] };
+  try {
+    const res = await fetch(`/api/objects/fields?code=${encodeURIComponent(code)}`, { cache: "no-store" });
+    got = await res.json();
+  } catch (e) {
+    got = { fields: [], error: "读取字段清单失败" };
+  }
+  state.objFieldCache[code] = got;
+  return got;
+}
+
+function aiVsPopEl() {
+  let pop = document.getElementById("aiVsPop");
+  if (pop) return pop;
+  pop = document.createElement("div");
+  pop.id = "aiVsPop";
+  pop.className = "ai-choice-pop ai-vs-pop";
+  pop.hidden = true;
+  document.body.appendChild(pop);
+
+  pop.addEventListener("change", (e) => {
+    const f = state.aiData && state.aiData.bo && state.aiData.bo.fields[aiVsIdx];
+    if (!f) return;
+    const c = aiVsCfg(f);
+
+    const filt = e.target.closest("[data-vsfilter]");
+    if (filt) {
+      // 只选过滤条件也是「动过面板」：必须先把默认全选铺进 resultFields，
+      // 否则 custom=true + resultFields=[] 会让面板显示「一列都没勾」、
+      // 摘要退回「值来源（自动）」，而产物仍是全部业务字段（预览≠产物）；
+      // 用户接着勾一列，产物就只剩那一列——把「默认全字段」悄悄缩掉了。
+      if (c.custom !== true) seedAiVsDefaults(f, pop);
+      c.custom = true;              // 动过面板 → 按用户的选择生成
+      c.filterField = filt.value;
+      c.filterTarget = "";
+      renderAiVsPop();
+      updateAiVsSummary(aiVsIdx);
+      return;
+    }
+    const pick = e.target.closest("[data-vspick]");
+    if (pick) {
+      const col = pick.dataset.vspick;        // 目标物理列名（联动映射用）
+      const code = pick.dataset.vscode;       // 目标字段编码（返回列存这个）
+      const on = pick.checked;
+      if (pick.dataset.locked === "1") { pick.checked = true; return; }
+      // 第一次勾选/取消：面板上此时显示的是「默认全选」，还没落到
+      // resultFields 里。先把默认那份铺进去再改，否则用户取消一列会得到
+      // 「只剩他点的那一列」——后端会真的按这个残缺清单生成。
+      if (c.custom !== true) {
+        seedAiVsDefaults(f, pop);
+      }
+      c.custom = true;
+      // 两种写法都清掉：改过字段编码的旧配置可能留着列名
+      c.resultFields = c.resultFields.filter((x) => x !== col && x !== code);
+      if (on) c.resultFields.push(code);
+      // 联动映射跟着返回列走：不返回的列不该留着映射。
+      // 用「当前还勾着的物理列」判断——resultFields 存的是编码，两者不能直接比。
+      const keep = new Set(Array.from(pop.querySelectorAll("[data-vspick]"))
+        .filter((el) => el.checked || el.disabled)
+        .map((el) => el.dataset.vspick));
+      c.linkage = c.linkage.filter((it) => keep.has(it.name));
+      renderAiVsPop();
+      updateAiVsSummary(aiVsIdx);
+      return;
+    }
+    const link = e.target.closest("[data-vslink]");
+    if (link) {
+      const col = link.dataset.vslink;
+      const val = link.value;
+      c.custom = true;
+      c.linkage = c.linkage.filter((it) => it.name !== col);
+      if (val) c.linkage.push({ name: col, field: val, label: "" });
+      updateAiVsSummary(aiVsIdx);
+      return;
+    }
+  });
+  return pop;
+}
+
+/* 把面板当前「默认全选」的那些列落进 resultFields（第一次动手前调一次）。
+ * 只收集**此刻显示为勾上**的行（含置灰锁定的主键）：系统列在默认态是不勾的，
+ * 收集进来就变成「用户勾了但产物里没有」——后端 result_list 永远不会返回系统列。 */
+function seedAiVsDefaults(f, pop) {
+  const c = aiVsCfg(f);
+  if (c.custom === true) return;
+  const got = [];
+  Array.from(pop.querySelectorAll("[data-vspick]")).forEach((el) => {
+    if (!(el.checked || el.disabled)) return;
+    const code = el.dataset.vscode || el.dataset.vspick;
+    if (code && got.indexOf(code) < 0) got.push(code);
+  });
+  c.resultFields = got;
+}
+
+function renderAiVsPop() {
+  const pop = aiVsPopEl();
+  const d = state.aiData;
+  const f = d && d.bo && d.bo.fields[aiVsIdx];
+  if (!f) return;
+  const c = aiVsCfg(f);
+  const custom = c.custom === true;
+  const target = (f.objectType || "").trim();
+  const info = state.objFieldCache && state.objFieldCache[target];
+
+  // 过滤：本对象里其它关联对象字段（用它当前的值去筛目标对象）
+  const peers = d.bo.fields.filter((x, j) =>
+    j !== aiVsIdx && x.type === "object" && x.objectType);
+  const filtOpts = [`<option value="">不过滤（返回全部）</option>`]
+    .concat(peers.map((x) =>
+      `<option value="${esc(x.code)}" ${x.code === c.filterField ? "selected" : ""}>按「${esc(x.name)}」过滤</option>`))
+    .join("");
+
+  // 本表单里能接联动的控件（排除自己）
+  const owners = d.bo.fields.filter((x, j) => j !== aiVsIdx);
+
+  let body;
+  if (!target) {
+    body = `<div class="ai-choice-empty">先在上面选一个业务对象</div>`;
+  } else if (!info) {
+    body = `<div class="ai-choice-empty">正在读取 ${esc(target)} 的字段…</div>`;
+    aiObjFields(target).then(() => { if (!pop.hidden) renderAiVsPop(); });
+  } else {
+    const cols = info.fields || [];
+    if (!cols.length) {
+      body = `<div class="ai-choice-empty">读不到 ${esc(target)} 的字段清单（没连库、也没上传过该对象）。
+        连接数据库或上传该对象 zip 后重试；现在只按「主键 + 名称」生成。</div>`;
+    } else {
+      const rows = cols.map((col) => {
+        // 默认态（用户没动过面板）按后端口径显示「全部业务字段」：
+        // 主键锁定必选、名称用于显示、其余非系统列默认勾上。系统列
+        // （id_/tenant_id_/create_time_/process_*）后端不会返回，这里也不勾。
+        const picked = col.key || (custom
+          ? c.resultFields.includes(col.code) || c.resultFields.includes(col.column)
+          : !col.system);
+        const locked = col.key ? 'data-locked="1"' : "";
+        const linkVal = (c.linkage.find((it) => it.name === col.column) || {}).field || "";
+        const linkOpts = [`<option value="">只回显</option>`]
+          .concat(owners.map((x) =>
+            `<option value="${esc(x.code)}" ${x.code === linkVal ? "selected" : ""}>${esc(x.name || x.code)}</option>`))
+          .join("");
+        return `<div class="ai-vs-line">
+          <label class="ai-vs-pick">
+            <input type="checkbox" data-vspick="${esc(col.column)}" data-vscode="${esc(col.code)}" ${locked}
+                   ${picked ? "checked" : ""} ${col.key ? "disabled" : ""}>
+            <span>${esc(col.name || col.code)}<i class="muted"> ${esc(col.column)}</i></span>
+          </label>
+          ${picked ? `<select class="ai-vs-link" data-vslink="${esc(col.column)}"
+             title="把这一列的值带进本表单的哪个控件">${linkOpts}</select>` : ""}
+        </div>`;
+      }).join("");
+      body = `<div class="ai-vs-list">${rows}</div>`;
+    }
+  }
+
+  pop.innerHTML = `
+    <div class="ai-choice-head">值来源 <span class="muted">· ${esc(f.name || "关联对象")} → ${esc(target || "未选")}</span></div>
+    <div class="ai-vs-note">默认<b>返回目标的全部业务字段 + 主键、不加过滤</b>
+      （下面这些列都是默认勾上的）。在这里勾选 / 取消 / 选过滤条件之后，才会按你的选择生成。</div>
+    <div class="ai-vs-row"><label>过滤条件</label><select class="ai-choice-add" data-vsfilter>${filtOpts}</select></div>
+    <div class="ai-vs-sub">返回结果 <span class="muted">（主键必选，名称用于显示）</span></div>
+    ${body}
+    <div class="ai-choice-hint">「联动」把该列的值带进本表单对应控件（如项目的「专业」带进专业字段）；留「只回显」就只显示不写值。</div>`;
+}
+
+function openAiVsPop(i, anchor) {
+  const f = state.aiData && state.aiData.bo && state.aiData.bo.fields[i];
+  if (!f || !anchor) return;
+  aiVsIdx = i;
+  const pop = aiVsPopEl();
+  renderAiVsPop();
+  pop.hidden = false;
+
+  const r = anchor.getBoundingClientRect();
+  const pw = pop.offsetWidth || 360;
+  const ph = pop.offsetHeight || 320;
+  let left = Math.min(r.left, window.innerWidth - pw - 12);
+  left = Math.max(12, left);
+  let top = r.bottom + 6;
+  if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 6);
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+}
+
+function closeAiVsPop() {
+  const pop = document.getElementById("aiVsPop");
+  if (pop) pop.hidden = true;
+  aiVsIdx = -1;
+}
+
 /* ---------------- 选项值下拉面板 ----------------
  * 全表共用一个浮层，挂在 body 上：.tbl-wrap 有 max-height + overflow:auto，
  * 直接放在单元格里会被裁掉。点击「N 个选项」定位到按钮下方，点外面/滚动/Esc 关闭。
@@ -2400,19 +2687,25 @@ function closeAiChoicePop() {
 // 点外面 / 滚动 / Esc 关闭；只绑一次
 document.addEventListener("mousedown", (e) => {
   const pop = document.getElementById("aiChoicePop");
-  if (!pop || pop.hidden) return;
-  if (pop.contains(e.target) || e.target.closest("[data-ctoggle]")) return;
-  closeAiChoicePop();
+  if (pop && !pop.hidden) {
+    if (!(pop.contains(e.target) || e.target.closest("[data-ctoggle]"))) closeAiChoicePop();
+  }
+  const vs = document.getElementById("aiVsPop");
+  if (vs && !vs.hidden) {
+    if (!(vs.contains(e.target) || e.target.closest("[data-vtoggle]"))) closeAiVsPop();
+  }
 });
 window.addEventListener("scroll", (e) => {
   const pop = document.getElementById("aiChoicePop");
-  if (!pop || pop.hidden) return;
-  // 面板内部（选项多时）滚动不该把面板关掉
-  if (pop.contains(e.target)) return;
-  closeAiChoicePop();
+  if (pop && !pop.hidden) {
+    // 面板内部（选项多时）滚动不该把面板关掉
+    if (!pop.contains(e.target)) closeAiChoicePop();
+  }
+  const vs = document.getElementById("aiVsPop");
+  if (vs && !vs.hidden && !vs.contains(e.target)) closeAiVsPop();
 }, true);
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closeAiChoicePop();
+  if (e.key === "Escape") { closeAiChoicePop(); closeAiVsPop(); }
 });
 
 /* 预览表格的编辑：改什么直接写回 state.aiData.bo.fields，导出时就是改后的 */
@@ -2434,7 +2727,12 @@ function bindAiEdit() {
         } else if (k === "objectType") {
           // 只有「关联对象」还走这个 key；选项值已经改成下拉面板，
           // 增删直接写 f.choices（见 aiChoicePopEl）
-          f.objectType = el.value.trim();
+          const next = el.value.trim();
+          // 换了目标对象 → 之前勾的返回列 / 联动映射是**另一个对象**的列，
+          // 留着会让后端按一批不存在的编码生成（产物倒回「主键 + 名称」）。
+          // 直接作废，回到「默认返回全部业务字段、不加过滤」的口径。
+          if (next !== (f.objectType || "")) f.sourceConfig = {};
+          f.objectType = next;
         } else {
           f[k] = el.value;
         }
@@ -2467,6 +2765,22 @@ function bindAiEdit() {
         $("#aiResult").innerHTML = renderAiBo(d);
         renderAiActions(d);
         toast(`已删掉「${f.name}」`);
+      };
+    }
+
+    // 值来源：过滤条件 / 返回结果 / 联动（关联对象字段才有）
+    const vt = tr.querySelector("[data-vtoggle]");
+    if (vt) {
+      vt.onclick = (e) => {
+        e.stopPropagation();
+        const pop = document.getElementById("aiVsPop");
+        if (pop && !pop.hidden && aiVsIdx === idx) {
+          closeAiVsPop();
+          return;
+        }
+        // 两个浮层不同时开，否则一左一右叠在一起分不清
+        closeAiChoicePop();
+        openAiVsPop(idx, vt);
       };
     }
 
@@ -2550,6 +2864,9 @@ async function analyzeSheet(file, sheet) {
       (sheet ? `&sheet=${encodeURIComponent(sheet)}` : "");
     const res = await fetch(`/api/ai/sheet?${q}`, {
       method: "POST",
+      // 与 /api/parse 同一套决策头：这条也是「生成预览」，用户不会因为这次是
+      // 上传表格而不是说一句话，就少一个「项目选择」字段
+      headers: aiHeaders(),
       body: await file.arrayBuffer(),
     });
     const d = await res.json().catch(() => ({}));
@@ -2608,9 +2925,14 @@ async function applyAiBo(d, { thenBuild = false, workflow = false } = {}) {
   if (thenBuild) $("#btnToPack").textContent = label0;
   try {
     const relHeader = window.Relations ? window.Relations.decisionsHeader("ai") : null;
+    // X-Project-Link 必须跟着走：服务端靠它把「项目选择 / 合同选择」写进这份 Excel
+    // 的 2_字段 与 1_业务对象›关联项目=是。少了它，用户拿这份 Excel 回头出包时
+    // 没人再补这个字段（builder 只看「关联项目」列）。
+    const headers = Object.assign({}, aiHeaders(),
+                                  relHeader ? { "X-Relations": relHeader } : {});
     const blob = await apiPostBlob("/api/ai/bo/apply", {
       bo: d.bo, form: d.form, list: d.list,
-    }, relHeader ? { "X-Relations": relHeader } : {});
+    }, headers);
     const name = `PP6-${d.bo.name}.xlsx`;
     if (thenBuild) {
       // 用这份 Excel 走原有的解析 → 出包链路（预览里的改动才不会丢）
@@ -2696,7 +3018,10 @@ async function generatePreview() {
     <span>正在让 AI 设计字段、表单和列表…（约 20 秒）</span></div>`;
   try {
     const known = state.data ? state.data.objects.map((o) => o.code) : [];
-    const d = await apiPost("/api/ai/bo", { description: desc, known });
+    // 带 X-Project-Link：用户在第 1 步选了「关联」时，生成的字段里才会有
+    // 「项目选择 / 合同选择」（服务端在生成阶段就补，不等出包）
+    const d = await apiPost("/api/ai/bo", { description: desc, known },
+                            aiHeaders());
     box.innerHTML = renderAiBo(d);
     renderAiActions(d);
     // 新一轮生成，上一轮的对话记录不再适用
@@ -2778,16 +3103,18 @@ async function sendAiChat(text, { fresh = false } = {}) {
     let d;
     if (first) {
       const known = state.data ? state.data.objects.map((o) => o.code) : [];
-      d = await apiPost("/api/ai/bo", { description: msg, known });
+      d = await apiPost("/api/ai/bo", { description: msg, known }, aiHeaders());
       d._first = true;
     } else {
+      // 微调也带同一个头：不带的话「项目选择」会掉档成普通关联字段
+      // （不置顶、值来源不是全字段），用户会以为规则被偷偷改了
       d = await apiPost("/api/ai/refine", {
         instruction: msg,
         bo: state.aiData.bo,
         form: state.aiData.form,
         list: state.aiData.list,
         objects: state.data ? state.data.objects.map((o) => ({ code: o.code, name: o.name })) : [],
-      });
+      }, aiHeaders());
     }
     // 后端返回的都是完整结果，直接整块替换预览（手改过的字段以 AI 结果为准）
     state.aiData = d;
@@ -3088,7 +3415,7 @@ function normalizePackageVM(data, mode) {
     vm.dirs = [
       { kind: "bo", count: vm.counts.bo, label: "业务对象", source: "X-Build-Report.counts", notes: [] },
       { kind: "form", count: vm.counts.form, label: "表单", source: "X-Build-Report.counts", notes: [] },
-      { kind: "data_template", count: vm.counts.data_template, label: "列表 / 数据集 / 筛选器", source: "X-Build-Report.counts", notes: [] },
+      { kind: "data_template", count: vm.counts.data_template, label: "列表 / 数据集 / 选择器 / 筛选器", source: "X-Build-Report.counts", notes: [] },
       { kind: "dataset", count: vm.counts.dataset, label: "数据集（手建形态，本工具不产出）", source: "X-Build-Report.counts", notes: [] },
     ];
     vm.entries = Array.isArray(d.entries) ? d.entries : [];

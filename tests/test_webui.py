@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import atexit
 import json
+import os
+import tempfile
 import threading
 import urllib.error
 import urllib.parse
@@ -715,3 +717,495 @@ def _():
     # 只关入口，能力不删
     assert "async function inspectZip(" in js
     assert '"/api/inspect"' in py
+
+
+# ---------------------------------------------------------------- WEB36–WEB39
+# 「值来源」面板：用户在 app 上自己选过滤条件 / 返回结果。
+#
+# 为什么补这一组（2026-11-19）：需求第 4 条「过滤条件与返回结果能在 app 上自己选」
+# 之前完全没有自动化覆盖——面板→sourceConfig→6_数据集→包里的
+# filterConditions/resultColumns 这条链断了没有任何用例会红，而表现是
+# 「下拉能点、筛选不生效」，只能靠线上排查。这里钉三个接口契约：
+#   · /api/objects/fields 的主键那条必须排第一且 key=true（面板据此置灰必选）
+#   · _apply_source_configs 同目标同配置只建一份，不同配置另起 <key>_2
+#   · 界面配置 → Excel 6_数据集 行 → 出包后 linkdata/联动/过滤，一路不丢
+
+
+@case("WEB36", "webui", "值来源面板的字段清单：主键排第一且 key=true（面板据此置灰必选）",
+      "P0", ["object_field_options", "主键必选", "需求 5"])
+def _():
+    from pp6kit import webui
+
+    got = webui.object_field_options("project")
+    assert got["ok"] is True, got
+    fields = got["fields"]
+    assert fields, got
+    # 主键必须排第一：面板是按顺序渲染的，藏到中间用户会以为「可以不选」
+    first = fields[0]
+    assert first["key"] is True, first
+    assert first["column"] == "id_", first
+    assert sum(1 for f in fields if f["key"]) == 1, [f["code"] for f in fields if f["key"]]
+    # 子表不能当返回列（选进去值来源会取不到值）
+    assert all(f["type"] != "table" for f in fields), \
+        [f["code"] for f in fields if f["type"] == "table"]
+
+
+@case("WEB37", "webui", "GET /api/objects/fields?code=project：200 且 fields[0].key 为 true",
+      "P0", ["面板真正调的那个接口", "不是内部函数"])
+def _():
+    status, headers, body = req("/api/objects/fields?code=project")
+    assert status == 200, (status, body[:200])
+    assert "application/json" in headers.get("content-type", "")
+    data = json.loads(body)
+    assert data["ok"] is True, data
+    assert data["fields"], data
+    assert data["fields"][0]["key"] is True, data["fields"][0]
+    # 缺参数要明确报错，不能给一份看起来正常的清单
+    status2, _, body2 = req("/api/objects/fields")
+    data2 = json.loads(body2)
+    assert status2 == 200 and data2["ok"] is False and data2["fields"] == [], data2
+
+
+@case("WEB38", "webui", "值来源配置落成数据集：同目标同配置复用一份，不同配置另起 _2",
+      "P1", ["_apply_source_configs", "两个控件过滤不同不能共用一份"])
+def _():
+    from pp6kit import webui
+    from pp6kit.model import Bo, BoField, Project
+
+    proj = Project()
+    bo = Bo(code="qacfg", name="配置用例", tbl_name="pp_qacfg")
+    bo.fields = [
+        BoField(bo_code="qacfg", code="suoShuXiangMu", name="所属项目",
+                type_new="object", object_type="project", sn=1),
+        BoField(bo_code="qacfg", code="beiYongXiangMu", name="备用项目",
+                type_new="object", object_type="project", sn=2),
+    ]
+    proj.bos.append(bo)
+    # custom=true = 用户动过面板（新版前端每次勾选/选过滤都会置位）。
+    # 缺这个标记时后端**不写** resultFields：面板默认把「全部业务字段」显示成
+    # 勾上，那是生成器的默认口径，不能当用户配置写进 6_数据集。
+    cfg = {"custom": True, "filterField": "xiangMuLeiXing",
+           "resultFields": ["id", "name", "zhuanYe"],
+           "linkage": [{"name": "zhuan_ye_", "field": "zhuanYe", "label": "专业"}]}
+
+    webui._apply_source_configs(proj, bo, [
+        {"code": "suoShuXiangMu", "sourceConfig": dict(cfg)},
+        {"code": "beiYongXiangMu", "sourceConfig": dict(cfg)},      # 同配置
+    ])
+    assert [d.key for d in proj.datasets] == ["project_value"], [d.key for d in proj.datasets]
+    ds = proj.datasets[0]
+    assert ds.filter_field == "xiangMuLeiXing", ds.filter_field
+    assert ds.result_fields == ["id", "name", "zhuanYe"], ds.result_fields
+
+    # 换一套返回列 = 另一套配置 → 必须另起一份，不能覆盖上面那份
+    webui._apply_source_configs(proj, bo, [{"code": "beiYongXiangMu", "sourceConfig": {
+        "custom": True, "filterField": "xiangMuLeiXing",
+        "resultFields": ["id", "name"], "linkage": []}}])
+    keys = [d.key for d in proj.datasets]
+    assert keys == ["project_value", "project_value_2"], keys
+    assert proj.datasets[0].result_fields == ["id", "name", "zhuanYe"], proj.datasets[0].result_fields
+
+    # 面板上填了数据集 key 就按它来（反解/复用老包时用）
+    proj2 = Project()
+    bo2 = Bo(code="qacfg2", name="配置用例2", tbl_name="pp_qacfg2")
+    bo2.fields = [BoField(bo_code="qacfg2", code="suoShuXiangMu", name="所属项目",
+                          type_new="object", object_type="project", sn=1)]
+    proj2.bos.append(bo2)
+    # 手填数据集 key 也是「用户动过面板」的一种（反解/复用老包时面板会带上它）
+    webui._apply_source_configs(proj2, bo2, [{"code": "suoShuXiangMu", "sourceConfig": {
+        "custom": True, "datasetKey": "my_value",
+        "resultFields": ["id", "name"], "linkage": []}}])
+    assert [d.key for d in proj2.datasets] == ["my_value"], [d.key for d in proj2.datasets]
+
+    # 面板没填 key 时，词干取**目标对象名**的英文（不是对象编码）：
+    # 目标对象编码是拼音（gongSi），名字「公司」→ company → company_value。
+    proj3 = Project()
+    src_bo = Bo(code="gongSi", name="公司", tbl_name="pp_gong_si")
+    src_bo.fields = [BoField(bo_code="gongSi", code="name", name="名称",
+                            type_new="varchar", sn=1)]
+    owner = Bo(code="qacfg3", name="配置用例3", tbl_name="pp_qacfg3")
+    owner.fields = [BoField(bo_code="qacfg3", code="gongSiId", name="所属公司",
+                            type_new="object", object_type="gongSi", sn=1)]
+    proj3.bos = [src_bo, owner]
+    webui._apply_source_configs(proj3, owner, [{"code": "gongSiId", "sourceConfig": {
+        "custom": True, "resultFields": ["id", "name"], "linkage": []}}])
+    assert [d.key for d in proj3.datasets] == ["company_value"], \
+        [d.key for d in proj3.datasets]
+
+
+@case("WEB39", "webui", "界面选的返回/过滤/联动真进产物：6_数据集 行 → linkdata + 联动 + 过滤",
+      "P0", ["预览=产物", "需求 3/4", "sourceConfig 往返"])
+def _():
+    from pp6kit import webui
+    from tests._harness import read_xlsx_rows
+
+    cfg = {"custom": True, "filterField": "xiangMuLeiXing",
+           "resultFields": ["id", "name", "zhuanYe"],
+           "linkage": [{"name": "zhuan_ye_", "field": "zhuanYe", "label": "专业"}]}
+    payload = {
+        "bo": {"code": "qavs", "name": "面板用例", "fields": [
+            {"code": "suoShuXiangMu", "name": "所属项目", "type": "object",
+             "objectType": "project", "sourceConfig": dict(cfg)},
+            {"code": "xiangMuLeiXing", "name": "项目类型", "type": "object",
+             "objectType": "classification"},
+            {"code": "zhuanYe", "name": "专业", "type": "varchar"},
+        ]},
+        "form": {"key": "create_qavs", "name": "新建面板用例", "layout": 2, "fields": [
+            {"name": "suoShuXiangMu", "label": "所属项目", "type": "linkdata"},
+            {"name": "xiangMuLeiXing", "label": "项目类型", "type": "select"},
+            {"name": "zhuanYe", "label": "专业", "type": "text"},
+        ]},
+    }
+    excel, _ = webui.ai_apply_bo(payload)
+
+    # ① Excel 里能看到用户选的那一行（不是只活在内存里）。
+    # 2026-11-19 起值来源单独一张 6.1_值来源（不再写 6_数据集），
+    # 列口径也跟着变：目标对象写「对象编码」而不是「主表名」，
+    # 也没有「类型」列（表名本身就说清了是值来源）。
+    rows = [r for r in read_xlsx_rows(excel, S.S_VALUE)
+            if str(r.get("值来源key") or "").strip()
+            and not str(r.get("值来源key")).strip().startswith("#")]
+    assert len(rows) == 1, rows
+    assert rows[0]["对象编码"] == "project", rows[0]
+    assert rows[0]["自动"] == "否", rows[0]
+    assert rows[0]["过滤字段"] == "xiangMuLeiXing", rows[0]
+    assert rows[0]["返回字段"] == "id,name,zhuanYe", rows[0]
+    # ② 联动映射也跟着 Excel 走（否则换台机器就丢）
+    # 只取新建表单那一段：详情表单里同一个字段是 selectObject，混在一起会被覆盖
+    ctrl = {r["字段编码"]: r for r in read_xlsx_rows(excel, S.S_FORMFIELD)
+            if str(r.get("字段编码") or "").strip()
+            and not str(r.get("字段编码")).startswith("#")
+            and r.get("表单key") == "create_qavs"}
+    assert ctrl["suoShuXiangMu"]["控件类型"] == "linkdata", ctrl["suoShuXiangMu"]
+    assert "zhuan_ye_" in str(ctrl["suoShuXiangMu"]["联动字段"]), ctrl["suoShuXiangMu"]
+
+    # ③ 再出包：这些配置要真的落到 XML（预览=产物）
+    import io
+    import re
+    import zipfile
+
+    body, _ = webui.build_zip(excel)
+    zf = zipfile.ZipFile(io.BytesIO(body))
+    xmls = {n: zf.read(n).decode() for n in zf.namelist() if n.endswith(".xml")}
+    form = next(t for n, t in xmls.items()
+                if n.startswith("form/") and 'key="create_qavs"' in t)
+    frag = next(f for f in re.findall(r"<formField\b[^>]*>", form)
+                if 'name="suoShuXiangMu"' in f)
+    opts = json.loads(re.search(r'fieldOptions="([^"]*)"', frag).group(1)
+                      .replace("&quot;", '"').replace("&amp;", "&"))
+    assert opts["linkdata"] == "project_value", opts.get("linkdata")
+    by_name = {it["name"]: it["field"] for it in opts["link_linkage"]}
+    assert by_name.get("zhuan_ye_") == "zhuanYe", by_name
+    assert by_name.get("id_") == "" and by_name.get("name_") == "", by_name
+    cond = (opts.get("link_condition") or [None])[0]
+    assert cond and cond["value"] == "xiangMuLeiXing", opts.get("link_condition")
+
+    ds = next(t for n, t in xmls.items()
+              if n.startswith("data_template/") and 'key="project_value"' in t)
+    jesc = lambda s: s.replace("&quot;", '"')      # noqa: E731
+    cols = [c["name"] for c in json.loads(
+        jesc(re.search(r'resultColumns="([^"]*)"', ds).group(1)))]
+    assert "id_" in cols and "zhuan_ye_" in cols, cols
+    rules = json.loads(jesc(re.search(r'filterConditions="([^"]*)"', ds).group(1)))
+    rule = rules[0]["filter"]["rules"][0]
+    assert rule["field"] == "classification_id_", rule
+    assert rule["rule_id"] == cond["rule_id"], (rule, cond)
+
+
+@case("WEB40", "webui", "面板默认态不当用户配置；custom+空返回列按「只返回主键/名称」兜底",
+      "P0", ["预览=产物", "默认返回全部业务字段", "sourceConfig.custom"])
+def _():
+    """面板在用户没动过时把「全部业务字段」显示成勾上——那是生成器的默认口径。
+
+    如果后端把这批默认勾选当成用户配置写进 6_数据集，产物就只剩屏幕上那几列：
+    用户什么也没改，返回列却从「全部业务字段」缩成他看到的清单（而且没人会想到
+    是面板默认值干的事）。所以 ``custom !== true`` 时 resultFields 一律忽略。
+    """
+    from pp6kit import webui
+
+    default_cfg = {"resultFields": ["id", "name", "zhuanYe"], "linkage": [],
+                   "filterField": ""}
+    assert webui._source_configs(
+        [{"code": "suoShuXiangMu", "sourceConfig": dict(default_cfg)}]) == {}, \
+        "默认勾选被当成了用户配置"
+
+    # 只选了过滤条件（没有 custom 也是用户动过的证据之一）→ 要落进数据集
+    got = webui._source_configs([{"code": "suoShuXiangMu", "sourceConfig": {
+        "filterField": "xiangMuLeiXing", "resultFields": ["id", "name"]}}])
+    assert got["suoShuXiangMu"]["filterField"] == "xiangMuLeiXing", got
+    assert got["suoShuXiangMu"]["resultFields"] == [], got
+
+    # custom=true（用户真动过）→ 返回列照写
+    got2 = webui._source_configs([{"code": "suoShuXiangMu", "sourceConfig": {
+        "custom": True, "resultFields": ["id", "zhuanYe"]}}])
+    assert got2["suoShuXiangMu"]["resultFields"] == ["id", "zhuanYe"], got2
+
+    # custom=true 但返回列**全取消**了（只剩锁定的主键）→ 按「只返回主键 + 名称」
+    # 处理。空列表不能当「没配过」：那样产物会倒回默认全字段，面板说 1 列、
+    # 包里 38 列，同一个坑换个入口再踩一次。
+    got3 = webui._source_configs([{"code": "suoShuXiangMu", "sourceConfig": {
+        "custom": True, "resultFields": [], "linkage": [], "filterField": ""}}])
+    assert got3["suoShuXiangMu"]["resultFields"] == ["id"], got3
+    assert got3["suoShuXiangMu"]["linkage"] == [], got3      # 没有返回列就谈不上联动
+    assert got3["suoShuXiangMu"]["resultFallback"] is True, got3
+
+    # 端到端：AI 路径落成的值来源写「返回字段=id」，出包后 resultColumns
+    # 就是「主键 + 名称」两列（不是 38 列），并且有一条能被人看见的提示
+    from tests._harness import read_xlsx_rows
+
+    notes: list[str] = []
+    excel, _ = webui.ai_apply_bo({
+        "bo": {"code": "qakeep", "name": "空返回列", "fields": [
+            {"code": "suoShuXiangMu", "name": "所属项目", "type": "object",
+             "objectType": "project",
+             "sourceConfig": {"custom": True, "resultFields": [],
+                              "linkage": [], "filterField": ""}},
+            {"code": "beiZhu", "name": "备注", "type": "varchar"},
+        ]},
+        "form": {"key": "create_qakeep", "name": "新建", "layout": 2, "fields": [
+            {"name": "suoShuXiangMu", "label": "所属项目", "type": "linkdata"},
+            {"name": "beiZhu", "label": "备注", "type": "text"},
+        ]},
+    }, None, notes)
+    rows = [r for r in read_xlsx_rows(excel, S.S_VALUE)
+            if str(r.get("值来源key") or "").strip()
+            and not str(r.get("值来源key")).startswith("#")]
+    assert rows[0]["返回字段"] == "id", rows[0]
+    assert any("只返回主键/名称" in n for n in notes), notes
+
+    import io
+    import re
+    import zipfile
+
+    body, _ = webui.build_zip(excel)
+    zf = zipfile.ZipFile(io.BytesIO(body))
+    ds = next(zf.read(n).decode() for n in zf.namelist()
+              if n.startswith("data_template/") and 'key="project_value"' in zf.read(n).decode())
+    cols = [c["name"] for c in json.loads(
+        re.search(r'resultColumns="([^"]*)"', ds).group(1)
+        .replace("&quot;", '"').replace("&amp;", "&"))]
+    assert cols == ["id_", "name_"], cols
+
+
+@case("WEB41", "webui", "AI 三个入口都认 X-Project-Link：生成预览 / 上传表格 / 导出 Excel",
+      "P0", ["路由真把 header 传进去了（不是只有内部函数支持）",
+             "带头的预览里有 projectId 且置顶 + isLink",
+             "导出的 Excel 里 2_字段 有「项目选择」、1_业务对象 关联项目=是",
+             "不带头时与改动前一致（一个字段都不多）"])
+def _():
+    """2026-11-21 用户报的 bug：勾了「关联项目」，AI 生成的字段里没有项目选择。
+
+    这里必须走 HTTP（而不是只调内部函数）：缺的正是**路由层没读这个头**——
+    内部函数支持、路由不传，界面上的开关照样不生效。
+    """
+    import io
+    import zipfile
+
+    from pp6kit import webui
+    from pp6kit.reader import read_workbook
+
+    from tests.test_projlink import _AI_FIELDS, _restore_ai, _stub_ai, pl_header
+
+    orig = _stub_ai(_AI_FIELDS, {"groups": [{"title": "基本信息",
+                                            "fields": ["申请单号"]}]})
+    try:
+        head = {"Content-Type": "application/json",
+                "X-Project-Link": pl_header({})}
+        status, _h, body = req("/api/ai/bo", json.dumps(
+            {"description": "做一个采购申请单"}).encode("utf-8"), head)
+        data = json.loads(body)
+        assert status == 200 and data["ok"] is True, (status, body[:300])
+        codes = [f["code"] for f in data["bo"]["fields"]]
+        assert codes[0] == "projectId", codes
+        assert data["bo"]["fields"][0]["isLink"] is True, data["bo"]["fields"][0]
+        assert data["form"]["fields"][0]["name"] == "projectId", \
+            [c["name"] for c in data["form"]["fields"]]
+
+        # ② /api/ai/sheet：文件走二进制 body，头照样要认
+        status, _h, body = req(
+            "/api/ai/sheet?form=0&list=0", xlsx({
+                S.S_BO: [{"对象名称": "采购申请"}],
+                S.S_FIELD: [field("采购申请", "申请单号", "字符串")],
+            }), {"Content-Type": "application/octet-stream",
+                 "X-Project-Link": pl_header({})})
+        sheet = json.loads(body)
+        assert status == 200 and sheet["ok"] is True, (status, body[:300])
+        assert "projectId" in {f["code"] for f in sheet["bo"]["fields"]}, \
+            [f["code"] for f in sheet["bo"]["fields"]]
+
+        # ③ /api/ai/bo/apply：导出的 Excel 必须自带链接字段与「关联项目=是」
+        status, hdrs, body = req(
+            "/api/ai/bo/apply",
+            json.dumps({"bo": data["bo"], "form": data["form"],
+                        "list": data["list"]}).encode("utf-8"),
+            {"Content-Type": "application/json",
+             "X-Project-Link": pl_header({})})
+        assert status == 200, (status, body[:300])
+        assert "spreadsheetml" in hdrs.get("content-type", ""), hdrs
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as fp:
+            fp.write(body)
+            path = fp.name
+        try:
+            proj, errors, _stats = read_workbook(path)
+        finally:
+            os.unlink(path)
+        assert not errors, errors
+        bo = proj.bos[0]
+        assert bo.project_link is True, "1_业务对象 的「关联项目」不是「是」"
+        link = bo.field_by_code("projectId")
+        assert link is not None, [f.code for f in bo.fields]
+        assert link.name == "项目选择", link.name
+
+        # ④ 不带头（第 1 步选「不关联」）：与改造前一致，一个字段都不多
+        status, _h, body = req("/api/ai/bo", json.dumps(
+            {"description": "做一个采购申请单"}).encode("utf-8"),
+            {"Content-Type": "application/json"})
+        plain = json.loads(body)
+        assert status == 200 and plain["ok"] is True, (status, body[:300])
+        assert [f["code"] for f in plain["bo"]["fields"]] == [
+            f["code"] for f in _AI_FIELDS], [f["code"] for f in plain["bo"]["fields"]]
+
+        # ⑤ 头非法 → 400（与 /api/parse、/api/build 同口径，不静默当成没勾）
+        status, _h, body = req("/api/ai/bo", json.dumps(
+            {"description": "做一个采购申请单"}).encode("utf-8"),
+            {"Content-Type": "application/json", "X-Project-Link": "{not json"})
+        assert status == 400, (status, body[:300])
+        bad = json.loads(body)
+        assert bad["ok"] is False and "X-Project-Link" in bad["error"], bad
+    finally:
+        _restore_ai(orig)
+
+
+@case("WEB42", "webui", "前端真把 X-Project-Link 发给 AI 三个入口（node 探针跑 app.js）",
+      "P0", ["aiLinkHeader() 在 AI 路径可用（对象还没编码）",
+             "「不关联」时一个头都不发", "合同目标带 target + snapshot",
+             "apiPost/apiPostBlob 都没把 Content-Type 弄丢"])
+def _():
+    """界面侧的守卫：服务端支持 + 路由转发都对了，前端不发也是白搭。
+
+    用 node + 最小 DOM stub 把真实 app.js 放进 vm 跑一遍 aiLinkHeader() /
+    apiPost()，断言「请求里真的出现了这个头」。没装 node 就 skip。
+    """
+    import json as _json
+    import re
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    node = shutil.which("node")
+    if not node:
+        skip("没装 node：AI 决策头的前端探针跳过（WEB41 的服务端断言仍然生效）")
+    root = Path(__file__).resolve().parents[1]
+    app = root / "pp6kit" / "static" / "app.js"
+    probe = Path(__file__).resolve().parent / "fe_ai_pl_probe.js"
+    assert probe.is_file(), f"缺少前端探针 {probe}"
+    proc = subprocess.run([node, str(probe), str(app)],
+                          capture_output=True, text=True, timeout=180)
+    assert proc.returncode == 0, f"node 探针失败：\n{proc.stderr[-1200:]}"
+    lines = [ln for ln in proc.stdout.strip().splitlines() if ln.strip()]
+    assert lines, "node 探针没有输出"
+    out = _json.loads(lines[-1])
+
+    # ① 第 1 步选「不关联」：不造头（等于改造前的行为）
+    assert out["off_header"] is None, out
+    assert out["off_headers"] == "{}", out
+    # ② 选「关联」：头必须存在，objects 空（AI 生成前还没有对象编码）
+    assert out["proj_is_null"] is False, \
+        "AI 路径生成了 null 头：服务端会当成「没勾关联」，正是用户报的 bug"
+    assert out["proj_version"] == 1, out
+    assert out["proj_objects_empty"] is True, out
+    assert out["proj_has_target"] is False, out        # 关联项目不带 target（服务端默认）
+    assert out["proj_has_snapshot"] is False, out
+    # ③ 关联「合同」+ 没连库：target/snapshot 都要带，服务端才认得出对象
+    assert _json.loads(out["con_target"]) == {"name": "合同", "code": "contract"}, out
+    assert out["con_snapshot"] == "0123456789abcdef0123", out
+    # ④ 三个请求真的发了这个头；Content-Type 没被挤掉
+    assert out["bo_has_header"] is True, out
+    assert out["refine_has_header"] is True, out
+    assert out["apply_has_header"] is True, out
+    assert out["bo_content_type"] == "application/json", out
+    # ⑤ 不关联时三个请求都不带
+    assert out["off_bo_no_header"] is True, out
+    assert out["off_apply_no_header"] is True, out
+
+    # ⑥ /api/ai/sheet 走的是原生 fetch（不是 apiPost），探针里不好构造 File：
+    #    在源码层钉住「这个 fetch 的 headers 是 aiHeaders()」，别被改回去。
+    src = app.read_text(encoding="utf-8")
+    seg = src[src.index("/api/ai/sheet?"):]
+    seg = seg[:seg.index("});") + 3]
+    assert re.search(r"headers:\s*aiHeaders\(\)", seg), \
+        f"/api/ai/sheet 的 fetch 没带决策头：\n{seg}"
+
+
+@case("WEB43", "webui", "AI 微调（/api/ai/refine）也认 X-Project-Link：链接字段不降级",
+      "P0", ["路由把 header 传进 refine", "模型没回传 projectId 也照样保住 isLink",
+             "表单第一行仍是 linkdata", "不带头时不加字段", "坏头 400"])
+def _():
+    """微调是第四条链路，原来一条用例都没覆盖。
+
+    「再改一版」是最常点的一个按钮：模型只回业务字段，`isLink` 抄不回来，
+    必须在服务端重新注入——不然用户改一句话之后，「项目选择」就降级成普通关联
+    字段（不置顶、值来源不再是全字段），看起来像我们偷偷改了规则。
+    """
+    from pp6kit import ai_bo, ai_form, ai_refine, projlink
+
+    from tests.test_projlink import pl_header
+
+    # ① 当前结果：预览里已经补过「项目选择」
+    bo = ai_bo.build_bo({"name": "采购申请", "code": "caigou", "fields": [
+        {"code": "shenQingDanHao", "name": "申请单号", "type": "varchar",
+         "length": 64}]}, [])[0]
+    projlink.ensure_link_field(bo, None)
+    form, _notes = ai_form.build_form(
+        {"groups": [{"title": "基本信息", "fields": ["申请单号"]}]},
+        bo, "create_caigou", name="新建采购申请")
+    current = {"instruction": "把申请单号长度改成 100",
+               "bo": ai_bo.to_dict(bo), "form": ai_form.to_dict(form)}
+
+    # ② 模型只回业务字段（故意不带 projectId——它本来也抄不回 isLink）
+    spec = {"bo": {"name": "采购申请", "code": "caigou", "fields": [
+        {"code": "shenQingDanHao", "name": "申请单号", "type": "varchar",
+         "length": 100}]},
+        "form": {"fields": [{"name": "shenQingDanHao", "label": "申请单号",
+                             "group": "基本信息"}]},
+        "changes": ["申请单号长度 64 → 100"]}
+    orig = ai_refine.llm.chat_any
+    ai_refine.llm.chat_any = lambda cfg, msgs, timeout=90, max_tokens=0: (
+        json.dumps(spec, ensure_ascii=False), {"model": "stub"})
+    try:
+        status, _h, body = req(
+            "/api/ai/refine", json.dumps(current).encode("utf-8"),
+            {"Content-Type": "application/json", "X-Project-Link": pl_header({})})
+        first = json.loads(body)
+        assert status == 200 and first["ok"] is True, (status, body[:300])
+        codes = [f["code"] for f in first["bo"]["fields"]]
+        assert codes == ["projectId", "shenQingDanHao"], codes
+        assert first["bo"]["fields"][0]["isLink"] is True, first["bo"]["fields"][0]
+        assert first["bo"]["projectLink"] is True, first["bo"].get("projectLink")
+        assert first["form"]["fields"][0]["name"] == "projectId", \
+            [c["name"] for c in first["form"]["fields"]]
+        assert first["form"]["fields"][0]["type"] == "linkdata", \
+            first["form"]["fields"][0]
+        assert first["linkTarget"]["code"] == "project", first.get("linkTarget")
+        assert any("projectId" in n for n in first["notices"]), first["notices"]
+
+        # ③ 不带头（第 1 步选「不关联」）：与改造前一致，一个字段都不多
+        status, _h, body = req("/api/ai/refine",
+                               json.dumps(current).encode("utf-8"),
+                               {"Content-Type": "application/json"})
+        plain = json.loads(body)
+        assert status == 200 and plain["ok"] is True, (status, body[:300])
+        assert [f["code"] for f in plain["bo"]["fields"]] == ["shenQingDanHao"], \
+            [f["code"] for f in plain["bo"]["fields"]]
+        assert plain["bo"]["projectLink"] is False
+
+        # ④ 坏头 → 400（不静默当成「没勾关联」，也不 500）
+        status, _h, body = req("/api/ai/refine",
+                               json.dumps(current).encode("utf-8"),
+                               {"Content-Type": "application/json",
+                                "X-Project-Link": "{not json"})
+        assert status == 400, (status, body[:300])
+        bad = json.loads(body)
+        assert bad["ok"] is False and "X-Project-Link" in bad["error"], bad
+    finally:
+        ai_refine.llm.chat_any = orig

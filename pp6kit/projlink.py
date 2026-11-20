@@ -43,10 +43,14 @@ PROJECT_TBL = "pp_project"
 
 # 链接字段（指向项目对象的 object 字段）。10 个结构键与系统原生
 # ``project_create.projectId`` 逐键一致（PRD F3 实证：sn=74 那条）。
-# 只有 name 取用户原话「所属项目」，Excel 里可改。
+# 只有 name 按用户 2026-11-20 的口径改成「项目选择」：
+#   「强制在他的字段里加一个『XX 选择』控件；关联项目 = 项目选择，
+#     关联其他对象 = 合同选择」。
+# ⚠ code / fieldName **不跟着改**（仍是 projectId / project_id_）：存量包
+#   一改列名就等于要求线上 ALTER，用户原话只要求显示名。
 LINK_CODE = "projectId"
 LINK_FIELD_NAME = "project_id_"
-LINK_DEFAULT_NAME = "所属项目"
+LINK_DEFAULT_NAME = "项目选择"
 # 6 键与 project_create.projectId 逐键一致（dataTypeNew=object / datatype=varchar /
 # objectType=project / length=64 / isnull=Y / isindex=N / 无 format）
 LINK_OPTIONS: dict = {
@@ -117,8 +121,10 @@ class TargetObject:
     """要对齐的目标业务对象（默认项目）。
 
     link_code / link_field / link_label 是**新增链接字段**的范式：
-      项目 → projectId / project_id_ / 所属项目（线上 project_create.projectId 实测）
-      其它 → {code}Id / {code}_id_ / 关联{name}（线上 customerId / contractId 等同族）
+      项目 → projectId / project_id_ / 项目选择
+      其它 → {code}Id / {code}_id_ / {name}选择（合同选择 / 客户选择…）
+    「XX选择」是用户 2026-11-20 定的显示名口径（原「所属项目 / 关联合同」），
+    code 与物理列保持系统同族不变——那两样一改就要线上 ALTER。
     """
 
     code: str = PROJECT_CODE
@@ -170,7 +176,9 @@ def target_for(code: str, name: str = "", tbl: str = "",
     return TargetObject(
         code=code, name=name, tbl=tbl,
         link_code=link_code, link_field=link_field,
-        link_label=f"关联{name}", table_label=str(table_label or "").strip(),
+        # 「XX选择」：关联其它对象时显示名是「合同选择」「客户选择」，
+        # 与「项目选择」同一套口径（用户 2026-11-20 确认）。
+        link_label=f"{name}选择", table_label=str(table_label or "").strip(),
         matched_by=str(matched_by or "").strip(),
     )
 
@@ -976,6 +984,13 @@ def save_snapshot_upload(data: bytes, target: TargetObject | None = None) -> dic
     token = hashlib.sha1(target.code.encode("utf-8") + data).hexdigest()[:20]
     upload_dir().mkdir(parents=True, exist_ok=True)
     save_snapshot(snap, upload_dir() / f"{token}.json")
+    # 再按**对象编码**存一份（target_fields/<code>.json）：
+    # 值来源 / 联动那条链（links._target_from_snapshot）只按对象编码找快照，
+    # 不认 token。只写 token 那一份的话，「关联其他业务对象 + 用户只上传了 zip」
+    # 的值来源里永远只有主键和名称两列——而用户要的是「返回全部业务字段」，
+    # 偏偏这种缺失在界面上完全看不出来（下拉能点、联动配不出来）。
+    # 库里刷新出来的快照也是存这个位置（resolve_target），两档来源同一个入口。
+    save_snapshot(snap, target_cache_path(target))
     got = target_of(snap)
     return {"ok": True, "token": token, "source": snap.source,
             "project": snap.project, "fieldCount": len(snap.fields),
@@ -1571,6 +1586,65 @@ def plan_link_field(bo: Bo, pool: list[ProjectField],
                     note=f"新增：指向{target.name}对象（{target.link_field} varchar 64）")
 
 
+def ensure_link_field(bo: Bo, target: TargetObject | None = None,
+                      pool: list[ProjectField] | None = None,
+                      name: str = "") -> tuple[BoField, bool, str]:
+    """在对象上**就地**确保「XX选择」链接字段存在并打上 is_link。
+
+    返回 ``(字段, 是否新建, 一条给用户看的提示)``。
+
+    为什么需要它（而不是只靠 ``builder.ensure_project_links``）
+    ----------------------------------------------------------
+    ``ensure_project_links`` 挂在 ``build()`` 里，是**出包**时的兜底。而 AI 这条路
+    （一句话生成 / 需求文档解析 → 确认版 Excel）里有两种产物根本不走 ``build()``：
+      ① ``/api/ai/bo``、``/api/ai/sheet`` 返回的**预览**；
+      ② ``ai_apply_bo`` 导出的那份 Excel（用户拿着它回头出包，也可能线下改）。
+    两处都不补的后果就是 2026-11-21 用户报的那句「我选择关联项目时，生成的字段
+    里面没有项目选择字段」：开关亮了、预览和 Excel 里却一个字段都没多出来。
+    ``build()`` 里那道兜底保留不动——确认版 Excel、存量包修订页还要靠它。
+
+    幂等口径与 ``ensure_project_links`` 完全一致（同一份 ``plan_link_field``）：
+      - 已有指向目标对象的 object 字段 → **复用**，只打 is_link、绝不加第二个；
+      - 编码/物理列被别人占着 → 报错（不硬塞，塞进去线上就是两列同名）；
+      - 目标对象就是自己 → 报错（自关联）；
+      - 需要新建时 sn = 当前最大 sn + 1（链接字段排在业务字段之后）。
+    """
+    target = target or project_target()
+    plan = plan_link_field(bo, pool or [], target)
+    if plan.action == "reject_self":
+        raise ValueError(f"业务对象 {bo.code}: 对象 {target.code} 不能关联自己"
+                         f"（自关联不允许）")
+    if plan.action == "conflict":
+        raise ValueError(
+            f"业务对象 {bo.code}: 物理列 {target.link_field} 已被字段 "
+            f"{plan.code}（{plan.name}）占用且未关联{target.name}，"
+            f"请先改字段名或改用现有字段")
+    want_name = str(name or "").strip()
+    existing = bo.field_by_code(plan.code)
+    if existing is None:
+        sn = max([f.sn for f in bo.fields], default=0) + 1
+        field = link_field(name=want_name, sn=sn, target=target)
+        field.bo_code = bo.code
+        bo.fields.append(field)
+        created = True
+        note = (f"业务对象 {bo.code}: 关联{target.name}，已补链接字段 {field.code}"
+                f"（{field.resolved_field_name()} varchar 64，sn={sn}）")
+    else:
+        field = existing
+        created = False
+        # 用户（或 AI）在预览里改过的显示名尊重它；没给才沿用原值。
+        # 存量包铁律只保护 code / fieldName / sn，显示名是可以改的。
+        if want_name:
+            field.name = want_name
+        note = (f"业务对象 {bo.code}: 关联{target.name}，复用链接字段 {field.code}"
+                f"（{field.resolved_field_name()}，未新增）")
+    field.is_link = True
+    # 1_业务对象 的「关联项目」列必须跟着变「是」：否则用户拿这份 Excel 回头出包，
+    # ensure_project_links 连门都不会进（它只看 project_link）。
+    bo.project_link = True
+    return field, created, note
+
+
 def link_field(name: str = "", sn: int = 1,
                target: TargetObject | None = None) -> BoField:
     """按系统范式构造链接字段（10 个结构键逐键对齐 project_create.projectId）。
@@ -1578,6 +1652,9 @@ def link_field(name: str = "", sn: int = 1,
     field_name 显式给出：``resolved_field_name()`` 本来就会按编码推出同一个值
     （XML 产物不变），但「确认版 Excel」的「物理列名」列取的是
     ``BoField.field_name``——留空那一格是空的，用户看不到「数据库列也一致」。
+
+    ``is_link=True`` 是给下游的口径标记：预览与三张表单里置顶、值来源按
+    「全部业务字段 + 主键、不默认过滤」出（见 model.BoField.is_link）。
     """
     target = target or project_target()
     return BoField(
@@ -1593,6 +1670,7 @@ def link_field(name: str = "", sn: int = 1,
         field_name=target.link_field,
         options=copy.deepcopy(LINK_OPTIONS),
         sn=sn,
+        is_link=True,
     )
 
 
@@ -2508,6 +2586,24 @@ def parse_decisions(raw: str | None, project=None) -> dict | None:
     return {"version": 1, "snapshot": token or "",
             "target": {"name": t_name, "code": t_code} if (t_name or t_code) else {},
             "objects": objects}
+
+
+def decisions_link_object(decisions: dict | None, code: str) -> bool:
+    """决策头里这个对象要不要「强制补 XX选择」。
+
+    AI 路径（一句话生成 / 需求文档解析 / 微调）的常态是「生成前还没有对象编码」，
+    所以 ``objects`` 往往是空的，或者只有别的对象 —— 「头在、但没提到我」按
+    **要补**处理：头本身表达的就是「这次导入/生成要关联业务对象」。
+
+    头里明确写了 ``linked: false``（用户在开关上关掉了）→ 不补，尊重它。
+    与 ``apply_linked`` 同一个语义，避免「预览补了、出包又说没勾」的两套判断。
+    """
+    if decisions is None:
+        return False
+    entry = (decisions.get("objects") or {}).get(code)
+    if isinstance(entry, dict) and "linked" in entry:
+        return bool(entry["linked"])
+    return True
 
 
 # ---------------------------------------------------------------- 应用

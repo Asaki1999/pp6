@@ -861,6 +861,35 @@ def _connect_ro(db: dict, timeout: int = 4):
                    db.get("database", ""), timeout=timeout, readonly=True)
 
 
+def _attr_fields(cur, def_id: str) -> dict:
+    """对象属性：字段编码 -> {name, type_new, datatype, length}。
+
+    ``name_`` 是显示名（「项目类型」这种）。值来源的过滤条件要按**显示名**
+    把两侧对起来（本对象的「项目类型」→ 项目表的「项目类型」列），没有它
+    就只能连编码，自动推导必然推不出来。老版本元数据没有这一列时退回不带
+    名字的查询：少一列名字不影响出包，只是不能自动推导过滤。
+    """
+    try:
+        cur.execute(
+            "SELECT code_, name_, type_, data_type_new_, attr_length_ "
+            "FROM iform_bo_attr WHERE def_id_=%s", (def_id,))
+        return {c: {"name": (nm or "").strip(),
+                    "type_new": (new or datatype or "").strip(),
+                    "datatype": (datatype or "").strip(),
+                    "length": int(length) if length else None}
+                for c, nm, datatype, new, length in cur.fetchall()}
+    except Exception:            # noqa: BLE001 —— 列不存在就走下面那条老查询
+        pass
+    cur.execute(
+        "SELECT code_, type_, data_type_new_, attr_length_ FROM iform_bo_attr "
+        "WHERE def_id_=%s", (def_id,))
+    return {c: {"name": "",
+                "type_new": (new or datatype or "").strip(),
+                "datatype": (datatype or "").strip(),
+                "length": int(length) if length else None}
+            for c, datatype, new, length in cur.fetchall()}
+
+
 def db_object_info(code: str) -> dict:
     """目标库里的对象：{id, fields:{code: {type_new, length}}}；没有/没库返回 {}。"""
     db = _db_ready()
@@ -877,14 +906,7 @@ def db_object_info(code: str) -> dict:
             cur.close(); conn.close()
             return {}
         bo_id = row[0]
-        cur.execute(
-            "SELECT code_, type_, data_type_new_, attr_length_ FROM iform_bo_attr "
-            "WHERE def_id_=%s", (bo_id,))
-        fields = {}
-        for c, datatype, new, length in cur.fetchall():
-            fields[c] = {"type_new": (new or datatype or "").strip(),
-                         "datatype": (datatype or "").strip(),
-                         "length": int(length) if length else None}
+        fields = _attr_fields(cur, bo_id)
         cur.close(); conn.close()
         return {"id": bo_id, "fields": fields}
     except Exception:

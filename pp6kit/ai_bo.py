@@ -1149,13 +1149,24 @@ def type_choices() -> list[dict]:
 
 
 def to_dict(bo: Bo) -> dict:
-    """给前端的结构，和 /api/parse 的 objects 保持一致，能直接复用预览渲染。"""
+    """给前端的结构，和 /api/parse 的 objects 保持一致，能直接复用预览渲染。
+
+    两个「XX选择」相关口径（用户 2026-11-20 定的，改这里等于改产品）：
+      - **这个字段排第一**：前端是按数组顺序渲染的（renderAiBo 直接 map），
+        所以「置顶」只能在这里做排序，不能指望它天然在最前面——它是**最后**补的
+        （sn = max+1），排在数组末尾才是它的自然位置；
+        注意只改**预览顺序**，不动 ``sn``：sn 决定物理列顺序，存量包一改
+        就等于要求线上 ALTER。
+      - **带上 isLink**：前端据此显示「关联字段」标记；预览回传（导出 Excel）也认它，
+        否则 ai_apply_bo 又把它当普通 object 字段，出包时丢掉置顶与值来源口径。
+    """
     return {
         "code": bo.code,
         "name": bo.name,
         "tbl": bo.tbl_name,
         "desc": bo.desc,
         "withLog": bo.with_log,
+        "projectLink": bool(getattr(bo, "project_link", False)),
         "fields": [
             {
                 "name": f.name,
@@ -1167,6 +1178,8 @@ def to_dict(bo: Bo) -> dict:
                 "objectType": f.object_type,
                 "index": f.is_index,
                 "readonly": f.readonly,
+                # 是不是「XX选择」链接字段（项目选择 / 合同选择）
+                "isLink": bool(getattr(f, "is_link", False)),
                 # 选项值：预览里要能编辑（从非标准 Excel 分析出来的 dic 字段会带上原表取值）
                 "choices": list(f.choices or []),
                 # 单选/多选：不给出去的话，前端预览和后续「再改一版」都会丢掉这个设置
@@ -1189,7 +1202,9 @@ def to_dict(bo: Bo) -> dict:
                     for c in (f.table_columns or [])
                 ],
             }
-            for f in bo.fields
+            # 链接字段置顶（只影响预览数组顺序，sn 原样不动，见上面的说明）
+            for f in sorted(bo.fields,
+                            key=lambda x: (0 if getattr(x, "is_link", False) else 1, x.sn))
         ],
     }
 

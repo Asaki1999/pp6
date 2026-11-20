@@ -31,6 +31,8 @@ SYSTEM = """你在帮用户**修改**一个已经设计好的业务对象。
    **字段级 cascadeParent（级联父字段编码）尤其不能丢**——current 里给了的，
    输出里必须原样带回，哪怕这次修改跟它毫无关系。
    候选值里出现「父值：子1、子2」的，整行原样保留，不要拍平。
+   current 里带 ``link: true`` 的字段是系统强制加的「XX选择」（项目选择 /
+   合同选择）：**整条原样保留**，不要删、不要改名、也不要改类型。
 3. 没提到的表单分组、列表列：原样保留
 4. 新增字段：code 用**语义化英文小驼峰**，type 只能从这 14 种里选：
    varchar / number / datetime / clob / user / department / attachment /
@@ -101,6 +103,10 @@ def _compact(payload: dict) -> dict:
             item["readonly"] = True
         if f.get("isMultiple"):
             item["isMultiple"] = True
+        if f.get("isLink"):
+            # 「XX选择」是强加字段：告诉模型这条别动（改名/删掉都会让用户以为
+            # 我们改了口径）；真正的 is_link 标记由我们重建时重新打。
+            item["link"] = True
         fields.append(item)
 
     out = {
@@ -138,8 +144,16 @@ def _compact(payload: dict) -> dict:
     return out
 
 
-def refine(payload: dict, cfg: dict, timeout: int = 150) -> dict:
-    """在当前结果上按指令改。返回和 ai_generate_bo 同构的 dict。"""
+def refine(payload: dict, cfg: dict, timeout: int = 150,
+           link_target=None, link_decisions: dict | None = None) -> dict:
+    """在当前结果上按指令改。返回和 ai_generate_bo 同构的 dict。
+
+    link_target / link_decisions：本次关联的目标业务对象（由路由层从
+    X-Project-Link 解析，缺省 None = 不关联）。为什么微调也要传：``build_bo`` 按
+    模型的 JSON 重建对象，而 ``isLink`` 是我们的内部口径、不在提示词里，模型抄不
+    回来——不重新注入的话，「改一句话」之后「项目选择」就掉档成普通关联字段
+    （不置顶、值来源不是全字段），用户会以为我们偷偷改了规则。
+    """
     instruction = " ".join((payload.get("instruction") or "").split())
     if not instruction:
         raise ValueError("说说要改哪里")
@@ -245,6 +259,19 @@ def refine(payload: dict, cfg: dict, timeout: int = 150) -> dict:
         if f.length is None and old and old.get("length"):
             f.length = old["length"]
 
+    # 「XX选择」链接字段：模型抄不回 isLink（内部口径），只能重新注入。
+    # 与 ai_generate_bo / ai_apply_bo 同一份实现（projlink.ensure_link_field）：
+    # 已有指向目标对象的字段就复用、只补标记，绝不加第二个。
+    link_field = None
+    if link_target is not None:
+        from . import projlink as _pl
+        if _pl.decisions_link_object(link_decisions, bo.code):
+            _old_link = next((f for f in (payload.get("bo") or {}).get("fields") or []
+                              if f.get("isLink")), None)
+            link_field, _created, _note = _pl.ensure_link_field(
+                bo, link_target, name=str((_old_link or {}).get("name") or ""))
+            notices.append(_note)
+
     # 表单：沿用原来的 key/name，只更新字段列表
     form_payload = None
     old_form = payload.get("form") or {}
@@ -281,6 +308,12 @@ def refine(payload: dict, cfg: dict, timeout: int = 150) -> dict:
             _nm = str(ff.get("name") or "").strip()
             if _nm in _src and ff.get("type") in ("select", "dictionary"):
                 ff["valueSource"] = _src[_nm]
+        # 链接字段的控件必须还在第一行、且是 linkdata：模型重排分组时常常把它
+        # 挪到中间或降级成普通下拉，那样「先选项目、再联动」的顺序就没了。
+        if link_field is not None:
+            from . import ai_form as _af
+            _af.prepend_control(form_payload, link_field.code, link_field.name,
+                                link_field.object_type or "")
 
     # 列表：沿用原 key，列按新字段重算（被删掉的列要丢掉）
     list_payload = None
@@ -344,6 +377,8 @@ def refine(payload: dict, cfg: dict, timeout: int = 150) -> dict:
         "objectSource": _objects.status(),
         "existObject": _objects.lookup(bo.name),
         "relationships": relationships,
+        # 与 ai_generate_bo 同结构：前端要能一直显示「已关联：合同」
+        "linkTarget": (link_target.to_dict() if link_target is not None else None),
         "model": used.get("model", ""),
         "seconds": round(time.time() - t0, 2),
         "instruction": instruction,

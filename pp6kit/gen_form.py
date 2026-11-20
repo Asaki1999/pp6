@@ -106,6 +106,45 @@ def _max_per_row(form: Form) -> int:
 
 _LINK_CONFIG_LIST = {"id": "id_", "text": "name_", "typeById": "varchar", "type": "first", "structure": "list"}
 
+# selectObject（对象选择器）在样例骨架里没有这一条，落到 text 兜底就会把详情页的
+# 关联字段变成**文本框**（既选不到对象，也没有 boCode）。这份形状照抄原生详情
+# 表单 `form/001-project_summary.xml`（PP6/表单/项目详情表单 1.zip），只保留其中
+# 稳定出现的键——boCode/store/multiple/display 四个是系统认它的依据。
+_SELECT_OBJECT_OPTIONS = {
+    "controls": True,
+    "read_rights": "false",
+    "default_value_type": "fixed",
+    "autoCollapse": True,
+    "required": "false",
+    "is_width": False,
+    "hide_label": False,
+    "placeholder": "请选择",
+    "height": "",
+    "clearable": True,
+    "display": True,
+    "multiple": False,
+    "mobile": True,
+    "visible_condition": {"condition": "AND", "rules": []},
+    "default_value": "",
+    "store": "id",
+    "boCode": "",
+    "label_width": 100,
+    "is_label_width": False,
+    "label_width_unit": "px",
+    "fullscreen": False,
+    "selection": True,
+    "dbFieldType": "mediumContent",
+    "width": 100,
+    "width_unit": "%",
+    "disabled_rights": "false",
+    "selector_range": True,
+    "hide_rights": "false",
+    "marginTop": "",
+}
+
+# 样例骨架里缺、但生成器自带形状的控件类型
+_BUILTIN_OPTIONS = {"selectObject": _SELECT_OBJECT_OPTIONS}
+
 # 系统内置隐藏字段
 # 只补 id / version 两个系统必需的主键与版本控件。
 # 以前还会补一个「拼音」隐藏控件，但线上业务表并没有这一列（老表单才有），
@@ -135,6 +174,18 @@ class Snippets:
         if raw:
             return json.loads(raw), False
         return json.loads(self.data["fieldOptions"].get("text", "{}")), True
+
+    def options_for(self, field_type: str) -> tuple[dict, bool]:
+        """同 field_options，但对「样例里没有、我们自带形状」的控件不报兜底。
+
+        selectObject 就是这样一种：样例骨架没有它，可我们有原生详情表单的键集
+        （_SELECT_OBJECT_OPTIONS）。不特判的话每次出包都会飘一条「已用 text 兜底」
+        的假告警，用户会去改本来就对的表单。
+        """
+        base, fallback = self.field_options(field_type)
+        if fallback and field_type in _BUILTIN_OPTIONS:
+            return copy.deepcopy(_BUILTIN_OPTIONS[field_type]), False
+        return base, fallback
 
     def hidden_options(self, which: str) -> dict:
         raw = self.data["fieldOptions"].get(f"_hidden_{which}") or self.data["fieldOptions"].get("_hidden", "{}")
@@ -416,8 +467,129 @@ def _table_configurable(cell: dict) -> dict:
     }
 
 
+def _linkdata_options(out: dict, field: FormField, link, bo: Bo | None,
+                      form: Form | None = None) -> None:
+    """关联数据控件的 fieldOptions（样本 form/002-glxmd.xml 的「所属项目」）。
+
+    键集逐项对照 docs/参考-关联对象值来源-20261119.md §3：
+
+        linkdata        值来源 key（不是对象编码、不是数据集名）
+        link_config     主键/名称列 + 结构（id/text/typeById/type/structure）
+        link_linkage    返回列 -> 本表单控件（空串 = 只回显不带出）
+        link_condition  过滤绑定：name/fieldName/rule_id 与值来源的 rule_id **同一个**
+        init_linkage / selection / relation / is_fk / is_pk / multiple /
+        isAlldata / notInputCondition / dbFieldType
+
+    这些键少一个的表现都不一样（联动不生效 / 过滤失效 / 值选不上），
+    所以不做「缺省就算了」，全部显式写。
+    """
+    # form 必须传下去：``links._linkage`` 靠「本表单有哪些控件」把联动映射收敛到
+    # 真实存在的控件上（没有对应控件的列只回显、field 为空串）。不传的话那道守卫
+    # 整条失效——产物里会出现指向本表单**不存在**的控件的 link_linkage，
+    # 导入后选了值带不出来，界面上还看不出哪里错。
+    info = link.for_field(bo, field, form) if link is not None else None
+    key = field.value_source or (info.dataset_key if info is not None else "")
+    if key:
+        out["linkdata"] = key
+    if info is None:
+        # 拿不到目标对象（离线 + 目标既不在本包也不在系统清单）：保留骨架里的
+        # link_config，别把树形关联的 structure/parentId 覆盖成拍平的 list。
+        out.setdefault("link_config", dict(_LINK_CONFIG_LIST))
+        out.setdefault("multiple", "N")
+        out.setdefault("init_linkage", True)
+        out.setdefault("selection", True)
+        out.setdefault("notInputCondition", "conditionIsNone")
+        return
+
+    target = info.target
+    bf = bo.field_by_code(field.name) if bo is not None else None
+    tree = bool((bf.options or {}).get("tree")) if bf is not None else False
+    # 树形关联沿用骨架里的 structure/parentId/selectMode（那是树控件的参数），
+    # 只把主键/名称列换成目标对象的真实列名；非树形给一份干净的 list 配置。
+    config = dict(out.get("link_config") or {}) if tree else {}
+    config.update({
+        "id": target.id_column,
+        "text": target.name_column,
+        "typeById": "varchar",
+        "type": "first",
+        "structure": "tree" if tree else "list",
+    })
+    out["link_config"] = config
+
+    out["link_linkage"] = [dict(item) for item in info.linkage]
+    if info.filter is not None:
+        filt = info.filter
+        out["link_condition"] = [{
+            "name": filt.rule_id,
+            "fieldName": filt.field_name,
+            "fieldLabel": filt.label,
+            "fieldDataType": filt.type,
+            "mode": "bind",
+            "value": filt.source_field,
+            "type": filt.control,
+            "controlTypeOptions": {},
+            "controlType": filt.control,
+            "rule_id": filt.rule_id,
+            "desc": filt.rule_id,
+        }]
+    else:
+        out["link_condition"] = []
+    out["init_linkage"] = True
+    out["selection"] = True
+    out["is_fk"] = False
+    out["is_pk"] = False
+    out["relation"] = "one2many"
+    out.setdefault("multiple", "N")
+    out["isAlldata"] = False
+    out["notInputCondition"] = "conditionIsNone"
+    out["dbFieldType"] = "mediumContent"
+    # 样本里这个键恒为 true（表单可以折叠关联部分）；缺了设计器里没有折叠按钮
+    out.setdefault("autoCollapse", True)
+    # 样本里关联数据控件的占位符是「请选择」、可清空；骨架默认「请输入/不可清空」
+    # 是文本控件的口径，照抄到下拉上会显得像个输入框。
+    if out.get("placeholder") in (None, "", "请输入"):
+        out["placeholder"] = "请选择"
+    out["clearable"] = True
+    out["placeholder"] = out.get("placeholder") or "请选择"
+    out.setdefault("clearable", True)
+    out.setdefault("display", True)
+    out.setdefault("mobile", True)
+    out.setdefault("read_rights", "false")
+
+
+def _select_object_options(out: dict, field: FormField, link, bo: Bo | None,
+                           form: Form | None = None) -> None:
+    """对象选择器（详情/条件表单）：boCode + store=id，不带值来源。
+
+    依据原生样本：详情/基本信息里的 object 字段全是 selectObject，且**没有**
+    value_source / datasource。给它照抄 select 那套（带数据集）会在详情页
+    变成可编辑的下拉，和系统原生形态不一致。
+    """
+    info = link.for_field(bo, field, form) if link is not None else None
+    code = info.target.code if info is not None else ""
+    if not code:
+        bf = bo.field_by_code(field.name) if bo is not None else None
+        code = (bf.object_type if bf is not None else "") or field.value_source
+    out.pop("value_source", None)
+    out.pop("datasource", None)
+    if code:
+        out["boCode"] = code
+    out["store"] = out.get("store") or "id"
+    out.setdefault("multiple", False)
+    out["display"] = True
+    if out.get("placeholder") in (None, "", "请输入"):
+        out["placeholder"] = "请选择"
+
+
 def _apply_options(base: dict, field: FormField, parents: set[str] | None = None,
-                   bo_code: str = "") -> dict:
+                   bo_code: str = "", link=None, bo: Bo | None = None,
+                   form: Form | None = None) -> dict:
+    """骨架 + 字段 -> 真正写进 XML 的 fieldOptions。
+
+    ``form`` 是**控件所属的那张表单**，只给关联对象用：联动映射要按「本表单有
+    哪些控件」裁剪（见 ``_linkdata_options``）。调用方都是手里已经有 form 的
+    生成路径（render / node_field_meta），缺省 None 只在老的单测夹具里出现。
+    """
     out = copy.deepcopy(base)
     t = field.field_type
 
@@ -446,10 +618,11 @@ def _apply_options(base: dict, field: FormField, parents: set[str] | None = None
             out["dictionary"] = field.value_source
         out.setdefault("multiple", False)
     elif t == "linkdata":
-        if field.value_source:
-            out["linkdata"] = field.value_source
-        out.setdefault("link_config", dict(_LINK_CONFIG_LIST))
-        out.setdefault("multiple", "N")
+        # 关联数据（新建表单里的关联对象）：值来源 + 联动 + 过滤绑定
+        _linkdata_options(out, field, link, bo, form)
+    elif t == "selectObject":
+        # 对象选择器（详情/条件态）：系统原本的字段类型，**不带** value_source
+        _select_object_options(out, field, link, bo, form)
     elif t == "dropSelector":
         out.setdefault("selector_type", "user")
         out.setdefault("multiple", False)
@@ -521,7 +694,8 @@ def _apply_options(base: dict, field: FormField, parents: set[str] | None = None
     return out
 
 
-def node_field_meta(form: Form, field: FormField, snip: "Snippets") -> tuple[str, dict, bool]:
+def node_field_meta(form: Form, field: FormField, snip: "Snippets",
+                    link=None, bo: Bo | None = None) -> tuple[str, dict, bool]:
     """给「流程节点字段权限」用的控件快照：(真正写进 XML 的控件类型, fieldOptions, 是否兜底)。
 
     为什么必须由本模块提供、而不是让 gen_workflow 自己拼：
@@ -535,8 +709,11 @@ def node_field_meta(form: Form, field: FormField, snip: "Snippets") -> tuple[str
     """
     parents = _cascade_parent_names(form)
     ftype = _effective_type(field, parents)
-    base, fallback = snip.field_options(ftype)
-    return ftype, _apply_options(base, field, parents, form.bo_code), fallback
+    # 关联对象/关联数据的 fieldOptions 依赖目标对象与值来源配置（link），
+    # 不给它就只能出骨架值——与表单产物不一致，节点权限里那个字段会显示错。
+    base, fallback = snip.options_for(ftype)
+    return ftype, _apply_options(base, field, parents, form.bo_code, link, bo,
+                                 form), fallback
 
 
 def _is_dic_field(field: FormField) -> bool:
@@ -748,7 +925,7 @@ def _plan_rows(form: Form) -> list[list[FormField]]:
 
 def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
            tenant: str = "-999", extend_patch: dict | None = None,
-           script: str = "") -> tuple[str, list[str]]:
+           script: str = "", link=None) -> tuple[str, list[str]]:
     """返回 (xml 文本, 提示列表)。"""
     notices: list[str] = []
     # 流程节点/处理人/定义/实例/状态只用于流程反写，不渲染成可见控件；
@@ -949,7 +1126,7 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
             # 明细表 / 表格字段：容器下只有一个控件，没有布局层
             f = rows[0][0]
             dft = _effective_type(f, parents)
-            opts, fallback = snip.field_options(dft)
+            opts, fallback = snip.options_for(dft)
             if fallback:
                 notices.append(
                     f"控件 {f.name}: 样例中没有 {dft} 类型骨架，已用 text 兜底，导入后请核对"
@@ -966,7 +1143,8 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
                 "label": f.label,
                 "desc": f.desc or "",
                 "fieldType": dft,
-                "fieldOptions": json_attr(_apply_options(opts, f, parents, bo_code)),
+                "fieldOptions": json_attr(
+                    _apply_options(opts, f, parents, bo_code, link, bo, form)),
                 "sn": 1,
             }, indent=2))
             continue
@@ -995,12 +1173,12 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
                         f"控件类型已按线上样本从「{f.field_type}」出成「select + 选项来源=数据字典」"
                         f"（树形字典控件没有级联概念）"
                     )
-                opts, fallback = snip.field_options(ftype)
+                opts, fallback = snip.options_for(ftype)
                 if fallback:
                     notices.append(
                         f"控件 {f.name}: 样例中没有 {ftype} 类型骨架，已用 text 兜底，导入后请核对"
                     )
-                fo = _apply_options(opts, f, parents, bo_code)
+                fo = _apply_options(opts, f, parents, bo_code, link, bo, form)
                 bf = bo_fields.get(f.name)
                 cell_id_el = new_id()
                 cells.append({

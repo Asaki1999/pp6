@@ -6,7 +6,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from . import fieldtypes, naming, spec
+from . import fieldtypes, modules as mod_def, naming, spec
 from .model import (
     FORM_BUNDLE,
     FORM_KIND_LABEL,
@@ -26,10 +26,19 @@ from .model import (
     WfEdge,
     WfNode,
     Workflow,
+    parse_filter_field,
     parse_json,
+    parse_linkage,
+    object_name_of,
     split_list,
     table_name_for,
     truthy,
+    value_source_key,
+    value_source_key_notes,
+    value_source_missing_name_note,
+    value_source_name,
+    wants_all_results,
+    wants_no_filter,
 )
 
 
@@ -106,6 +115,36 @@ def _resolve_bo_code(proj, code: str, where: str, auto_notes: list[str]) -> str:
             auto_notes.append(note)
         return bo.code
     return code
+
+
+def _blank(value) -> bool:
+    """单元格是不是「没填」（None / 空串都算）。
+
+    为什么单独写一个：「返回字段」列留空与写 ``*`` 是**同一档**配置（全部自建
+    字段），而写 ``id,name`` 是最小列。三种格子必须区分开，不能靠 ``str(x)``
+    判空（``None`` 会变成 ``"None"``）。
+    """
+    return value is None or not str(value).strip()
+
+
+def _table_of_object(proj, text: str) -> str:
+    """值来源的「对象编码」→ 物理表名。
+
+    为什么 6.1_值来源 让用户写**对象编码**、读的时候才换表名：
+      · 用户脑子里是「哪个对象的数据」，不是「哪张物理表」；
+      · 物理表名是生成的（``pp_ + 编码``），对象编码改了表名就得跟着改，
+        让用户在 Excel 里同步维护两处，迟早对不上；
+      · 6_数据集 的「主表名」是历史列，两种写法都收（不能改口径，否则
+        老工作簿读出来会变），所以两张表的口径差别就写在各自的列说明里。
+
+    本包对象 → ``bo.tbl_name``（缺表名时按平台规则补 ``pp_ + 编码``）；
+    系统对象 / 手写编码 → 原样返回，交给 links.LinkPlan.target 解析兜底。
+    """
+    key = str(text or "").strip()
+    bo = proj.bo(key) or next((b for b in proj.bos if b.tbl_name == key), None)
+    if bo is None:
+        return key
+    return bo.tbl_name or table_name_for(bo.code)
 
 
 def _fix_columns(bo, columns: list[str], where: str, auto_notes: list[str]) -> list[str]:
@@ -601,6 +640,8 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
                     group=str(get("group") or "").strip(),
                     cascade_parent=str(get("cascade_parent") or "").strip(),
                     options=parse_json(get("options"), f"[{spec.S_FORMFIELD}] 第{row_no}行", errors),
+                    # 联动映射：值来源返回列 -> 本控件（老工作簿没这一列 → 空 = 自动推导）
+                    linkage=parse_linkage(get("linkage")),
                 )
             )
 
@@ -640,23 +681,161 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
             )
 
     # ---- 数据集
+    #
+    # 值来源有两处来源，**顺序不能反**：
+    #   ① 6_数据集（老工作簿把值来源和列表数据集混在这张表里，靠「类型」列区分）；
+    #   ② 6.1_值来源（新表，一份值来源一行）。
+    # 先读 ① 再读 ②：同一个 key 两处都有时以 6.1_值来源 为准（那张表是值来源的
+    # 专用表，用户在确认版 Excel 里改的、以及系统默认生成的那份都在那里），
+    # 原地替换掉 ① 里的那一份，绝不建两份同名数据集——同名 key 会互相覆盖，
+    # 包里出现两条同 key 的 dataTemplate，导入端按名字取文件，等于随机丢一条。
+    ds_index: dict[str, int] = {}
+    # key -> (哪张表, 第几行)：用来区分「跨表覆盖」和「同表重复填」
+    ds_origin: dict[str, tuple[str, int]] = {}
+
+    def _put_dataset(ds: DataSet, sheet: str, row_no: int) -> None:
+        """登记一份数据集；同 key 后读到的赢。
+
+        - **跨表**（6_数据集 → 6.1_值来源）：设计如此，后者是值来源的专用表，
+          用户在确认版 Excel 里改的就是它，静默覆盖即可（老文件兼容的前提）；
+        - **同一张表内重复**：这是填错了（一个人不可能给同一个 key 两份配置），
+          保留后者，但要留一条可查的痕迹——说清被覆盖的是第几行。
+          走 auto_notes（界面「自动补齐」+ CLI 会打印），不用 errors：重复行
+          不该把整包卡死，用户还能出包，只是要知道哪一行白写了。
+        """
+        got = ds_index.get(ds.key)
+        prev = ds_origin.get(ds.key)
+        if got is None:
+            ds_index[ds.key] = len(proj.datasets)
+            proj.datasets.append(ds)
+        else:
+            if prev is not None and prev[0] == sheet:
+                auto_notes.append(
+                    f"[{sheet}] 第{row_no}行的 key「{ds.key}」与第{prev[1]}行重复，"
+                    f"已按第{row_no}行生效（第{prev[1]}行被覆盖）")
+            proj.datasets[got] = ds
+        ds_origin[ds.key] = (sheet, row_no)
+
     if spec.S_DATASET in wb.sheetnames:
         ws = wb[spec.S_DATASET]
         for row_no, get in SheetReader(ws, spec.COLUMNS[spec.S_DATASET], errors, spec.S_DATASET).rows():
             key = str(get("key") or "").strip()
             if not key:
                 continue
-            proj.datasets.append(
-                DataSet(
-                    key=key,
-                    name=str(get("name") or key).strip(),
-                    from_table=str(get("from_table") or "").strip(),
-                    ds_type=str(get("ds_type") or "valueSource").strip(),
-                    unique_field=str(get("unique_field") or "id_").strip(),
-                    id_field=str(get("id_field") or "id_").strip(),
-                    name_field=str(get("name_field") or "name_").strip(),
-                )
-            )
+            filt_field, filt_target = parse_filter_field(get("filter_field"))
+            results_raw = get("result_fields")
+            ds_type = str(get("ds_type") or "valueSource").strip()
+            # 「返回字段」的口径**按类型分流**（6_数据集 里三种行混在一起）：
+            #   · 类型=valueSource（含老工作簿里混着的值来源行）→ 留空或 `*` =
+            #     主键 + 名称 + 全部自建字段（用户口径：返回结果默认含全部自建字段）；
+            #   · 类型=default / filter（列表数据集、筛选器）→ 留空仍是
+            #     「只回主键 + 名称」（HEAD 行为，没评审过的行为别扩散：
+            #     列表模板真正用的是 displayColumns，但返回列一改，resultColumns
+            #     就多出几列，属于没人要求过的变化）。
+            # 6.1_值来源 那张表整张都是值来源，不在这里分流（见下面那段）。
+            all_results = wants_all_results(results_raw) or (
+                _blank(results_raw) and ds_type == mod_def.DS_VALUE)
+            _put_dataset(DataSet(
+                key=key,
+                name=str(get("name") or key).strip(),
+                from_table=str(get("from_table") or "").strip(),
+                ds_type=ds_type,
+                unique_field=str(get("unique_field") or "id_").strip(),
+                id_field=str(get("id_field") or "id_").strip(),
+                name_field=str(get("name_field") or "name_").strip(),
+                # 值来源的过滤 / 返回列：老工作簿没有这两列 → 留空走自动推导。
+                # 写了「无」= 明确不要任何过滤（自身值来源 / 「XX选择」的口径）；
+                # 写了「*」= 返回全部自建字段（同上，见 model.RESULT_ALL）。
+                filter_field=filt_field,
+                filter_target=filt_target,
+                auto_filter=not wants_no_filter(get("filter_field")),
+                result_fields=[] if all_results else split_list(results_raw),
+                result_all=all_results,
+            ), spec.S_DATASET, row_no)
+
+    # ---- 值来源（6.1_值来源，一份值来源一行；老工作簿没有这张表）
+    #
+    # key / 名称都允许留空：**key 由工具生成，不让用户算**（用户 2026-11-20 口径）：
+    # key = <对象名翻英文>_value（采购申请 → purchase_apply_value），同一对象第二份
+    # 起 _2 / _3（按表里的行序）；名称 = <对象名>值来源，多份时带用途后缀
+    # （_全部 / _过滤项目类型）。用户手填了就以他的为准——「显式配置优先」一路没变。
+    if spec.S_VALUE in wb.sheetnames:
+        ws = wb[spec.S_VALUE]
+        taken_keys = {d.key for d in proj.datasets}
+        taken_names = {d.name for d in proj.datasets}
+        for row_no, get in SheetReader(ws, spec.COLUMNS[spec.S_VALUE], errors, spec.S_VALUE).rows():
+            key = str(get("key") or "").strip()
+            bo_text = str(get("bo_code") or "").strip()
+            if not key and not bo_text:
+                continue
+            if not bo_text:
+                errors.append(f"[{spec.S_VALUE}] 第{row_no}行: 「对象编码」不能为空"
+                              f"（值来源要知道取哪个对象的数据）")
+                continue
+            filt_field, filt_target = parse_filter_field(get("filter_field"))
+            explicit_target = str(get("filter_target") or "").strip()
+            bo = proj.bo(bo_text) or next(
+                (b for b in proj.bos if b.tbl_name == bo_text), None)
+            # 对象名称：本包 BO 优先，其次系统清单（离线时也有随包快照）。
+            # key 按**名称**翻英文（采购申请 → purchase_apply_value），所以名字
+            # 必须先拿到；两处都查不到时只能退回对象编码，且必须说出来——
+            # 否则用户只看到一条拼音 key，不知道是我们缺了对象名称。
+            obj_name = (bo.name if bo is not None and bo.name else "") \
+                or object_name_of(proj, bo_text)
+            name_missing = not obj_name
+            if name_missing:
+                obj_name = bo_text
+            if not key:
+                # 名字查不到时**不传 bo_name**：``value_source_key`` 就会退回
+                # 「对象编码小写」这条老口径（zzBuCunZai → zzbucunzai_value），
+                # 而不是把编码当名字再翻一遍（那会拐成 zz_bu_cun_zai）。
+                key = value_source_key(bo_text, taken_keys,
+                                       bo_name="" if name_missing else obj_name)
+                if name_missing:
+                    auto_notes.append(
+                        value_source_missing_name_note(key, bo_text))
+                else:
+                    # 词典缺词退拼音时也要说（project_budget_kemu 这类 key）
+                    auto_notes.extend(value_source_key_notes(key, obj_name))
+            name = str(get("name") or "").strip()
+            if not name:
+                # 用途后缀取「按哪个字段过滤」的显示名，过滤为空就是「全部」
+                purpose = ""
+                if filt_field:
+                    src = bo.field_by_code(filt_field) if bo is not None else None
+                    purpose = f"过滤{src.name if src is not None else filt_field}"
+                elif explicit_target or filt_target:
+                    purpose = f"过滤{explicit_target or filt_target}"
+                else:
+                    purpose = "全部"
+                name = value_source_name(obj_name, key, purpose=purpose,
+                                         taken=taken_names)
+            taken_keys.add(key)
+            taken_names.add(name)
+            results_raw = get("result_fields")
+            # 留空 / `*` 都是「全部自建字段」（见 model.RESULT_ALL 上的说明）
+            all_results = wants_all_results(results_raw) or _blank(results_raw)
+            _put_dataset(DataSet(
+                key=key,
+                name=name,
+                # 「对象编码」→ 物理表名：本包对象按 bo.code 反查 tbl_name，
+                # 查不到（系统对象 / 手写编码）就原样留着，由目标解析兜底
+                # （见 links.LinkPlan.target 与 gen_tpl.render_dataset 的 ds_table）。
+                from_table=_table_of_object(proj, bo_text),
+                ds_type=mod_def.DS_VALUE,
+                id_field=str(get("id_field") or "id_").strip(),
+                name_field=str(get("name_field") or "name_").strip(),
+                unique_field=str(get("unique_field") or "id_").strip(),
+                filter_field=filt_field,
+                filter_target=explicit_target or filt_target,
+                auto_filter=not wants_no_filter(get("filter_field")),
+                # ``*`` = 全部自建字段（result_all），不能再把 "*" 当字段名塞进
+                # result_fields —— result_list 里 picked 非空会顶掉 all_fields，
+                # 结果只剩主键 + 名称（LNK25 往返时抓到的坑）。
+                result_fields=[] if all_results else split_list(results_raw),
+                result_all=all_results,
+                auto_generated=truthy(get("auto")),
+            ), spec.S_VALUE, row_no)
 
     # ---- 表单脚本
     if spec.S_SCRIPT in wb.sheetnames:
@@ -858,7 +1037,14 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
         "表单": len(proj.forms),
         "表单控件": sum(len(f.fields) for f in proj.forms),
         "列表": len(proj.lists),
-        "数据集": len(proj.datasets),
+        # 「数据集」不再把选择器算进去：它是独立模块（实例表 6.1_值来源），
+        # 混在一起时用户看到「数据集 3」却在 6_数据集 里只找到 1 行。
+        "数据集": sum(1 for d in proj.datasets
+                      if mod_def.module_of_dataset(d.ds_type) == "dataset"),
+        "选择器": sum(1 for d in proj.datasets
+                      if mod_def.module_of_dataset(d.ds_type) == "value"),
+        "筛选器": sum(1 for d in proj.datasets
+                      if mod_def.module_of_dataset(d.ds_type) == "filter"),
         "脚本": len(proj.form_scripts),
         "隐藏规则": sum(len(f.hide_rules) for f in proj.forms),
         "流程": len(proj.workflows),

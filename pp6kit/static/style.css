@@ -1249,6 +1249,32 @@ select.ai-in { cursor: pointer; }
 .ai-choice-hint, .ai-choice-empty { font-size: 11px; color: var(--faint); }
 .ai-choice-hint { line-height: 1.4; }
 
+/* 值来源配置：对象下拉 + 「值来源」按钮同一行 */
+.ai-objrow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ai-vs-btn { font-size: 11px; padding: 3px 6px; }
+.ai-vs-pop { width: 380px; max-height: 460px; overflow: auto; }
+.ai-vs-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.ai-vs-row label { color: var(--text-2); white-space: nowrap; }
+.ai-vs-row .ai-choice-add { flex: 1; }
+.ai-vs-sub { font-size: 12px; font-weight: 600; color: var(--text); }
+/* 「默认返回全部字段、不加过滤」的说明：用户要能看懂下拉里为什么是一大串列 */
+.ai-vs-note { font-size: 11px; line-height: 1.5; color: var(--text-2); }
+.ai-vs-note b { color: var(--text); font-weight: 600; }
+.ai-vs-list { display: flex; flex-direction: column; gap: 4px; }
+.ai-vs-line { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.ai-vs-pick { display: flex; align-items: center; gap: 6px; min-width: 168px; cursor: pointer; }
+.ai-vs-pick i { font-style: normal; font-size: 10px; }
+.ai-vs-link {
+  flex: 1; min-width: 96px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 4px;
+  font-size: 11px;
+  font-family: inherit;
+  background: #fff;
+  color: var(--text);
+}
+
 /* 表单预览 */
 .ai-form-head {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;

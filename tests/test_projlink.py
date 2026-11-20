@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import re
 import tempfile
 import zipfile
 from pathlib import Path
 
-from pp6kit import patch, projlink
+from pp6kit import ai_bo, patch, projlink
 from pp6kit import spec as S
 from pp6kit import webui
 from pp6kit.model import Bo, BoField
@@ -368,7 +369,8 @@ def _():
     bo_text = pick(body, "bo/")
     row = attr_row(bo_text, "projectId")
     assert row["fieldName"] == "project_id_", row
-    assert row["name"] == "所属项目", row
+    # 2026-11-20 用户口径：链接字段显示名是「XX选择」（项目 → 项目选择）
+    assert row["name"] == "项目选择", row
     assert row["dataTypeNew"] == "object" and row["objectType"] == "project", row
     assert row["datatype"] == "varchar" and row["length"] == "64", row
     assert row["isnull"] == "Y" and row["isindex"] == "N", row
@@ -442,11 +444,16 @@ def _():
     first = build(data)
     second = build(data)
     # 对象/表单的 id 是每次生成的随机 UUID（导入端按 id 判断新增还是更新），
-    # 比对前统一抹掉，剩下的字节必须完全一样
-    id_pat = re.compile(r'\sid="[^"]*"')
+    # 比对前统一抹掉，剩下的字节必须完全一样。
+    # data_template（列表 / 值来源）还要多抹两样：
+    #   · templateId：随 tpl_id 一起生成的 id，同样是每次新 UUID；
+    #   · createTime / updateTime：写的是**当下时间**（骨架里的旧时间戳会让
+    #     新模板显示成一年前创建，见 gen_tpl._now_iso），跨秒就会不同。
+    # 这两样都不是「内容」，抹掉之后比的才是配置本身。
+    id_pat = re.compile(r'\s(id|templateId|createTime|updateTime)="[^"]*"')
 
     def norm(text: str) -> str:
-        return id_pat.sub(' id=""', text)
+        return id_pat.sub(r' \1=""', text)
 
     a, b = texts(first), texts(second)
     assert a and sorted(a) == sorted(b)
@@ -766,7 +773,9 @@ def _():
     hits = [x for x in form_obj.fields if x.name == "proj"]
     assert len(hits) == 1, [x.name for x in form_obj.fields]
     ctrl = hits[0]
-    assert ctrl.field_type == "select", ctrl
+    # 新建表单里的关联对象是 linkdata（挂值来源 + 联动 + 过滤），
+    # 不再是普通下拉 select（2026-11-19 对齐线上导出包 config-sync-20261119184322）
+    assert ctrl.field_type == "linkdata", ctrl
     # 取值来源必须接上数据集（系统已有 project / 没有则新建 project_value），不能是空
     assert ctrl.value_source in ("project", "project_value"), ctrl.value_source
 
@@ -1668,7 +1677,7 @@ def _():
         httpd.shutdown()
 
 
-@case("PL47", "projlink", "开关新补的「所属项目」在表单里是下拉、取值来源接 project（add 路径）",
+@case("PL47", "projlink", "开关新补的「项目选择」在表单里是下拉、取值来源接 project（add 路径）",
       "P0", ["导入后表单里选得到项目", "PL22 只覆盖 reuse"])
 def _():
     # add 路径与 reuse 是两段代码。只覆盖 reuse 的话，勾了开关却发现表单里没有
@@ -1680,15 +1689,30 @@ def _():
                      S.S_FORMFIELD: [{"表单key": "create_contract", "字段编码": "contractNo",
                                       "显示标签": "合同编号", "控件类型": "text"}]})
     with using():
-        body = webui.build_zip(xlsx(data), codes=["bo", "form"],
+        # codes 必须带上 value：值来源是独立模块（2026-11-19 拆出来的）。
+        # 不选它时包里没有 data_template/*.xml，编辑态的 linkdata 会被
+        # blueprint.demote_links_without_value_package 降级成 selectObject
+        # ——那正是「取消勾选值来源不留悬空」的设计，不是本用例要验的东西。
+        body = webui.build_zip(xlsx(data), codes=["bo", "form", "value"],
                                projlink_header=pl_header(
                                    {"contract": {"linked": True}}))[0]
     form = pick(body, "form/")
-    assert "projectId" in form, "表单里没有「所属项目」控件"
-    assert '"field_type":"select"' in form.replace("&quot;", '"'), "所属项目不是下拉"
-    assert '"value_source":"project"' in form.replace("&quot;", '"'), \
-        "所属项目的取值来源没接上 project（导入后选不到项目）"
-    assert "所属项目" in form, "控件标签不是「所属项目」"
+    assert "projectId" in form, "表单里没有「项目选择」控件"
+    # 新建表单里的关联对象是 linkdata（不是普通下拉 select），取值来源写在
+    # fieldOptions.linkdata 上；2026-11-19 起与线上导出包一致
+    import json as _json
+
+    frag = next(t for t in all_tags(form, "formField")
+                if attrs(t).get("name") == "projectId")
+    got = attrs(frag)
+    assert got["fieldType"] == "linkdata", got
+    opts = _json.loads(got["fieldOptions"].replace("&quot;", '"').replace("&amp;", "&"))
+    # 值来源必须是**本包自带**的 dataTemplate key（<obj>_value 形状）：
+    # 系统清单里那个同名 key（project）是 dataSet 的 key，不是值来源的 key，
+    # 指过去导入后下拉是空的（样本里 dataTemplateDef key=zlyglxmlx、
+    # dataSet key=project，两者根本不同名）。
+    assert str(opts.get("linkdata") or "").startswith("project_value"), opts
+    assert "项目选择" in form, "控件标签不是「项目选择」"
 
 
 # ---------------------------------------------------------------- PL48–PL58
@@ -1845,7 +1869,7 @@ def _():
     assert 'code="projectId"' in pick(body, "bo/")
 
 
-@case("PL51", "projlink", "Excel 没有「所属项目」→ 只在勾了「关联项目」时自动补，并进 addedLinks",
+@case("PL51", "projlink", "Excel 没有「项目选择」→ 只在勾了「关联项目」时自动补，并进 addedLinks",
       "P0", ["addedLinks 报备", "不勾就不补", "不重复补"])
 def _():
     data = _linked_data()          # Excel 里没有「关联项目」列
@@ -1857,7 +1881,7 @@ def _():
     assert vm["addedLinkCount"] == 1, vm["addedLinks"]
     link = vm["addedLinks"][0]
     assert link == {"objectCode": "contract", "objectName": "合同",
-                    "fieldName": "所属项目", "code": "projectId"}, link
+                    "fieldName": "项目选择", "code": "projectId"}, link
     assert "projectId" in {f["code"] for f in linked["objects"][0]["fields"]}
     # ② 没勾：一条都不报，产物里也没有
     assert plain["projectAlign"]["addedLinks"] == [], plain["projectAlign"]["addedLinks"]
@@ -2606,26 +2630,26 @@ def _fake_db(rows: list[tuple], suggestions: list[tuple] | None = None):
 
 
 @case("PL67", "projlink", "关联其它业务对象：链接字段按目标对象命名（projectId 只属于项目）",
-      "P0", ["contract → contractId / contract_id_ / 关联合同",
+      "P0", ["contract → contractId / contract_id_ / 合同选择",
              "多词驼峰 saleOrder → saleOrderId / sale_order_id_",
              "大写开头也小写首字母", "项目仍走固定范式（不被库里的别名带偏）",
              "TargetObject ↔ 快照 project 元信息可互转"])
 def _():
     proj = projlink.target_for("project", "项目", "pp_project")
     assert (proj.link_code, proj.link_field, proj.link_label) == (
-        "projectId", "project_id_", "所属项目"), proj
+        "projectId", "project_id_", "项目选择"), proj
     assert proj.is_project
 
     con = projlink.target_for("contract", "合同", "pp_contract", "合同信息", "name")
     assert con.link_code == "contractId", con
     assert con.link_field == "contract_id_", con
-    assert con.link_label == "关联合同", con
+    assert con.link_label == "合同选择", con
     assert con.table_label == "合同信息" and con.matched_by == "name", con
     assert not con.is_project
 
     so = projlink.target_for("saleOrder", "销售订单", "pp_sale_order")
     assert (so.link_code, so.link_field, so.link_label) == (
-        "saleOrderId", "sale_order_id_", "关联销售订单"), so
+        "saleOrderId", "sale_order_id_", "销售订单选择"), so
     # 编码首字母大写（线上有些对象就是大驼峰）→ 链接编码照样小写开头
     up = projlink.target_for("Contract")
     assert up.link_code == "contractId", up
@@ -2634,7 +2658,7 @@ def _():
     # to_dict 给前端，target_of 从快照 project 元信息还原（上传 token 走这条）
     d = con.to_dict()
     assert (d["linkCode"], d["linkField"], d["linkLabel"], d["isProject"]) == (
-        "contractId", "contract_id_", "关联合同", False), d
+        "contractId", "contract_id_", "合同选择", False), d
     snap = projlink.Snapshot(project=con.to_dict(), fields=[], source="target_db")
     back = projlink.target_of(snap)
     assert (back.code, back.name, back.link_code) == (
@@ -2710,7 +2734,7 @@ def _():
             # ① 按名称认
             tgt = projlink.resolve_target_from_zip(pkg, "合同")
             assert (tgt.code, tgt.tbl) == ("contract", "pp_contract"), tgt
-            assert tgt.link_code == "contractId" and tgt.link_label == "关联合同", tgt
+            assert tgt.link_code == "contractId" and tgt.link_label == "合同选择", tgt
             assert tgt.matched_by == "name", tgt
             # ② 按编码认（用户从系统里拿到的是编码）
             assert projlink.resolve_target_from_zip(pkg, "", "contract").matched_by == "code"
@@ -2769,7 +2793,7 @@ def _():
         # ① 目标对象原样回给前端（前端页签/文案都按它切换）
         got = res["linkTarget"]
         assert got["code"] == "contract" and got["name"] == "合同", got
-        assert got["linkCode"] == "contractId" and got["linkLabel"] == "关联合同", got
+        assert got["linkCode"] == "contractId" and got["linkLabel"] == "合同选择", got
         assert got["isProject"] is False, got
 
         # ② 补出来的是 contractId（不是 projectId）
@@ -2777,7 +2801,7 @@ def _():
         assert "contractId" in codes, codes
         assert "projectId" not in codes, f"对象还是被补了 projectId：{codes}"
         link = next(f for f in res["objects"][0]["fields"] if f["code"] == "contractId")
-        assert link["objectType"] == "contract" and link["name"] == "关联合同", link
+        assert link["objectType"] == "contract" and link["name"] == "合同选择", link
 
         # ③ 字段池来自合同包：合同编号 → code（E0 同名同族，自动）
         vm = res["projectAlign"]
@@ -2796,10 +2820,11 @@ def _():
         assert row["objectType"] == "contract", row
         assert row["fieldName"] == "contract_id_", row
         assert row["length"] == "64", row
+        # 显示名按「XX选择」口径（2026-11-20）：关联合同 → 合同选择
+        assert row["name"] == "合同选择", row
         note = comment_of(body)
         assert "合同对齐:" in note, note[-600:]
         assert "项目对齐:" not in note, note[-600:]
-        assert "关联合同" in note, note[-600:]
 
 
 @case("PL71", "projlink", "自关联与占用：目标对象本身 / 链接编码或物理列被占 → 明确报错，不硬塞字段",
@@ -2916,3 +2941,618 @@ def _():
     finally:
         projlink.db_config = old_cfg
         httpd.shutdown()
+
+
+# ---------------------------------------------------------------- AI 路径的「XX选择」
+#
+# 这一组守的是 2026-11-21 用户报的那个 bug：「强制加『XX选择』没生效——我选择
+# 关联项目时，生成的字段里面没有项目选择字段」。
+# 标准 Excel 那条路靠 builder.ensure_project_links 补字段，而 AI 这条路
+# （一句话生成 / 需求文档解析 / 确认版 Excel）**完全不经过 build**，
+# 所以必须在这两个产物上各补一次：预览（/api/ai/bo、/api/ai/sheet）与导出的
+# Excel（ai_apply_bo）。少任何一处都是同一个 bug 的另一种表现。
+
+
+def _stub_ai(fields_spec: list[dict], form_spec: dict | None = None):
+    """把四个 AI 生成函数换成固定产出（回归不联网、结果可断言）。
+
+    ``ai_sheet.analyze`` 也要换：不换就会拿本机真实的 Key 去调模型，
+    回归会变慢、还要上网（这条曾是 22 秒，肉眼看是「偶发超时」）。
+
+    返回原始函数四元组，调用方在 finally 里换回去。
+    """
+    from pp6kit import ai_bo, ai_form, ai_list, ai_sheet
+
+    orig = (ai_bo.generate, ai_form.generate, ai_list.generate, ai_sheet.analyze)
+    spec = {"name": "采购申请", "code": "caigou", "fields": fields_spec}
+
+    def gen_bo(description, cfg, known_objects=None, timeout=90):
+        bo, notes = ai_bo.build_bo(dict(spec), known_objects or [])
+        return {"bo": bo, "notices": notes, "model": "stub", "seconds": 0.0}
+
+    def gen_form(bo, cfg, form_name="", timeout=90):
+        form, notes = ai_form.build_form(
+            dict(form_spec or {}), bo, f"create_{bo.code}", name=f"新建{bo.name}")
+        return {"form": form, "notices": notes, "model": "stub", "seconds": 0.0}
+
+    def gen_list(bo, cfg, timeout=90):
+        lst, notes = ai_list.build_list(
+            {"columns": [f.code for f in bo.fields]}, bo)
+        return {"list": lst, "notices": notes, "model": "stub", "seconds": 0.0}
+
+    def gen_sheet(summary, cfg, known_objects=None, hint="", timeout=90):
+        bo, notes = ai_bo.build_bo(dict(spec), known_objects or [])
+        return {"bo": bo, "notices": notes, "model": "stub", "seconds": 0.0,
+                "sourceColumns": {}}
+
+    ai_bo.generate, ai_form.generate = gen_bo, gen_form
+    ai_list.generate, ai_sheet.analyze = gen_list, gen_sheet
+    return orig
+
+
+def _restore_ai(orig) -> None:
+    from pp6kit import ai_bo, ai_form, ai_list, ai_sheet
+
+    ai_bo.generate, ai_form.generate, ai_list.generate, ai_sheet.analyze = orig
+
+
+_AI_FIELDS = [
+    {"code": "shenQingDanHao", "name": "申请单号", "type": "varchar", "length": 64},
+    {"code": "zhuanYe", "name": "专业", "type": "varchar", "length": 200},
+]
+
+
+@case("PL73", "projlink", "AI 一句话生成：带 X-Project-Link 就在预览里补「项目选择」并置顶",
+      "P0", ["/api/ai/bo 认同一个决策头", "字段排第一 + isLink",
+             "表单第一行是 linkdata", "不带头的旧调用逐字段不变"])
+def _():
+    from pp6kit import ai_form
+
+    orig = _stub_ai(_AI_FIELDS, {"groups": [{"title": "基本信息",
+                                            "fields": ["申请单号", "专业"]}]})
+    try:
+        # ① 选了「关联」：头里只有 version+objects（AI 路径还没有对象编码）
+        res = webui.ai_generate_bo({"description": "做一个采购申请单"},
+                                   pl_header({}))
+        bo = res["bo"]
+        first = bo["fields"][0]
+        assert first["code"] == "projectId", [f["code"] for f in bo["fields"]]
+        assert first["name"] == "项目选择", first
+        assert first["isLink"] is True, first
+        assert first["type"] == "object" and first["objectType"] == "project", first
+        assert first["fieldName"] == "project_id_", first
+        assert bo["projectLink"] is True, bo.get("projectLink")
+        assert {f["code"] for f in bo["fields"]} == {
+            "projectId", "shenQingDanHao", "zhuanYe"}, [f["code"] for f in bo["fields"]]
+        # 目标对象一并回给前端（预览上要能显示「已关联：项目」）
+        assert res["linkTarget"]["code"] == "project", res.get("linkTarget")
+        assert res["linkTarget"]["linkLabel"] == "项目选择", res["linkTarget"]
+        # 表单第一行必须是它，且是 linkdata（带值来源，能联动）
+        ctrl = res["form"]["fields"][0]
+        assert ctrl["name"] == "projectId", [c["name"] for c in res["form"]["fields"]]
+        assert ctrl["type"] == "linkdata", ctrl
+        assert ctrl["valueSource"] == "project", ctrl
+        # 提示里要说出来（用户得知道这个字段是自动加的）
+        assert any("项目选择" in n for n in res["notices"]), res["notices"]
+
+        # ② 没带头（用户在第一步选了「不关联」）：一个字段都不许多
+        plain = webui.ai_generate_bo({"description": "做一个采购申请单"}, None)
+        codes = [f["code"] for f in plain["bo"]["fields"]]
+        assert codes == [f["code"] for f in _AI_FIELDS], codes
+        assert plain["bo"]["projectLink"] is False, plain["bo"].get("projectLink")
+        assert all(f["isLink"] is False for f in plain["bo"]["fields"])
+        assert plain["linkTarget"] is None, plain.get("linkTarget")
+
+        # ③ 头里明确 linked=false（用户把开关关了）→ 不补。
+        #    对象编码用响应里那个（AI 起名 → 编码由名字推出来，前端事后才知道）
+        code = bo["code"]
+        off = webui.ai_generate_bo({"description": "做一个采购申请单"},
+                                   pl_header({code: {"linked": False}}))
+        assert [f["code"] for f in off["bo"]["fields"]] == [
+            f["code"] for f in _AI_FIELDS], [f["code"] for f in off["bo"]["fields"]]
+    finally:
+        _restore_ai(orig)
+
+
+@case("PL74", "projlink", "AI 导出 Excel：2_字段 有「项目选择」、1_业务对象 关联项目=是",
+      "P0", ["ai_apply_bo 自带链接字段（不等出包）", "sn = max+1 排在业务字段之后",
+             "幂等：预览回传已带该字段时不重复", "回头出包有 linkdata + data_template"])
+def _():
+    from pp6kit import ai_form
+
+    # ① 预览回传的 payload（字段里已带 isLink 的那条，排在第一——预览就是这顺序）
+    form, notes = ai_form.build_form(
+        {"groups": [{"title": "基本信息", "fields": ["申请单号", "专业"]}]},
+        ai_bo_of(_AI_FIELDS), "create_caigou", name="新建采购申请")
+    payload = {
+        "bo": {"code": "caigou", "name": "采购申请", "fields": [
+            {"code": "projectId", "name": "项目选择", "type": "object",
+             "objectType": "project", "isLink": True},
+            {"code": "shenQingDanHao", "name": "申请单号", "type": "varchar",
+             "length": 64},
+            {"code": "zhuanYe", "name": "专业", "type": "varchar", "length": 200},
+        ]},
+        "form": ai_form.to_dict(form),
+    }
+    body, name = webui.ai_apply_bo(payload, None, None, pl_header({}))
+    assert name == "PP6-采购申请.xlsx", name
+
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "ai.xlsx"
+        path.write_bytes(body)
+        proj, errors, _stats = read_workbook(path)
+    assert not errors, errors
+    bo = proj.bos[0]
+    assert bo.project_link is True, "1_业务对象 的「关联项目」没写「是」"
+    codes = [f.code for f in bo.fields]
+    assert codes.count("projectId") == 1, codes           # 不重复
+    link = bo.field_by_code("projectId")
+    assert (link.name, link.resolved_field_name()) == ("项目选择", "project_id_"), link
+    assert link.type_new == "object" and link.object_type == "project", link
+    assert link.length == 64, link.length
+    assert link.sn == max(f.sn for f in bo.fields), \
+        f"链接字段 sn={link.sn} 不是最大值（应排在业务字段之后）"
+
+    # ② 回头出包（用户拿这份 Excel 走原有链路）：字段在、控件在、值来源在
+    zip_body, _n = webui.build_zip(body, [])
+    bo_xml = pick(zip_body, "bo/")
+    row = attr_row(bo_xml, "projectId")
+    assert (row["dataTypeNew"], row["objectType"], row["fieldName"]) == (
+        "object", "project", "project_id_"), row
+    assert row["name"] == "项目选择", row
+    # 幂等：build 里的 ensure_project_links 不许再加第二个
+    assert bo_xml.count('code="projectId"') == 1, bo_xml.count('code="projectId"')
+    form_xml = _entry(zip_body, "form/", "create_caigou").replace("&quot;", '"')
+    assert '"field_type":"linkdata","name":"projectId"' in form_xml, \
+        "新建表单第一行的控件不是 projectId/linkdata"
+    assert '"linkdata":"project_value"' in form_xml, "控件没接值来源"
+    assert "filterConditions" not in form_xml, "默认不该带过滤条件"
+    keys = [n for n in texts(zip_body) if n.startswith("data_template/")]
+    assert any("project_value" in k for k in keys), keys
+
+    # ③ 幂等第二层：同一份 payload 导两次，字段数不变（前端可能重复点导出）
+    body2, _ = webui.ai_apply_bo(payload, None, None, pl_header({}))
+    with tempfile.TemporaryDirectory() as td:
+        p2 = Path(td) / "ai2.xlsx"
+        p2.write_bytes(body2)
+        bo2 = read_workbook(p2)[0].bos[0]
+    assert [f.code for f in bo2.fields].count("projectId") == 1, \
+        [f.code for f in bo2.fields]
+
+
+def ai_bo_of(fields_spec: list[dict]):
+    """构造一个 Bo（复用 ai_bo.build_bo，口径与 AI 生成一致）。"""
+    bo, _notes = ai_bo.build_bo(
+        {"name": "采购申请", "code": "caigou", "fields": fields_spec}, [])
+    return bo
+
+
+def _entry(body: bytes, prefix: str, keyword: str) -> str:
+    """按前缀 + 关键字取包里的一个 XML（条目序号会变，不能写死 002）。"""
+    z = zipfile.ZipFile(io.BytesIO(body))
+    for name in z.namelist():
+        if name.startswith(prefix) and keyword in name:
+            return z.read(name).decode()
+    raise AssertionError(f"包里没有 {prefix}*{keyword}（实际：{z.namelist()}）")
+
+
+@case("PL75", "projlink", "关联其他业务对象在 AI 路径同理：合同 → contractId / 合同选择",
+      "P0", ["目标切成合同，字段就是 contractId", "出包 objectType=contract",
+             "不会同时补一个 projectId"])
+def _():
+    pkg = build(sheets([
+        field("contract", "合同名称", "字符串", 长度=200, **{"字段编码": "name"}),
+        field("contract", "合同编号", "字符串", 长度=64, **{"字段编码": "code"}),
+        field("contract", "合同金额", "数字", 精度=2, **{"字段编码": "amount"}),
+    ], bos=[bo_row()]))
+    payload = {"bo": {"code": "purchase", "name": "采购申请", "fields": [
+        {"code": "shenQingDanHao", "name": "申请单号", "type": "varchar",
+         "length": 64}]}}
+    with tempfile.TemporaryDirectory() as td:
+        with _home_in(Path(td)):
+            tgt = projlink.resolve_target_from_zip(pkg, "合同")
+            token = projlink.save_snapshot_upload(pkg, tgt)["token"]
+            header = pl_header({}, target={"name": "合同", "code": "contract"},
+                               snapshot=token)
+            body, _n = webui.ai_apply_bo(payload, None, None, header)
+            out = Path(td) / "ai_contract.xlsx"
+            out.write_bytes(body)
+            proj, errors, _ = read_workbook(out)
+            assert not errors, errors
+            bo = proj.bos[0]
+            assert bo.project_link is True, "「关联项目」列没写「是」"
+            codes = [f.code for f in bo.fields]
+            assert "contractId" in codes, codes
+            assert "projectId" not in codes, f"关联合同却补了项目字段：{codes}"
+            link = bo.field_by_code("contractId")
+            assert (link.name, link.resolved_field_name()) == (
+                "合同选择", "contract_id_"), link
+            assert link.object_type == "contract", link
+
+            zip_body, _ = webui.build_zip(body, [], projlink_header=header)
+            row = attr_row(pick(zip_body, "bo/"), "contractId")
+            assert (row["dataTypeNew"], row["objectType"]) == ("object", "contract"), row
+            assert row["name"] == "合同选择", row
+            # 出包也按合同对齐（真实链路里前端会把同一个头再发一次）
+            assert "项目对齐" not in comment_of(zip_body), comment_of(zip_body)[-300:]
+            assert "合同对齐" in comment_of(zip_body), comment_of(zip_body)[-300:]
+
+
+@case("PL76", "projlink", "AI 路径的三种拒绝：自关联 / 编码被占 / 目标解析不了",
+      "P1", ["不硬塞字段", "错误信息能照着改", "解析不了就 400（不是静默按项目对齐）"])
+def _():
+    # ① 对象就是目标对象本身 → 自关联不允许
+    same = {"bo": {"code": "project", "name": "项目", "fields": [
+        {"code": "name", "name": "项目名称", "type": "varchar"}]}}
+    try:
+        webui.ai_apply_bo(same, None, None, pl_header({}))
+    except ValueError as exc:
+        assert "不能关联自己" in str(exc), str(exc)
+    else:
+        raise AssertionError("对象 project 关联 project 却通过了（自关联）")
+
+    # ② 编码 projectId 被一个非 object 的普通字段占着 → 冲突，不能硬塞第二个
+    taken = {"bo": {"code": "caigou", "name": "采购申请", "fields": [
+        {"code": "projectId", "name": "项目编号", "type": "varchar", "length": 64}]}}
+    try:
+        webui.ai_apply_bo(taken, None, None, pl_header({}))
+    except ValueError as exc:
+        assert "projectId" in str(exc) and "占用" in str(exc), str(exc)
+    else:
+        raise AssertionError("projectId 被 varchar 占用却照样补了链接字段")
+
+    # ③ 目标对象解析不了（没连库又没有快照 token）→ 明确报错，不退回「项目」
+    try:
+        old_cfg = projlink.db_config
+        projlink.db_config = lambda: {}
+        try:
+            webui.ai_apply_bo({"bo": {"code": "caigou", "name": "采购申请",
+                                      "fields": []}}, None, None,
+                              pl_header({}, target={"name": "客户", "code": "customer"}))
+        finally:
+            projlink.db_config = old_cfg
+    except ValueError as exc:
+        assert "客户" in str(exc), str(exc)
+    else:
+        raise AssertionError("目标对象解析不了却按默认项目生成了 Excel")
+
+
+# ---------------------------------------------------------------- AI 路径：补漏断言
+#
+# PL73–PL76 覆盖的是「补字段」与「三条拒绝」。下面四条补的是同一批改动里**最
+# 容易漏的另外四件事**（2026-11-21 复验时逐条跑出来的）：
+#   ① 不带决策头时必须与改动前一模一样——AI 路径以前一个字段都不加，现在也不能；
+#   ② 用户会连点两次「导出」，第二次不许把字段补成两条、sn 也不许漂；
+#   ③ AI 自己已经给过「所属项目」时要**复用**它，编码与显示名都不许改（改编码
+#      等于要求线上 ALTER，改显示名等于替用户改名）；
+#   ④ 预览回传的那份 Excel 出包后：三张表单都要置顶、详情必须是 selectObject、
+#      值来源必须是「主键 + 全部业务字段」且默认不带过滤条件。
+
+
+def _read_export(body: bytes):
+    """把导出的 xlsx 读回成 Project（走和出包同一条 reader）。"""
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as fh:
+        fh.write(body)
+        path = Path(fh.name)
+    try:
+        return read_workbook(path)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+# 旧调用方式用的 payload：字段里没有任何 isLink 标记（改造前的预览就长这样）
+_LEGACY_AI_BO = {"bo": {"code": "caigou", "name": "采购申请", "fields": [
+    {"code": "shenQingDanHao", "name": "申请单号", "type": "varchar", "length": 64},
+    {"code": "shenQingJinE", "name": "申请金额", "type": "number", "precision": 2},
+]}}
+
+
+@case("PL77", "projlink", "AI 导出 Excel 不带头：字段/表单/值来源与改动前逐字一致",
+      "P0", ["不带头不加 projectId", "关联项目=否", "没有 linkdata 控件",
+             "没有 project_value 值来源", "旧的两个参数调用方式仍然能用"])
+def _():
+    """守「不关联 = 零变化」。
+
+    AI 这条路改造前**不会**给对象补任何字段。改完之后如果「没勾关联」也开始补，
+    用户会看到对象里凭空多一个「项目选择」——比没生效更难解释。
+    """
+    body, name = webui.ai_apply_bo(_LEGACY_AI_BO)      # 旧的调用方式：只有两个参数
+    assert name == "PP6-采购申请.xlsx", name
+
+    proj, errors, _stats = _read_export(body)
+    assert not errors, errors
+    bo = proj.bos[0]
+    assert bo.project_link is False, "没带头却把「关联项目」写成「是」"
+    assert [(f.code, f.name, f.type_new, f.sn) for f in bo.fields] == [
+        ("shenQingDanHao", "申请单号", "varchar", 1),
+        ("shenQingJinE", "申请金额", "number", 2)], \
+        [(f.code, f.name, f.type_new, f.sn) for f in bo.fields]
+
+    # 填写表第一行是列注释（以 # 开头），真正的数据行按对象编码找
+    rows = read_xlsx_rows(body, "1_业务对象")
+    mine = next(r for r in rows if r.get("对象编码") == "caigou")
+    assert mine.get("关联项目") == "否", mine
+
+    zip_body, _ = webui.build_zip(body, [])            # 出包侧同样不许补
+    ts = texts(zip_body)
+    assert 'code="projectId"' not in pick(zip_body, "bo/"), "不带头却补了 projectId"
+    assert not any("project_value" in n for n in ts), \
+        [n for n in ts if n.startswith("data_template/")]
+    form_xml = "".join(t for n, t in ts.items() if n.startswith("form/"))
+    assert "linkdata" not in form_xml, "不带头却把控件出成了 linkdata"
+
+
+@case("PL78", "projlink", "AI 导出幂等：连导三次字段数/sn 不漂，出包只有一条 projectId",
+      "P0", ["同一 payload 三次导出一致", "sn 不漂移", "控件不重复",
+             "已有字段的 code/sn 不动（存量包铁律）"])
+def _():
+    """用户会连点「导出」（或先导出、改一句、再导出）。每次都必须一模一样。"""
+    payload = {"bo": {"code": "caigou", "name": "采购申请", "fields": [
+        {"code": "shenQingDanHao", "name": "申请单号", "type": "varchar", "length": 64},
+        {"code": "zhuanYe", "name": "专业", "type": "varchar", "length": 200},
+    ]}}
+
+    def snapshot():
+        body, _n = webui.ai_apply_bo(payload, None, None, pl_header({}))
+        proj, errors, _stats = _read_export(body)
+        assert not errors, errors
+        bo = proj.bos[0]
+        return ([(f.code, f.name, f.type_new, f.object_type, f.length, f.sn)
+                 for f in bo.fields],
+                bool(bo.project_link),
+                [[(ff.name, ff.field_type) for ff in f.fields] for f in proj.forms])
+
+    first, second, third = snapshot(), snapshot(), snapshot()
+    assert first == second == third, f"连导三次结果不一致：\n{first}\n{second}\n{third}"
+    codes = [c[0] for c in first[0]]
+    assert codes.count("projectId") == 1, codes
+    assert first[1] is True, "「关联项目」没写「是」"
+    link = first[0][-1]
+    assert link[0] == "projectId" and link[5] == max(c[5] for c in first[0]), \
+        f"链接字段不在最后（sn={link[5]}）：{first[0]}"
+
+    # 出包侧：builder.ensure_project_links 那道兜底不许再加第二条
+    body, _n = webui.ai_apply_bo(payload, None, None, pl_header({}))
+    zip_body, _comment = webui.build_zip(body, [], projlink_header=pl_header({}))
+    bo_xml = pick(zip_body, "bo/")
+    assert bo_xml.count('code="projectId"') == 1, bo_xml.count('code="projectId"')
+    create = _entry(zip_body, "form/", "create_").replace("&quot;", '"')
+    assert create.count('"name":"projectId"') == 1, \
+        f"新建表单里 projectId 出现了 {create.count('"name":"projectId"')} 次"
+
+    # 存量包铁律：预览回传里已经有的 projectId（老前端不带 isLink）——只标记，不改编码/sn
+    legacy = {"bo": {"code": "caigou", "name": "采购申请", "fields": [
+        {"code": "projectId", "name": "项目选择", "type": "object",
+         "objectType": "project"},
+        {"code": "shenQingDanHao", "name": "申请单号", "type": "varchar", "length": 64},
+    ]}}
+    body, _n = webui.ai_apply_bo(legacy, None, None, pl_header({}))
+    proj, _errors, _stats = _read_export(body)
+    bo = proj.bos[0]
+    assert [f.code for f in bo.fields] == ["projectId", "shenQingDanHao"], \
+        [f.code for f in bo.fields]
+    assert bo.field_by_code("projectId").sn == 1, "已有字段的 sn 被改了"
+
+
+@case("PL79", "projlink", "复用 AI 自己给的「所属项目」：编码与显示名都不改，绝不并成两条",
+      "P0", ["预览回传的 isLink 字段不被换成 projectId",
+             "sn 不漂移", "1_业务对象 关联项目=是",
+             "表单控件仍是那个字段且是 linkdata"])
+def _():
+    """模型经常自己起一个「所属项目」（编码 suoShuXiangMu）。
+
+    用户口径是「关联项目 = 一个项目选择字段」——它已经在，就**复用**：
+    编码、显示名、sn 全都不动，只打 is_link 让下游按链接字段处理。
+    改造后 preview 会给这条打上 isLink，前端回传时它就带着 isLink 回来了；
+    ai_apply_bo 若把「带 isLink 的那条」无条件摘出去重注入 projectId，
+    导出的 Excel 就会**悄悄换掉编码**（预览里是 suoShuXiangMu、Excel 里是
+    projectId），线上等于改列名，表单控件也跟着变成另一个字段。
+    """
+    payload = {"bo": {"code": "caigou", "name": "采购申请", "fields": [
+        # 与预览回传一致：AI 自己给的项目字段，已经带了 isLink
+        {"code": "suoShuXiangMu", "name": "所属项目", "type": "object",
+         "objectType": "project", "isLink": True},
+        {"code": "shenQingDanHao", "name": "申请单号", "type": "varchar", "length": 64},
+    ]}}
+    body, _n = webui.ai_apply_bo(payload, None, None, pl_header({}))
+    proj, errors, _stats = _read_export(body)
+    assert not errors, errors
+    bo = proj.bos[0]
+    codes = [f.code for f in bo.fields]
+    assert codes == ["suoShuXiangMu", "shenQingDanHao"], \
+        f"预览里的链接字段被换掉了：{codes}"
+    link = bo.field_by_code("suoShuXiangMu")
+    assert (link.name, link.object_type) == ("所属项目", "project"), link
+    assert link.sn == 1, f"已有字段的 sn 被改了（{link.sn}）"
+    assert bo.project_link is True, "「关联项目」没写「是」"
+
+    zip_body, _c = webui.build_zip(body, [], projlink_header=pl_header({}))
+    bo_xml = pick(zip_body, "bo/")
+    assert bo_xml.count('code="suoShuXiangMu"') == 1, "复用的字段没进包"
+    assert 'code="projectId"' not in bo_xml, "又补了第二个链接字段"
+    create = _entry(zip_body, "form/", "create_").replace("&quot;", '"')
+    assert '"name":"suoShuXiangMu","label":"所属项目"' in create, \
+        "新建表单里的控件不是那个复用的字段"
+
+    # 预览没带 isLink（老前端 / 老预览）时也走复用，不许新增第二个
+    legacy = json.loads(json.dumps(payload))
+    legacy["bo"]["fields"][0].pop("isLink")
+    proj, _errors, _stats = _read_export(
+        webui.ai_apply_bo(legacy, None, None, pl_header({}))[0])
+    assert [f.code for f in proj.bos[0].fields] == ["suoShuXiangMu", "shenQingDanHao"], \
+        [f.code for f in proj.bos[0].fields]
+
+
+@case("PL80", "projlink", "预览回传的 Excel 出包：三张表单置顶、详情 selectObject、值来源全字段",
+      "P0", ["新建表单第一行是 linkdata", "详情/条件表单第一行是 selectObject",
+             "值来源 = 主键 + 全部业务字段", "默认不带过滤条件",
+             "联动列不悬空（都在返回列里）"])
+def _():
+    from pp6kit import links
+
+    body, _n = webui.ai_apply_bo(
+        {"bo": {"code": "caigou", "name": "采购申请", "fields": [
+            {"code": "shenQingDanHao", "name": "申请单号", "type": "varchar", "length": 64},
+            {"code": "zhuanYe", "name": "专业", "type": "varchar", "length": 200},
+        ]}}, None, None, pl_header({}))
+    zip_body, _c = webui.build_zip(body, [], projlink_header=pl_header({}))
+    ts = texts(zip_body)
+
+    def form_order(kind: str):
+        xml = _entry(zip_body, "form/", kind).replace("&quot;", '"')
+        seq = re.findall(r'<formField[^>]*name="([^"]+)"[^>]*fieldType="([^"]+)"', xml)
+        # 去掉容器（分组/表格布局），剩下的第一个就是控件顺序的第一位
+        return [(n, t) for n, t in seq if t not in
+                ("fieldset", "grid_layout", "card", "tabs", "tablelayout")]
+
+    create = form_order("create_")
+    assert create[0] == ("projectId", "linkdata"), f"新建表单没置顶/不是 linkdata：{create}"
+    for kind in ("detail_", "fetch_basic_"):
+        got = form_order(kind)
+        assert got[0] == ("projectId", "selectObject"), \
+            f"{kind} 表单里的关联字段不是 selectObject 且置顶：{got}"
+    # 详情/条件表单里不许出现 linkdata（那是新建页的控件类型）
+    for kind in ("detail_", "fetch_basic_"):
+        assert '"linkdata"' not in _entry(zip_body, "form/", kind).replace(
+            "&quot;", '"'), f"{kind} 里出现了 linkdata 控件"
+
+    # 值来源：主键 + 全部业务字段，且默认不带过滤
+    dt = next(t for n, t in ts.items()
+              if n.startswith("data_template/") and 'key="project_value"' in t)
+    cols = [c["name"] for c in json.loads(
+        re.search(r'resultColumns="([^"]*)"', dt).group(1)
+        .replace("&quot;", '"').replace("&amp;", "&"))]
+    want, _picked = links.LinkPlan(None).target("project").result_list(
+        None, all_fields=True)
+    assert cols == [f.column for f in want], (len(cols), len(want))
+    assert cols[0] == "id_", f"主键不在第一列：{cols[:3]}"
+    assert "filterConditions" not in dt, "默认不该带过滤条件"
+
+    # 联动列必须都能在返回列里找到（悬空 = 点上没反应，且界面上看不出来）
+    create_xml = _entry(zip_body, "form/", "create_").replace("&quot;", '"')
+    m = re.search(r'"link_linkage":(\[.*?\]),"read_rights"', create_xml)
+    assert m, "新建表单里没有 link_linkage"
+    linkage = json.loads(m.group(1))
+    assert linkage, "link_linkage 是空的"
+    dangling = [it["name"] for it in linkage if it["name"] not in cols]
+    assert not dangling, f"联动列不在值来源返回列里：{dangling}"
+    assert any(it.get("field") == "zhuanYe" for it in linkage), \
+        "同名业务列（专业 → zhuan_ye_）没有自动联动"
+
+
+@case("PL81", "projlink", "两条 AI 入口同口径：一句话生成与上传表格的「项目选择」完全一致",
+      "P0", ["fields[0] 都是 projectId/项目选择/isLink",
+             "projectLink 与 linkTarget 同形", "表单第一行都是 linkdata 单控件整行",
+             "都有可读提示"])
+def _():
+    """「我这次是上传表格，不是说话」不该少一个字段——两条入口共用后半段实现，
+    断言必须逐项对齐，否则改其中一条会悄悄分叉。
+    """
+    from pp6kit import ai_form
+
+    orig = _stub_ai(_AI_FIELDS, {"groups": [{"title": "基本信息",
+                                            "fields": ["申请单号", "专业"]}]})
+    try:
+        head = pl_header({})
+        hits = {
+            "一句话": webui.ai_generate_bo({"description": "做一个采购申请单"}, head),
+            "上传表格": webui.ai_from_sheet(xlsx({
+                S.S_BO: [{"对象名称": "采购申请"}],
+                S.S_FIELD: [field("采购申请", "申请单号", "字符串")],
+            }), projlink_header=head),
+        }
+        for tag, res in hits.items():
+            bo, form = res["bo"], res["form"]
+            first = bo["fields"][0]
+            assert (first["code"], first["name"], first["isLink"]) == (
+                "projectId", "项目选择", True), f"[{tag}] {first}"
+            assert bo["projectLink"] is True, f"[{tag}] {bo.get('projectLink')}"
+            assert res["linkTarget"]["code"] == "project", f"[{tag}] {res['linkTarget']}"
+            ctrl = form["fields"][0]
+            assert (ctrl["name"], ctrl["type"]) == ("projectId", "linkdata"), \
+                f"[{tag}] 表单第一行：{ctrl}"
+            row = form["rows"][0]
+            assert len(row) == 1 and row[0]["name"] == "projectId", \
+                f"[{tag}] 第一行不是单控件整行：{row}"
+            assert any("已补链接字段" in n for n in res["notices"]), \
+                f"[{tag}] 没有可读提示：{res['notices']}"
+            assert any("第一行" in n for n in res["notices"]), \
+                f"[{tag}] 没说控件被挪到第一行：{res['notices']}"
+        # 两个入口的对象结构必须逐键一致（提示文案里的对象编码可能不同，只比结构）
+        a, b = hits["一句话"]["bo"], hits["上传表格"]["bo"]
+        assert [f["code"] for f in a["fields"]] == [f["code"] for f in b["fields"]]
+        assert [(c["name"], c["type"]) for c in hits["一句话"]["form"]["fields"]] == \
+            [(c["name"], c["type"]) for c in hits["上传表格"]["form"]["fields"]]
+    finally:
+        _restore_ai(orig)
+
+
+@case("PL82", "projlink", "复用链接字段时控件也要「改口径」：挪到第一行 + linkdata + 独占整行",
+      "P0", ["已有控件挪位时重算 type/valueSource/fullRow",
+             "rows 跟着重排成单控件整行", "重复调用幂等（不再报改动）",
+             "导出侧该控件确实是整行（span 24，不和隔壁字段并排）"])
+def _():
+    """复用的不是「标准 projectId」而是 AI 自己起的 suoShuXiangMu 时，
+    原控件是被 build_form 按默认值造出来的 ``select`` + ``fullRow=False``。
+
+    只挪位置不改口径会有两处不一致：
+      · 控件类型还是 select → 预览里没有值来源/联动（导出侧被 ai_apply_bo 兜住，
+        于是「预览一套、产出一套」）；
+      · fullRow 仍是 False → 导出的新建表单里它只占半行（span 12），和隔壁字段
+        挤在一起，而同一份 payload 的 rows 写的是整行。
+    """
+    from pp6kit import ai_form
+
+    bo = ai_bo_of([
+        {"code": "shenQingDanHao", "name": "申请单号", "type": "varchar", "length": 64},
+        {"code": "suoShuXiangMu", "name": "所属项目", "type": "object",
+         "objectType": "project"},
+        {"code": "zhuanYe", "name": "专业", "type": "varchar", "length": 200},
+    ])
+    form, _notes = ai_form.build_form(
+        {"groups": [{"title": "基本信息",
+                     "fields": ["申请单号", "所属项目", "专业"]}]},
+        bo, "create_purchase_apply", name="新建采购申请")
+    payload = ai_form.to_dict(form)
+    # 前置：模型给的控件确实是「select + 半行 + 不在第一位」
+    assert [(c["name"], c["type"], c["fullRow"]) for c in payload["fields"]] == [
+        ("shenQingDanHao", "text", False),
+        ("suoShuXiangMu", "select", False),
+        ("zhuanYe", "text", False),
+    ], payload["fields"]
+
+    changed = ai_form.prepend_control(payload, "suoShuXiangMu", "所属项目", "project")
+    assert changed is True
+    first = payload["fields"][0]
+    assert (first["name"], first["type"], first["fullRow"]) == (
+        "suoShuXiangMu", "linkdata", True), first
+    assert first["valueSource"] == "project", first
+    # rows 必须跟着重排：它独占第一行，隔壁两个字段自己一行
+    assert [len(r) for r in payload["rows"]][0] == 1, payload["rows"]
+    assert payload["rows"][0][0]["name"] == "suoShuXiangMu", payload["rows"][0]
+    assert payload["rows"][0][0]["span"] == 24, payload["rows"][0]
+
+    # 幂等：已经对了就不再改（否则每次导出都多一条「已挪到第一行」的提示）
+    assert ai_form.prepend_control(
+        payload, "suoShuXiangMu", "所属项目", "project") is False
+
+    # 产物侧：新建表单里这个控件是整行（span 24），不是和申请单号并排
+    body, _n = webui.ai_apply_bo(
+        {"bo": {"code": "caigou", "name": "采购申请", "fields": [
+            {"code": "suoShuXiangMu", "name": "所属项目", "type": "object",
+             "objectType": "project", "isLink": True},
+            {"code": "shenQingDanHao", "name": "申请单号", "type": "varchar",
+             "length": 64},
+            {"code": "zhuanYe", "name": "专业", "type": "varchar", "length": 200},
+        ]}, "form": payload}, None, None, pl_header({}))
+    zip_body, _c = webui.build_zip(body, [], projlink_header=pl_header({}))
+    create = _entry(zip_body, "form/", "create_").replace("&quot;", '"')
+    ctrl = re.search(r'\{"field_type":"[^"]+","name":"suoShuXiangMu".*?"span":(\d+)',
+                     create)
+    assert ctrl, "新建表单里没有 suoShuXiangMu 控件"
+    # 控件的 span 落在它所在的行容器上：整行 24
+    row = re.search(r'"columns":\[\{"id":"[^"]+","span":(\d+),"colSpan":\d+,'
+                    r'"fields":\[\{"field_type":"[^"]+","name":"suoShuXiangMu"',
+                    create)
+    assert row and row.group(1) == "24", \
+        f"链接控件没有独占整行（span={row.group(1) if row else '未找到'}）"
