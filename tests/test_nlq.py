@@ -1860,3 +1860,144 @@ def _():
     # 产出的主表必须跟着变（证明是 @ 在起作用，不是别的路径碰巧命中）
     assert "FROM `pp_project`" not in sql2, "换点名表后主表没跟着换"
 
+
+
+@case("NLQ124", "nlq", "Agent 循环：先调工具、结果回灌、再给答案", "P0",
+      ["第一轮的工具调用被识别并执行",
+       "工具结果作为 user 消息进下一轮（否则模型等于没查）",
+       "最终 SQL 经过安全闸后才返回",
+       "trace 里留下每次工具调用"])
+def _():
+    from pp6kit.nlq import agent
+
+    pack = _pack()
+    sent: list[list[str]] = []
+    replies = [
+        '{"tool":"describe_table","args":{"table":"pp_project"}}',
+        '{"sql":"SELECT `name_` FROM `pp_project`","note":"直接查项目名称"}',
+    ]
+
+    def fake_chat(cfg, messages, **kw):
+        sent.append([m["content"] for m in messages])
+        return replies[len(sent) - 1], {"model": "fake"}
+
+    cfg = {"channels": [{"key": "x", "base_url": "http://x", "api_key": "k", "model": "m"}]}
+    orig_chat, orig_run = agent.llm.chat_any, agent.engine.run_sql
+    agent.llm.chat_any = fake_chat
+    agent.engine.run_sql = lambda conn, sql, max_rows=500: (["name_"], [["甲项目"]])
+    try:
+        res = agent.run(None, pack, "项目有哪些", cfg, {"pp_project"})
+    finally:
+        agent.llm.chat_any = orig_chat
+        agent.engine.run_sql = orig_run
+
+    # 安全闸会在最外层补 LIMIT，所以只断言主句和表名
+    assert res["sql"].startswith("SELECT `name_` FROM `pp_project`"), res["sql"]
+    assert "LIMIT" in res["sql"], "外层行数上限必须还在"
+    assert res["origin"] == "agent"
+    assert len(res["trace"]) == 1 and res["trace"][0]["tool"] == "describe_table"
+    assert res["turns"] == 2
+    # 第二轮必须带上工具结果，否则模型是在盲写
+    assert "工具结果" in sent[1][-1]
+    assert "pp_project" in sent[1][-1]
+
+
+@case("NLQ125", "nlq", "Agent 协议解析：三层容错，解析不了退回整段当 SQL", "P1",
+      ["```json 包裹能剥掉",
+       "纯 JSON 直接认",
+       "正文里夹的 JSON 也能捞出",
+       "不是 JSON 返回 None（由调用方当 SQL 用）"])
+def _():
+    from pp6kit.nlq import agent
+
+    assert agent._parse('{"tool":"list_tables","args":{"keyword":"项目"}}')["tool"] == "list_tables"
+    assert agent._parse('```json\n{"sql":"SELECT 1"}\n```')["sql"] == "SELECT 1"
+    got = agent._parse('我先看看表结构：\n{"tool":"describe_table","args":{"table":"pp_task"}}\n就这样')
+    assert got and got["tool"] == "describe_table", got
+    assert agent._parse("SELECT * FROM pp_project") is None
+    assert agent._parse("") is None
+
+
+@case("NLQ126", "nlq", "Agent 工具容错：表名写错/工具不存在都回话而不是抛异常", "P1",
+      ["未知表返回提示并要求先 list_tables",
+       "未知工具返回工具清单",
+       "都不抛异常（模型才有机会自己纠正）"])
+def _():
+    from pp6kit.nlq import agent
+
+    pack = _pack()
+    msg = agent._run_tool("describe_table", {"table": "pp_not_exist"}, pack, None, set())
+    assert "没有找到" in msg and "list_tables" in msg, msg
+
+    msg2 = agent._run_tool("drop_database", {}, pack, None, set())
+    assert "没有名为" in msg2 and "describe_table" in msg2, msg2
+
+    # 中文标签也能定位到表
+    msg3 = agent._run_tool("describe_table", {"table": "项目"}, pack, None, set())
+    assert "pp_project" in msg3, msg3
+
+
+@case("NLQ127", "nlq", "judge 读 schema 枚举：问了业务状态却没按该列筛 → 判不合格", "P0",
+      ["词表没有的枚举值（已验收）也能抓到",
+       "按码值筛算合格",
+       "走名称子查询（WHERE 里出现中文标签）也算合格"])
+def _():
+    # 用「已验收」而不是「进行中」：后者已在 STATUS_RE 词表里，
+    # 测不出 enum_misses 这条新规则。这里要验证的是「读 schema 而不是读词表」。
+    pack = _pack()
+    pack.tables["pp_acceptance"] = _table("pp_acceptance", "验收单", 50, [
+        _col("id_", "主键", "char", is_pk=True),
+        _col("name_", "名称"),
+        _col("state_", "状态", enums={"已验收": "accepted", "待验收": "pending"}),
+    ])
+    args = ("已验收的验收单有哪些", None, 50, ["pp_acceptance"])
+
+    v = hybrid.judge(args[0], "SELECT name_ FROM pp_acceptance", args[2], args[3], pack=pack)
+    assert not v.ok, v.note
+    assert any("已验收" in r for r in v.reasons), v.reasons
+
+    good = "SELECT name_ FROM pp_acceptance WHERE state_ = 'accepted'"
+    assert hybrid.judge(args[0], good, 10, args[3], pack=pack).ok
+
+    # 中文标签出现在 WHERE 里 = 走名称子查询，是正确写法
+    sub = ("SELECT name_ FROM pp_acceptance WHERE state_ IN "
+           "(SELECT id_ FROM pp_acceptance_state WHERE name_ = '已验收')")
+    assert hybrid.judge(args[0], sub, 10, args[3], pack=pack).ok
+
+
+@case("NLQ128", "nlq", "judge 词表：具体年份 /「最多的前N个」/「最多」都要认", "P1",
+      ["「在2026年的」触发时间条件检查",
+       "「最多的前5个」触发排序检查（旧正则要求数字紧跟「最X的」）",
+       "「工时最多的人」触发聚合检查"])
+def _():
+    v = hybrid.judge("计划完成时间在2026年的项目", "SELECT name_ FROM pp_project", 20)
+    assert not v.ok, v.note
+    assert any("日期" in r for r in v.reasons), v.reasons
+
+    v2 = hybrid.judge("任务最多的前5个项目", "SELECT name_ FROM pp_task", 20)
+    assert not v2.ok, v2.note
+    assert any("排名" in r for r in v2.reasons), v2.reasons
+
+    v3 = hybrid.judge("工时最多的人是谁", "SELECT name_ FROM pp_task", 54)
+    assert not v3.ok, v3.note
+    assert any("聚合" in r for r in v3.reasons), v3.reasons
+
+
+@case("NLQ129", "nlq", "选表：字段短语里的字不算对象名（「计划完成时间」不是「计划」表）", "P1",
+      ["「计划」表不再从「计划完成时间」里蹭到对象名分",
+       "主表回到问句真正问的「项目」"])
+def _():
+    pack = _pack()
+    # 还原真实库的形状：项目表也有 finish_（标签「计划完成时间」），
+    # 否则它会被「缺字段」扣分，测出来的结论是假的
+    pack.tables["pp_project"].columns.append(
+        _col("finish_", "计划完成时间", "datetime"))
+    pack.tables["pp_project_plan"] = _table("pp_project_plan", "计划", 43, [
+        _col("id_", "主键", "char", is_pk=True),
+        _col("name_", "计划名称"),
+        _col("finish_", "计划完成时间", "datetime"),
+        _col("project_id_", "所属项目", "char", ref_table="pp_project"),
+    ])
+
+    ch = select.choose(pack, "计划完成时间在2026年的项目", local._label_variants)
+    assert ch.table.name == "pp_project", f"选成了 {ch.table.name}（{ch.table.label}）"

@@ -464,8 +464,11 @@ def _():
     p.feed((Path(__file__).resolve().parents[1] / "pp6kit" / "static" / "index.html")
            .read_text(encoding="utf-8"))
     for wanted in ("flowModeBar", "btnFlowXml", "btnPack", "aiResult", "result",
-                   "entryChoice", "entryPanels", "entryAi", "entryExcel"):
+                   "entryPanels", "entryAi", "entryExcel"):
         assert wanted in p.ids, f"#{wanted} 不是真实 DOM 元素（可能在注释里）"
+    # 2026-11-21：入口二选一（#entryChoice）已拆掉，首屏直接给输入框；
+    # 这里改钉「新入口必须存在」，避免以后又把首屏挡在一张选择页后面。
+    assert "btnPackTop" in p.ids, "结果页缺少页头下载按钮"
     assert not any("btnFlowXml" in c for c in p.comments), "流程 XML 按钮还在注释里"
 
 
@@ -1209,3 +1212,75 @@ def _():
         assert bad["ok"] is False and "X-Project-Link" in bad["error"], bad
     finally:
         ai_refine.llm.chat_any = orig
+
+
+@case("WEB44", "webui", "值来源页签：清单可关、自动/全量锁死、不再有新增/删除（node 探针）",
+      "P0", ["renderAiValues 在真实 app.js 里跑",
+             "没有「+ 新增值来源」按钮，也没有删除按钮（自定义那条已移除）",
+             "自动那份的开关 disabled",
+             "过滤那份可开关、显示规则条数与引用字段，关闭行有 off 标记"])
+def _():
+    """界面侧的守卫：后端清单对了，前端把开关画错也白搭。没装 node 就 skip。"""
+    import json as _json
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    node = shutil.which("node")
+    if not node:
+        skip("没装 node：值来源页签的前端探针跳过（BO46/BO47 的服务端断言仍然生效）")
+    root = Path(__file__).resolve().parents[1]
+    app = root / "pp6kit" / "static" / "app.js"
+    probe = Path(__file__).resolve().parent / "fe_values_probe.js"
+    assert probe.is_file(), f"缺少前端探针 {probe}"
+    proc = subprocess.run([node, str(probe), str(app)],
+                          capture_output=True, text=True, timeout=180)
+    assert proc.returncode == 0, f"node 探针失败：\n{proc.stderr[-1200:]}"
+    lines = [ln for ln in proc.stdout.strip().splitlines() if ln.strip()]
+    assert lines, "node 探针没有输出"
+    out = _json.loads(lines[-1])
+    assert out["has_add_button"] is False, "自定义新增入口已移除，不该再出现按钮"
+    assert out["no_delete_button"] is True, out
+    assert out["auto_locked"] is True, "自动那份不能被关（关了下拉就取不到数）"
+    assert out["filtered_toggleable"] is True, "过滤那份必须能关"
+    assert out["filtered_rule_count"] is True, out
+    assert out["used_by_shown"] is True, out
+    assert out["off_row_marked"] is True, out
+    assert out["chips"] is True, out
+
+
+@case("WEB45", "webui", "交互收尾：失败能直接跳到错处、出包后给出下一步、模块只留一个动作",
+      "P1", ["错误横幅只有一句「去校验结果修」，用户得自己数 8 个页签找",
+             "下载成功后只有 toast，闪完就没了，用户不知道下一步去哪上传",
+             "模块行「导入 / 导出」两个按钮都只是下载 zip，且「导入」容易被误解为代导",
+             "AI 生成失败只能重新组织语言，输入框里的描述明明还在"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "pp6kit" / "static" / "app.js").read_text(encoding="utf-8")
+
+    # ① 失败即定位：横幅上的按钮 + 跳到校验结果并滚到第一条错误
+    assert 'id="bannerFix"' not in html  # 按钮是脚本渲染的，别写死在模板里漏掉绑定
+    assert 'id="bannerFix"' in js and "function bindBannerFix(" in js
+    assert "function gotoIssues(" in js and "issue.error" in js
+    assert 'data-panel="issues"' in js, "跳转目标页签不在"
+
+    # ② 出包收尾：整包与单模块两条路径都要挂上
+    assert 'id="nextStepBar"' in html, "结果页缺少出包收尾条"
+    assert "function showNextStep(" in js and "function hideNextStep(" in js
+    build = js[js.index("async function buildZip("):js.index("async function importOne(")]
+    assert "showNextStep(name)" in build, "整包下载成功后没给下一步"
+    one = js[js.index("async function importOne("):js.index("async function inspectZip(")]
+    assert "showNextStep(name)" in one, "单模块下载成功后没给下一步"
+    render_all = js[js.index("function renderAll("):js.index("function renderAll(") + 1500]
+    assert "hideNextStep()" in render_all, "换了新数据还留着上一份的「已保存」"
+
+    # ③ 模块行只留一个动作
+    assert 'data-act="one"' in js, "模块行缺少「单独出包」"
+    assert 'data-act="import"' not in js and 'data-act="export"' not in js, \
+        "「导入 / 导出」两个按钮都只是下载 zip，语义重复，别再回来"
+
+    # ④ AI 失败重试
+    assert 'id="aiRetry"' in js and "generatePreview()" in js

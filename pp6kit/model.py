@@ -272,6 +272,30 @@ def wants_all_results(value: Any) -> bool:
 # 白名单外的组合**一律报错**，不降级也不猜：系统怎么解释这四种之外的组合没有
 # 任何线上样本，猜错的表现是「表单上看着配好了、下拉里却是全量或空」，属于最
 # 难查的一类问题（参考 docs/参考-关联对象值来源-20261119.md §2.3）。
+# ---------------------------------------------------------------- 值来源用途
+#
+# 用户 2026-11-20 口径：值来源分三类，只有第三类让用户选「要不要」。
+#   auto     工具按默认口径生成（对象自身那份、普通关联字段那份）
+#   link     「XX选择」链接字段那份：返回目标对象**全部**业务字段、不默认过滤
+#   filtered 工具**单独**为某个关联字段做的、带过滤条件的那份 → 可关闭
+#
+# 用途写进 6.1_值来源 的「用途」列（中文），读回来反查英文常量。
+# 为什么不从 filter_field/result_all 现推：字段一改，推出来的类别就变了，
+# 用户明明关掉的那份会因为「现在看起来像自动的」而被强行打开。
+VALUE_ORIGIN_AUTO = "auto"
+VALUE_ORIGIN_LINK = "link"
+VALUE_ORIGIN_FILTERED = "filtered"
+VALUE_ORIGIN_LABELS = {
+    VALUE_ORIGIN_AUTO: "自动",
+    VALUE_ORIGIN_LINK: "全量",
+    VALUE_ORIGIN_FILTERED: "过滤",
+}
+VALUE_ORIGIN_BY_LABEL = {v: k for k, v in VALUE_ORIGIN_LABELS.items()}
+# 可关闭的用途：只有「工具单独做的过滤那份」。
+# 自动/全量是控件能取数的基础，关掉等于给一个打不开的下拉，界面里也锁住。
+VALUE_ORIGIN_TOGGLEABLE = (VALUE_ORIGIN_FILTERED,)
+
+
 RULE_DYNAMIC = "dynamic"
 RULE_FIXED = "fixed"
 RULE_SYSTEM_VARIABLE = "systemVariable"
@@ -1355,6 +1379,36 @@ class DataSet:
     #   ② 往返 Excel 时把「自动」列原样写回去，重复出包不再反复刷同一条提示。
     # 它不影响 XML：包里有没有这个键用户看不到。
     auto_generated: bool = False
+    # 是否生成这份值来源（6.1_值来源 的「是否生成」列，默认是）。
+    # 关闭 = 不出 data_template XML，引用它的控件在出包时降级成对象选择器
+    # （_demote_unwired_links）——用户口径是「我不要这份过滤，给我个普通下拉」。
+    # 只有 VALUE_ORIGIN_TOGGLEABLE 里的用途能在界面上关；自动/全量锁死。
+    enabled: bool = True
+    # 用途：见 VALUE_ORIGIN_*（auto / link / filtered / custom）。
+    # 空 = 老文件（没有这一列）→ 由 blueprint 按口径补。
+    origin: str = ""
+
+    def toggleable(self) -> bool:
+        """界面上能不能关这份值来源。"""
+        return self.guess_origin() in VALUE_ORIGIN_TOGGLEABLE
+
+    def origin_label(self) -> str:
+        return VALUE_ORIGIN_LABELS.get(self.guess_origin(), "")
+
+    def guess_origin(self) -> str:
+        """老文件没有「用途」列时的兜底分类（只读，不回写）。
+
+        只用于界面分组/锁定判断，不做生成决策：生成侧只看 filter_rules /
+        result_all 这些本来就有的开关，所以推错也不会改产物。
+        """
+        if self.origin:
+            return self.origin
+        if self.result_all and not self.auto_filter:
+            return VALUE_ORIGIN_AUTO if self.auto_generated else VALUE_ORIGIN_LINK
+        if self.filter_rules is not None and self.filter_rules == [] \
+                and not self.filter_field and not self.auto_filter:
+            return VALUE_ORIGIN_AUTO
+        return VALUE_ORIGIN_FILTERED
 
     def filter_text(self) -> str:
         """写回 Excel「6_数据集」的「过滤字段」列：``本字段`` 或 ``本字段=目标列``。

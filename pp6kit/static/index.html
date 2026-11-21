@@ -109,7 +109,7 @@
         <div class="card-head">
           <div>
             <h3>大模型</h3>
-            <div class="sub">生成页和数据查询共用这一个 Key，配一次两边都能用</div>
+            <div class="sub">生成页与数据查询共用同一 Key，配置一次即可。</div>
           </div>
           <span class="set-status" id="setLlmStatus">未配置</span>
         </div>
@@ -117,21 +117,21 @@
         <div class="set-body">
           <div class="q-saved" id="qLlmSaved" hidden>
             <span class="dot"></span>
-            <span id="qLlmSavedText">已记住你的 Key</span>
+            <span id="qLlmSavedText">已保存 Key</span>
             <button class="link-btn" id="qLlmForget">清除</button>
           </div>
 
           <div class="q-form set-form">
             <label>平台
               <select id="qProvider">
-                <option value="">— 选一个免费平台，自动填好 —</option>
+                <option value="">选择平台后自动填充</option>
               </select>
             </label>
             <div class="q-hint" id="qProvHint" hidden></div>
 
             <label>接口地址<input id="qBase" placeholder="https://api.deepseek.com/v1"></label>
             <label>API Key<input id="qKey" type="password" placeholder="粘贴平台的 Key（sk-...）"></label>
-            <div class="q-hint" id="qKeyNote">Key 只保存在本机 <code>~/.pp6kit/nlq.json</code>，不会随安装包或仓库分发；换一台电脑需要重新填。</div>
+            <div class="q-hint" id="qKeyNote">Key 仅保存在本机 <code>~/.pp6kit/nlq.json</code>，不随安装包或仓库分发；更换电脑需重新填写。</div>
             <label>模型
               <select id="qModelPick" hidden></select>
               <input id="qModel" placeholder="glm-4.7-flash">
@@ -140,7 +140,7 @@
             <label>全局指令（可选）
               <textarea id="qInstr" rows="3" placeholder="例：金额一律按万元显示；排除名称含「测试」的项目；日期条件用 create_time_"></textarea>
             </label>
-            <div class="q-hint">每次 AI 生成都会带上这段规则，与默认规则冲突时以此为准。留空则不注入。</div>
+            <div class="q-hint">每次生成都会附带此规则；与默认规则冲突时以此为准，留空则不注入。</div>
 
             <div class="q-row">
               <button class="btn primary" id="qSaveLlm">保存并测试</button>
@@ -149,8 +149,8 @@
           </div>
 
           <div class="set-note">
-            <strong>不配也能用：</strong>导入包可以手填 Excel 走模板，数据查询可以只用本地规则。
-            配了之后才能用「一句话生成业务对象」和 AI 兜底查询。
+            <strong>未配置时仍可使用：</strong>按模板手工填写 Excel；数据查询可使用本地规则。
+            配置后可使用「一句话生成业务对象」与 AI 兜底查询。
           </div>
         </div>
       </div>
@@ -160,7 +160,7 @@
         <div class="card-head">
           <div>
             <h3>数据库连接</h3>
-            <div class="sub">数据查询功能要用；填完点「连接并读取结构」</div>
+            <div class="sub">数据查询需要；填写后点击「连接并读取结构」。</div>
           </div>
         </div>
         <div class="set-body">
@@ -190,7 +190,7 @@
             <div><span>配置位置</span><b><code>~/.pp6kit/nlq.json</code></b></div>
           </div>
           <div class="set-note">
-            配置文件里有你的 API Key，换机器时可以直接拷过去；共享电脑上建议用完点「清除」。
+            配置文件包含 API Key，迁移电脑时可直接复制；共享设备使用后建议点击「清除」。
           </div>
         </div>
       </div>
@@ -201,9 +201,9 @@
 <main id="mode-import">
   <!-- 步骤条：只有三步，任何时候都能看到自己在哪 -->
   <nav class="steps" id="steps">
-    <div class="step active" data-step="1"><b>1</b><span>选择入口</span></div>
+    <div class="step active" data-step="1"><b>1</b><span>描述需求</span></div>
     <div class="step-line"></div>
-    <div class="step" data-step="2"><b>2</b><span>预览并修改</span></div>
+    <div class="step" data-step="2"><b>2</b><span>核对字段</span></div>
     <div class="step-line"></div>
     <div class="step" data-step="3"><b>3</b><span>下载导入包</span></div>
   </nav>
@@ -211,7 +211,7 @@
   <!-- 流程模式 = 普通模式的同一套操作，仅导出时多给一份固定三步 XML -->
   <div class="pl-pre" id="flowModeBar" hidden>
     <b>流程模式</b>
-    <span class="sub">和普通模式同一套操作；导出时 zip 会包含流程对象，另给一份固定 开始 → 审核 → 通过 的流程 XML。</span>
+    <span class="sub">操作与普通模式一致；导入包包含流程对象，并附固定三步流程 XML（开始 › 审核 › 通过）。</span>
   </div>
 
   <!-- ========== 第 1 步：对话即入口，说完就开始生成 ========== -->
@@ -219,32 +219,21 @@
     <!-- P0-4 反解摘要卡片：必须留在 #stepInput 内，inspectZip() 的 finally 会 goStep(1) -->
     <div id="pp6zipInspectCard" hidden></div>
 
-    <!-- 第 1 步先选入口：不要一进来把 AI / 上传 / 关联项目全铺开 -->
-    <div class="entry-choice" id="entryChoice">
-      <button class="entry-card" data-entry="ai">
-        <span class="entry-badge">文字</span>
-        <strong>自然语言生成</strong>
-        <span class="sub">用一段话描述要建什么，AI 生成对象、字段、表单和列表</span>
-      </button>
-      <button class="entry-card" data-entry="excel">
-        <span class="entry-badge">文件</span>
-        <strong>文件生成</strong>
-        <span class="sub">上传 Excel / PDF / Word，AI 识别字段后生成；标准 Excel 模板直接解析</span>
-      </button>
-    </div>
-
-    <div id="entryPanels" hidden>
-      <button class="link entry-back" id="entryBack">← 换一种方式</button>
-
-    <!-- 第 1 步：对象级选择放在**导入前**，不再导入后弹窗问一遍。
-         两档共享一份状态（普通 / 流程两个菜单同一档），存 localStorage。
-         放在 AI 卡**上方**：这是导入/生成前就要定的开关，不能藏在长卡片下面。
-         2026-11-18：关联目标可以是「项目」或「其他业务对象」；选其它对象时
-         手输名称，连库走精确核对，没库则上传该对象的 zip。 -->
-    <div class="pl-pre" id="plPreImportBar">
-      <b>第 1 步 · 业务对象关联</b>
-      <label><input type="radio" name="plPreImport" value="off" checked> 不关联</label>
-      <label><input type="radio" name="plPreImport" value="on"> 关联</label>
+    <!-- 2026-11-21：入口不再「先选后展开」。首屏就是输入框，少一次点击；
+         文件是同级入口（下面那张紧凑卡片），AI 读文件与标准模板解析分开写清楚。
+         业务对象关联挪到右栏，和「会生成什么 / 导入顺序」一起当上下文，
+         不再压在输入框上面把首屏挤成一长条。 -->
+    <!-- 生成前必须定的开关：放在输入卡**上方**，一眼能看到，不能藏进右栏或折叠线以下。
+         对象级选择放在导入前，不再导入后弹窗问一遍；两档共享一份状态
+         （普通 / 流程两个菜单同一档），存 localStorage。
+         关联目标可以是「项目」或「其他业务对象」；选其它对象时手输名称，
+         连库走精确核对，没库则上传该对象的 zip。 -->
+    <div class="pl-pre pl-pre-top" id="plPreImportBar">
+      <b>业务对象关联</b>
+      <div class="pl-pre-opts">
+        <label><input type="radio" name="plPreImport" value="off" checked> 不关联</label>
+        <label><input type="radio" name="plPreImport" value="on"> 关联</label>
+      </div>
       <span class="pl-target" id="plTargetBox" hidden>
         <select id="plTargetKind" title="关联到哪个业务对象">
           <option value="project">项目</option>
@@ -257,28 +246,31 @@
         </span>
         <span class="pl-target-ok" id="plTargetInfo" hidden></span>
       </span>
-      <span class="sub" id="plPreHint">导入前先选：关联=这份 Excel 里的对象都关联到所选业务对象；不关联=一个都不关联。选「其他业务对象」时先输名称核对字段池。</span>
+      <span class="sub" id="plPreHint">关联：生成对象挂到所选业务对象下，并对齐同名字段；不关联：各自独立生成。</span>
     </div>
 
-    <div id="entryAi" hidden>
+    <div class="entry-grid">
+      <div class="entry-main" id="entryPanels">
+
+    <div id="entryAi">
     <section class="ai-box ai-chat-launch" id="aiChatLaunch">
       <div class="ai-chat-head">
-        <h3>告诉我要建什么，或者直接说哪里要改</h3>
+        <h3>描述要生成的业务对象</h3>
         <button class="link" id="aiChatClear1">清空对话</button>
       </div>
       <div class="sub chat-launch-sub">
-        不用先下载模板、也不用先点生成。一句话说完就出结果，不满意接着聊，改好直接出包。
+        输入业务需求，自动生成业务对象、字段、表单与列表；可继续对话调整，确认后出包。
       </div>
 
       <div class="ai-chat-log" id="aiChatLog1"></div>
 
       <div class="ai-chat-input">
         <textarea id="aiChatText1" rows="3"
-          placeholder="例：做一个采购申请单，记录申请单号、申请人、所属项目、物品名称、数量、单价、总金额、期望到货日期、紧急程度、备注&#10;&#10;也可以把 Excel 拖进下面的区域，或者贴一段表结构"></textarea>
+          placeholder="例：采购申请单，包含申请单号、申请人、所属项目、物品、数量、单价、总金额、期望到货日期。"></textarea>
         <div class="ai-chat-foot">
           <span class="sub" id="aiChatHint1">Enter 发送，Shift+Enter 换行</span>
           <div class="ai-btns">
-            <button class="btn ghost" id="btnPickSheet" title="Excel / PDF / Word">选择文件</button>
+            <button class="btn ghost" id="btnPickSheet" title="从 Excel / PDF / Word 提取内容并识别字段">用文件生成</button>
             <button class="btn primary" id="aiChatSend1">开始生成</button>
           </div>
         </div>
@@ -294,21 +286,20 @@
 
       <div class="dz-inline dz-inline-quiet" id="dzInline">
         <div class="dz-inline-foot">
-          <span class="sub" id="aiFileTag">支持 .xlsx / .xlsm（读表头）或文字版 .pdf / .docx（提取文字后生成；扫描版 PDF 需 OCR）</span>
-          <span class="sub" id="aiHint">字段类型自动判断：金额→数字，审批人→用户，备注→大文本，关联项目→对象；
-            一串固定取值（状态/类别/部门名）→ 选项，候选值一并带上</span>
+          <span class="sub" id="aiFileTag">支持 .xlsx / .xlsm；.pdf / .docx 需为文字版（扫描件需 OCR）</span>
+          <span class="sub" id="aiHint">字段类型自动识别：金额为数字、审批人为用户、备注为大文本、关联字段为对象；固定取值生成选项。</span>
         </div>
         <input type="file" id="aiSheetInput" accept=".xlsx,.xlsm,.pdf,.docx" hidden>
       </div>
     </section>
     </div><!-- /entryAi -->
 
-    <div id="entryExcel" hidden>
+    <div id="entryExcel">
     <section class="ai-box ai-box-lite">
       <div class="ai-head">
         <div>
-          <h3>已经有一份文件？</h3>
-          <div class="sub">Excel 标准模板直接解析；PDF / Word 提取文字后让 AI 生成。改完再选同一个文件即可重来</div>
+          <h3>使用 Excel 规格表</h3>
+          <div class="sub">标准模板直接解析，不调用 AI；其他表格与 PDF / Word 先提取文字，再识别字段。</div>
         </div>
       </div>
       <div class="reimport" id="reimport">
@@ -319,14 +310,33 @@
              结构上断掉 label 的原生激活，选文件只剩 JS 一条路。 -->
         <button type="button" class="reimport-pick" id="btnReimportPick">选择文件</button>
         <input type="file" id="fileInput" accept=".xlsx,.xlsm,.pdf,.docx" hidden>
-        <span class="sub" id="reimportHint">标准 Excel 直接解析；自家表格、PDF / Word 交给 AI 识别（PDF / Word 提取文字后确认再生成）。有相近字段会先弹窗确认</span>
+        <span class="sub" id="reimportHint">存在相近字段时先确认；PDF / Word 采用文字识别。</span>
         <button class="link" id="btnBlankTpl"
-                title="下载 14 个页签的空白填写模板（表头 + 每列说明），填好再拖回这里解析">下载空白模板</button>
-        <button class="link" id="btnDemo">载入示例看效果</button>
+                title="下载空白模板（14 个页签，含表头与列说明）">下载空白模板</button>
+        <button class="link" id="btnDemo" title="载入一份示例 Excel 与生成结果">载入示例</button>
       </div>
     </section>
     </div><!-- /entryExcel -->
-    </div><!-- /entryPanels -->
+
+      </div><!-- /entry-main -->
+
+      <aside class="entry-rail" aria-label="生成前设置">
+        <div class="rail-card">
+          <h4>会生成什么</h4>
+          <ul class="rail-list">
+            <li><b>业务对象</b><span>字段、类型、选项、关联关系</span></li>
+            <li><b>表单</b><span>分组、两列布局、控件</span></li>
+            <li><b>列表 / 数据集</b><span>列、筛选、图表数据源</span></li>
+          </ul>
+        </div>
+
+        <div class="rail-card rail-quiet">
+          <h4>导入顺序</h4>
+          <p>系统管理 › 发布管理 › 导入同步包</p>
+          <p class="rail-note">业务对象须先于表单、列表导入；也可整包导入。</p>
+        </div>
+      </aside>
+    </div><!-- /entry-grid -->
   </section>
 
   <!-- ========== 第 2 步：预览（AI 结果） ========== -->
@@ -338,29 +348,29 @@
       <div class="file-name">
         <span class="dot"></span>
         <strong>AI 预览</strong>
-        <span class="muted">确认字段后继续</span>
+        <span class="muted">核对后进入出包</span>
       </div>
       <button class="link" id="btnBackInput">← 返回上一步</button>
     </div>
     <div class="ai-result" id="aiResult"></div>
     <div class="panel" id="aiRelPanel" hidden>
-      <div class="rel-toolbar"><span class="sub">识别到的新对象与已有对象的关联，勾选「建立」后才会生成父子/平行关系</span></div>
+      <div class="rel-toolbar"><span class="sub">新对象与已有对象的关联；勾选「建立」后生成父子或平行关系。</span></div>
       <div id="aiRelBox"></div>
     </div>
 
     <!-- 结果不满意时的持续对话；首屏已经能聊，这里保留是为了改的时候不用滚回去 -->
     <section class="ai-chat" id="aiChat">
       <div class="ai-chat-head">
-        <h3>继续说哪里要改</h3>
+        <h3>补充修改要求</h3>
         <button class="link" id="aiChatClear">清空对话</button>
       </div>
       <div class="ai-chat-log" id="aiChatLog"></div>
       <div class="ai-chat-input">
         <textarea id="aiChatText" rows="2"
-          placeholder="例：把「申请人电话」改成必填；再加一个「预计金额」，数字，两位小数；「战略类别」改成多选"></textarea>
+          placeholder="例：将「申请人电话」设为必填；新增「预计金额」，数字，两位小数"></textarea>
       </div>
       <div class="ai-chat-foot">
-        <span class="sub" id="aiChatHint">在现有基础上改，已经调好的字段不会被推翻</span>
+        <span class="sub" id="aiChatHint">在当前结果上增量修改，已确认的字段保持不变。</span>
         <button class="btn primary" id="aiChatSend">发送修改</button>
       </div>
     </section>
@@ -369,7 +379,7 @@
       <div class="ai-btns">
         <button class="btn ghost" id="btnExportXlsx2">导出 Excel 线下改</button>
         <button class="btn primary" id="btnToPack"
-                title="生成预览后，在结果页下载导入包">下一步：生成预览 →</button>
+                title="按当前预览生成导入包（回到结果页下载）">核对完成，去出包 →</button>
       </div>
     </div>
   </section>
@@ -387,19 +397,36 @@
         <strong id="fileName"></strong>
         <span class="muted" id="fileSize"></span>
       </div>
-      <button class="link" id="btnReset">← 返回上一步</button>
+      <div class="file-row-actions">
+        <button class="link" id="btnReset">← 返回上一步</button>
+        <!-- 顶部主操作：核对完预览就能直接下载，不用滚到模块卡片底部找按钮。
+             与卡片里的操作条走同一个 buildZip()，两边文案/禁用态由 updateBar 同步。 -->
+        <button class="btn primary" id="btnPackTop" title="把勾选的模块打成一个导入包">下载导入包</button>
+      </div>
     </div>
 
     <div class="stats" id="stats"></div>
     <div class="stats-note" id="statsNote" hidden></div>
     <div class="banner" id="banner" hidden></div>
+    <!-- 出包成功后的收尾：以前只有一句 toast，闪完就没了，用户下完 zip 还得自己想
+         「下一步去哪」。这里把「哪个文件 / 传到哪个菜单 / 还能做什么」固定成一条。 -->
+    <div class="next-step" id="nextStepBar" hidden>
+      <div class="ns-main">
+        <b>已保存 <span id="nsFile">导入包</span></b>
+        <span class="sub">下一步：在 <span class="ns-path" id="nsPath">系统管理 › 发布管理 › 导入同步包</span> 上传；导入后可用「数据查询」核对结果。</span>
+      </div>
+      <div class="ns-acts">
+        <button class="btn ghost sm" id="nsCopy" title="复制导入路径">复制路径</button>
+        <button class="btn ghost sm" id="nsAgain" title="保留当前结果，返回第 1 步">继续下一个</button>
+      </div>
+    </div>
     <!-- P0-5 交付报告：buildZip() 成功后回填实测，失败不清空 -->
     <div id="pp6zipBuildReport" hidden></div>
 
     <!-- 「关联项目」入口条：开关本身在下面「业务对象」页签的卡片右上角，
          结果页首屏是模块勾选，用户滚不到也注意不到（2026-11-14 反馈「我还是没看到」）。
          这里只做跳转，不碰任何出包逻辑。 -->
-    <div class="pl-step3" id="plStep3">第 3 步 / 共 3 步 · 核对下面的预览，确认无误后点「下载导入包 zip」</div>
+    <div class="pl-step3" id="plStep3">核对模块与校验结果，无错误后下载导入包。</div>
     <div class="pl-entry" id="plEntry" hidden>
       <div class="pl-entry-main">
         <b>关联项目</b>
@@ -411,10 +438,9 @@
     <div class="card mod-card">
       <div class="card-head">
         <div>
-          <h3>要导出哪些模块</h3>
+          <h3>导出模块</h3>
           <div class="sub">
-            这里只出<b>普通业务对象</b>和它们的表单/列表，默认全选打成一个整包（直接上传即可）。
-            流程模式会把这些对象一起放进 zip，并另给一份固定 开始→审核→通过 的流程 XML。
+            仅包含<b>普通业务对象</b>及其表单、列表，默认全选并打成整包。流程模式下导入包包含流程对象，另附固定三步流程 XML。
           </div>
         </div>
         <div class="mod-actions">
@@ -424,10 +450,10 @@
       </div>
       <div class="mod-list" id="modList"></div>
       <div class="pack-bar">
-        <span class="sub" id="packHint">普通模式只含普通对象；流程模式 zip 含流程对象，另给一份固定三步流程 XML · 导入：系统管理 › 发布管理 › 导入同步包</span>
+        <span class="sub" id="packHint">导入：系统管理 › 发布管理 › 导入同步包</span>
         <div class="ai-btns">
           <button class="btn ghost" id="btnFlowXml" hidden>下载流程 XML</button>
-          <button class="btn primary" id="btnPack">下载导入包 zip</button>
+          <button class="btn primary" id="btnPack">下载导入包</button>
         </div>
       </div>
     </div>
@@ -446,15 +472,15 @@
     <div class="panel" data-panel="objects"></div>
     <div class="panel" data-panel="relations" hidden>
       <div class="rel-toolbar">
-        <span class="sub">识别到的新对象与已有对象的关联，勾选「建立」后才会生成父子/平行关系</span>
+        <span class="sub">新对象与已有对象的关联；勾选「建立」后生成父子或平行关系。</span>
         <button class="btn ghost" id="btnConfirmedExcel" hidden>下载已确认 Excel</button>
       </div>
       <div id="relBox"></div>
     </div>
     <div class="panel" data-panel="projlink" hidden>
       <div class="pl-toolbar">
-        <span class="sub">业务对象关联项目：已自动补「所属项目」链接字段，
-          与项目对象同名/近义的字段（含相似字段）已照项目定义原样覆盖，差异见下方对照</span>
+        <span class="sub">业务对象关联项目：已补「所属项目」链接字段；
+          与项目对象同名的字段按项目定义覆盖，差异见下表。</span>
         <span class="pl-toolbar-btns">
           <button class="btn ghost" id="btnPlModal">查看字段差异</button>
         </span>
@@ -479,32 +505,30 @@
       <label><input type="radio" name="plPrePatch" value="off"> 不关联</label>
       <label><input type="radio" name="plPrePatch" value="on"> 关联</label>
       <label><input type="radio" name="plPrePatch" value="keep" checked> 按包内</label>
-      <span class="sub">读包前先选：按包内=保留包里现状；关联=每个对象都关联；不关联=一个都不关联。</span>
+      <span class="sub">按包内：沿用包内现状；关联：每个对象都关联；不关联：均不关联。</span>
     </div>
 
     <section class="card">
       <div class="card-head">
         <div>
           <h3>① 上传原来的导入包</h3>
-          <div class="sub">系统「推送工作区」导出的 zip、本工具出的整包、只含 bo/ 的单模块包都认。
-            原包不会被修改，下载的是一份新 zip。</div>
+          <div class="sub">支持系统推送工作区导出的 zip、本工具生成的整包、仅含 bo/ 的单模块包。原包不被修改，结果为一份新包。</div>
         </div>
       </div>
       <div class="patch-body">
         <div class="patch-pick" id="patchDrop">
           <input type="file" id="patchZipInput" accept=".zip" hidden>
           <button class="btn primary" id="patchPickZip">选择 zip 文件</button>
-          <span class="sub">也可以把 zip 拖到这块区域</span>
+          <span class="sub">也可将 zip 拖入此区域</span>
           <div class="patch-file" id="patchFileInfo" hidden></div>
         </div>
         <div class="patch-notes" id="patchNotes" hidden></div>
         <!-- P0-2 包结构表：消费 /api/patch/inspect 已有的 entries/comment/copies，后端零改动 -->
         <div id="pp6zipPatchStruct" hidden></div>
         <div class="set-note">
-          <strong>和「反解现有导出包」的区别：</strong>反解会拆成 Excel 再重新造一份包，
-          原生包里没建模的内容（对象角色、日志模板、字典样式、权限）会丢。
-          这里只往 <code>bo/*.xml</code> 里加字段、给已有字段改显示名，其余条目<b>字节原样保留</b>。
-          <b>已有字段的类型 / 选项值 / 长度等定义不在可改范围</b>，也不会删除任何字段。
+          <strong>与「反解现有导出包」的区别：</strong>反解会拆成 Excel 再重建，包内未建模的内容（对象角色、日志模板、字典样式、权限）会丢失。
+          本功能仅在 <code>bo/*.xml</code> 中新增字段或修改字段名称，其余条目<b>保持不变</b>；
+          <b>已有字段的类型、选项值、长度等定义不可修改</b>，也不会删除字段。
         </div>
       </div>
     </section>
@@ -512,7 +536,7 @@
     <section class="card" id="patchObjectsCard" hidden>
       <div class="card-head">
         <div>
-          <h3>② 选要处理的业务对象</h3>
+          <h3>② 选择业务对象</h3>
           <div class="sub" id="patchObjSummary"></div>
         </div>
         <div class="mod-actions">
@@ -523,7 +547,7 @@
       <div class="patch-body">
         <div class="patch-obj-list" id="patchObjList"></div>
         <label class="patch-check"><input type="checkbox" id="patchAllCopies">
-          同一对象的重复副本一起改（包里重复推送过时才需要）</label>
+          同时处理同一对象的重复副本（仅包内重复推送时需要）</label>
       </div>
     </section>
 
@@ -532,10 +556,8 @@
     <section class="card" id="patchExistingCard" hidden>
       <div class="card-head">
         <div>
-          <h3>③ 已有字段（只能改名称）</h3>
-          <div class="sub">勾选的对象会把包里现有字段列在下面：<b>只有「名称」能改</b>，
-            编码 / 类型 / 选项值 / 长度 / 必填 / 索引 / 说明都是只读，
-            本工具也<b>不会删除任何字段</b>。改完名称直接去 ⑥ 生成新包。</div>
+          <h3>③ 已有字段（仅可改名）</h3>
+          <div class="sub">仅「名称」可编辑，编码、类型、选项值、长度、必填、索引、说明均为只读；<b>不会删除字段</b>。改名后进入第 ⑥ 步生成新包。</div>
         </div>
         <div class="patch-actions">
           <button class="btn ghost" id="patchExistingReset">全部还原</button>
@@ -548,9 +570,7 @@
       <div class="card-head">
         <div>
           <h3>④ 新增字段</h3>
-          <div class="sub">只填<b>包里没有的</b>字段编码 → 往包里加字段，定义按这里填的落。
-            编码如果和已有字段重名，只会应用「名称」（等同 ③ 改名），类型等改动会被忽略并提示。
-            一行一个字段，也可以直接从 Excel 复制粘贴。</div>
+          <div class="sub">仅填写包内不存在的字段编码；编码与已有字段重复时只应用「名称」（等同第 ③ 步改名），其他属性忽略并提示。可一行一个，也可从 Excel 粘贴。</div>
         </div>
         <div class="patch-actions">
           <button class="btn ghost" id="patchAddRow">+ 加一行</button>
@@ -571,11 +591,11 @@
           </table>
         </div>
         <div class="patch-paste">
-          <label for="patchPaste">从 Excel 粘贴（列顺序：编码 / 名称 / 类型 / 选项值 / 长度 / 精度 / 默认值 / 说明，Tab 或逗号分隔）</label>
+          <label for="patchPaste">从 Excel 粘贴（列顺序：编码、名称、类型、选项值、长度、精度、默认值、说明；Tab 或逗号分隔）</label>
           <textarea id="patchPaste" rows="3" spellcheck="false"
             placeholder="riskLevel	风险等级	选项	高,中,低					"></textarea>
           <div class="patch-paste-foot">
-            <span class="sub">类型可写中文（字符串 / 数字 / 日期时间 / 大文本 / 选项 / 对象…）或代码（varchar / dic…）</span>
+            <span class="sub">类型可使用中文名称或代码（如 varchar、dic）</span>
             <button class="btn ghost" id="patchPasteAdd">解析并追加</button>
           </div>
         </div>
@@ -586,9 +606,7 @@
       <div class="card-head">
         <div>
           <h3>⑤ 项目对齐分析</h3>
-          <div class="sub">勾了「关联项目」的对象自动算：新增哪个链接字段、覆盖哪些已有字段
-            （只改类型/选项/长度/必填/索引，编码与物理列名不动）、哪些跳过。
-            这是给<b>系统里还不存在的新对象</b>按项目母版落定义用的，和 ③ 的手工改名是两条路。</div>
+          <div class="sub">勾选「关联」的对象自动计算：新增链接字段、覆盖已有字段（仅类型、选项、长度、必填、索引；编码与物理列名不变）。适用于<b>系统中尚不存在的新对象</b>，与第 ③ 步手工改名是两条路径。</div>
         </div>
         <div class="card-actions">
           <button class="btn ghost" id="btnPatchAlign">重新分析</button>
@@ -601,7 +619,7 @@
       <div class="card-head">
         <div>
           <h3>⑥ 生成新包</h3>
-          <div class="sub">默认一个整包；勾了「每个对象单独出包」会逐个下载。</div>
+          <div class="sub">默认生成整包；勾选「每个对象单独出包」时逐个下载。</div>
         </div>
       </div>
       <div class="patch-body">
@@ -613,16 +631,16 @@
             </select>
           </label>
           <label class="patch-check"><input type="checkbox" id="patchSyncForm">
-            导出的规格 Excel 里同步补表单控件</label>
+            规格 Excel 中同步补齐表单控件</label>
           <label class="patch-check"><input type="checkbox" id="patchSplit">
             每个对象单独出包（下载多个 zip）</label>
         </div>
         <div class="pack-bar patch-bar">
-          <span class="sub" id="patchHint">先上传 zip，再选对象和字段 · 只在原包 bo/*.xml 上打补丁；导入：系统管理 › 发布管理 › 导入同步包</span>
+          <span class="sub" id="patchHint">仅修改原包 bo/*.xml；导入：系统管理 › 发布管理 › 导入同步包</span>
           <div class="ai-btns">
-            <button class="btn ghost" id="patchWorkbook">下载带新字段的规格 Excel</button>
+            <button class="btn ghost" id="patchWorkbook">下载规格 Excel</button>
             <button class="btn ghost" id="patchDryRun">预览改动</button>
-            <button class="btn primary" id="patchBuild">下载新 zip</button>
+            <button class="btn primary" id="patchBuild">下载新导入包</button>
           </div>
         </div>
         <pre class="patch-report" id="patchReport" hidden></pre>
@@ -648,14 +666,19 @@
     <section class="q-main">
       <div class="card">
         <div class="card-head">
-          <div><h3>用一句话描述你要查什么</h3>
-            <div class="sub">例：每个项目状态有多少个项目 · 查出所有已立项的项目及其负责人</div></div>
+          <div><h3>描述查询需求</h3>
+            <div class="sub">例：各项目状态的数量；已立项项目及其负责人。</div></div>
         </div>
         <div class="q-ask">
           <textarea id="qQuestion" rows="3" placeholder="例如：列出执行中的项目，按创建时间倒序"></textarea>
           <div class="q-askbtns">
+            <div class="q-mode" id="qMode" role="group" aria-label="生成方式">
+              <button type="button" data-mode="ask" class="on"
+                      title="规则优先：简单问题直接生成，规则无法覆盖时调用大模型">智能</button>
+              <button type="button" data-mode="agent"
+                      title="查证：先核对表结构与实际取值并试运行，再给出 SQL；结果更准确，模型调用次数更多">查证</button>
+            </div>
             <button class="btn primary" id="qAsk">生成 SQL 并执行</button>
-            <button class="btn ghost" id="qAskAi" title="直接交给大模型，跳过规则">用 AI 重答</button>
           </div>
         </div>
         <div class="q-tpl" id="qTemplates"></div>
@@ -665,8 +688,8 @@
         <div class="card-head">
           <div><h3>结果</h3><div class="sub" id="qResultMeta"></div></div>
           <div class="q-result-actions">
-            <button class="btn ghost" id="qVerify" hidden title="确认这条 SQL 是对的，存进已验证库，下次同类问题优先复用">标记为已验证</button>
-            <button class="btn ghost" id="qRetryAi" hidden title="结果不对时让大模型重新理解这句话">结果不对？用 AI 重答</button>
+            <button class="btn ghost" id="qVerify" hidden title="确认 SQL 正确并存入已验证库，同类问题优先复用">标记为已验证</button>
+            <button class="btn ghost" id="qRetryAi" hidden title="结果不符时由大模型重新理解问题">用 AI 重新生成</button>
             <button class="btn ghost" id="qExport">导出 CSV</button>
           </div>
         </div>
@@ -710,7 +733,7 @@
           <strong id="barSummary"></strong>
           <span class="muted" id="barHint"></span>
         </div>
-        <button class="btn primary" id="btnBuild">导出全部模块</button>
+        <button class="btn primary" id="btnBuild">下载导入包</button>
       </footer>
       <footer class="statusbar">
         <div class="status-left">
@@ -748,8 +771,8 @@
       <button class="pl-modal-close" id="psClose" title="关闭（Esc）">×</button>
     </div>
     <div class="pl-modal-body">
-      <p class="ps-lead" id="psLead1">当前 App 没有配置数据库连接，读不到系统里「项目」对象的字段。</p>
-      <p class="ps-lead" id="psLead2">请导入一份<strong>项目 zip</strong>（包里 <code>bo/*.xml</code> 有 <code>code="project"</code> 的同步包；项目对象、项目列表/表单导出的包都可以）。导入后用它和你的 Excel 对比，找出同名与相似字段。</p>
+      <p class="ps-lead" id="psLead1">未配置数据库连接，无法读取系统中「项目」对象的字段。</p>
+      <p class="ps-lead" id="psLead2">请导入一份<strong>项目 zip</strong>（<code>bo/*.xml</code> 中含 <code>code="project"</code>；项目对象、项目列表或表单导出的包均可），用于与当前 Excel 比对同名字段。</p>
       <div class="pl-modal-meta muted" id="psStatus"></div>
       <input type="file" id="psFile" accept=".zip" hidden>
     </div>
@@ -767,7 +790,7 @@
   <div class="pl-modal pl-modal-wide" role="dialog" aria-modal="true" aria-labelledby="plModalTitle">
     <div class="pl-modal-head">
       <div>
-        <h3 id="plModalTitle">这些字段和项目相近，要按项目定义覆盖吗？</h3>
+        <h3 id="plModalTitle">以下字段与「项目」定义相近，是否覆盖？</h3>
         <div class="sub pl-step2">第 2 步 / 共 3 步 · 确认相近字段</div>
       </div>
       <button class="pl-modal-close" id="plModalClose" title="关闭（Esc）">×</button>
@@ -777,7 +800,7 @@
       <div class="pl-foot-left">
         <button class="link" id="plPickAll">全选</button>
         <button class="link" id="plPickNone">全不选</button>
-        <button class="link" id="plBackEdit" title="回到第 1 步，改完 Excel 再选一次同一个文件">返回修改 Excel</button>
+        <button class="link" id="plBackEdit" title="返回第 1 步，修改 Excel 后重新选择该文件">返回修改 Excel</button>
       </div>
       <div class="pl-foot-right">
         <button class="btn ghost" id="plLater">保留我的</button>

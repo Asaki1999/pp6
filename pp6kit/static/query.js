@@ -58,10 +58,10 @@ applyFeatureFlags();
 /* ---------------- 模式切换 ---------------- */
 /* 上下文栏 / 状态栏跟着工作区走，避免「切了页面但标题还是上一个」 */
 const MODE_META = {
-  import:   { title: "普通模式", desc: "普通业务对象 + 表单/列表/数据集，出一个同步包（导入走 发布管理 › 导入同步包）" },
-  patch:    { title: "存量包修订", desc: "导入已有业务对象：加字段、改字段名称；类型/选项等定义不改，也不删字段。除改动处字节原样保留，导入走 发布管理 › 导入同步包" },
-  query:    { title: "数据查询",   desc: "用一句话查数据库，生成 SQL 并查看结果" },
-  workflow: { title: "流程模式",   desc: "和普通模式同一套操作；固定 开始→审核→通过，导出 zip 时额外给一份流程 XML" },
+  import:   { title: "普通模式", desc: "普通业务对象及其表单、列表、数据集，生成一个导入包（导入路径：发布管理 › 导入同步包）" },
+  patch:    { title: "存量包修订", desc: "在已有导入包上新增字段或修改字段名称；类型、选项等定义不可修改，也不删除字段，其余内容保持不变" },
+  query:    { title: "数据查询",   desc: "用自然语言查询数据库，生成 SQL 并查看结果" },
+  workflow: { title: "流程模式",   desc: "操作与普通模式一致；固定 开始 › 审核 › 通过，导出时另附流程 XML" },
   settings: { title: "系统设置",   desc: "大模型、数据库连接与本地配置" },
 };
 
@@ -110,6 +110,14 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     switchMode("import");
     return;
+  }
+  // 数据查询：⌘/Ctrl + Enter 直接执行，光标在问题框里也算（Enter 仍可换行）
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    const box = document.getElementById("qQuestion");
+    if (box && document.activeElement === box) {
+      const go = document.getElementById("qAsk");
+      if (go && !go.disabled) { e.preventDefault(); go.click(); return; }
+    }
   }
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   const hit = { "1": "import", "2": "workflow", "3": "patch", "4": "query", "5": "settings" }[e.key];
@@ -187,7 +195,7 @@ function currentModel() {
 
 function renderProviders(list) {
   const sel = Q.get("qProvider");
-  sel.innerHTML = `<option value="">— 选一个免费平台，自动填好 —</option>` +
+  sel.innerHTML = `<option value="">选择平台后自动填充</option>` +
     list.map((p) => `<option value="${qEsc(p.key)}">${qEsc(p.name)}${p.free ? " · 免费" : ""}</option>`).join("");
   sel.onchange = () => {
     const p = Q_PROVIDERS.find((x) => x.key === sel.value);
@@ -206,7 +214,10 @@ async function ensureQueryReady() {
     Q.templates = d.templates || [];
     renderTemplates();
   } catch (_) {
-    /* 没连库/连不上时保持「还没连接数据库」，用户去设置里配 */
+    /* 没连库/连不上时保持「还没连接数据库」，用户去设置里配；
+       但示例问法还是给几条（只填进输入框，不执行），别让页面空着。 */
+    Q.templates = [];
+    renderTemplates();
   }
 }
 
@@ -240,7 +251,7 @@ async function loadConfig() {
     Q_CHANNEL_KEY = ch.key || "";
     if (ch.key) Q.get("qProvider").value = ch.key;
     if (ch.api_key_set) {
-      Q.get("qKey").placeholder = "已记住（留空则沿用）";
+      Q.get("qKey").placeholder = "已保存（留空则沿用）";
       const box = Q.get("qLlmSaved");
       box.hidden = false;
       Q.get("qLlmSavedText").textContent =
@@ -278,7 +289,7 @@ function paintAiState() {
   const pillText = document.getElementById("ctxAiText");
   if (pill) {
     pill.classList.toggle("on", AI_READY);
-    pill.title = AI_READY ? `已接入 ${AI_BRIEF}` : "到「设置」里填一个免费的 Key 就能用 AI";
+    pill.title = AI_READY ? `已接入 ${AI_BRIEF}` : "在「系统设置」中配置 API Key 后可用";
   }
   if (pillDot) pillDot.classList.toggle("on", AI_READY);
   if (pillText) pillText.textContent = AI_READY ? "AI 已配置" : "AI 未配置";
@@ -288,10 +299,10 @@ function paintAiState() {
   const aiHint = document.getElementById("aiHint");
   if (aiHint) {
     if (AI_READY) {
-      aiHint.textContent = `已接入 ${AI_BRIEF} · 字段类型会自动选：金额→数字，审批人→人员，备注→多行文本`;
+      aiHint.textContent = `已接入 ${AI_BRIEF} · 字段类型自动识别：金额为数字、审批人为用户、备注为大文本`;
       aiHint.classList.remove("warn");
     } else {
-      aiHint.textContent = "还没配置 AI，点左侧「设置」填一个免费的 Key 就能用";
+      aiHint.textContent = "未配置大模型；在「系统设置」中填写 API Key 后可用";
       aiHint.classList.add("warn");
     }
   }
@@ -364,8 +375,8 @@ Q.get("qTest").onclick = async () => {
     toast(`已连接 ${d.database}，读到 ${d.tableCount} 张业务表`);
     // 连生产库时这条提示比「连上了」重要得多
     if (d.readonly && d.readonly.session === false) {
-      toast("注意：这条连接是「可写」的。建议改用只读账号连客户库——" +
-            "程序只发 SELECT，但账号级只读是唯一绕过代码后还挡得住的一层。", 9000);
+      toast("当前连接为「可写」账号，建议改用只读账号连接客户库。" +
+            "工具只发送 SELECT，但账号级只读是代码之外的最终防线。", 9000);
     }
   } catch (e) {
     toast("连接失败：" + e.message, 6000);
@@ -385,7 +396,7 @@ Q.get("qSaveLlm").onclick = async () => {
   const model = currentModel();
   const key = Q.get("qKey").value.trim();
   if (!base) { toast("请先选一个平台，或手填接口地址"); return; }
-  if (!model) { toast("请填写模型名（选平台会自动填好）"); return; }
+  if (!model) { toast("请填写模型名称（选择平台后自动填充）"); return; }
   if (!key && !AI_READY) { toast("请粘贴 API Key"); return; }
 
   btn.disabled = true; btn.textContent = "测试中…";
@@ -465,13 +476,21 @@ function renderOrigin(d) {
       html += `<span class="src-why">规则没把握：${qEsc(d.rule_reason)}</span>`;
     }
     if (d.learned) {
-      html += `<span class="src-learned" title="已存入示例库，下次同类问题直接复用">已记住</span>`;
+      html += `<span class="src-learned" title="已存入示例库，同类问题优先复用">已记录</span>`;
     }
     if (d.conflict) {
       html += `<span class="src-warn" title="${qEsc(d.conflict)}">未保存</span>`;
     }
   } else if (d.origin === "memory" && d.source_question) {
     html += `<span class="src-why">来自之前问过：${qEsc(d.source_question)}</span>`;
+  } else if (d.origin === "agent") {
+    // 查证模式：把「查了几次、查了什么」摊开，用户才知道这条 SQL 是有依据的
+    const n = (d.trace || []).length;
+    if (n) {
+      const steps = (d.trace || []).map((t) => t.tool).join(" → ");
+      html += `<span class="src-why" title="模型先取证据再写 SQL">查证 ${n} 次：${qEsc(steps)}</span>`;
+    }
+    if (d.note) html += `<span class="src-why">${qEsc(d.note)}</span>`;
   } else if (d.ai_error) {
     html += `<span class="src-why">AI 不可用（${qEsc(d.ai_error)}）</span>`;
   }
@@ -489,9 +508,31 @@ function renderOrigin(d) {
 }
 
 /* ---------------- 模板 ---------------- */
+/* 没连库时的问法示例：点一下只填进输入框，不执行——库还没连，执行必然报错，
+   先让用户知道「这个框能问什么」比给一排空按钮有用。 */
+const Q_FALLBACK = [
+  "每个项目状态有多少个项目",
+  "列出执行中的项目，按创建时间倒序",
+  "本月新增的任务按负责人统计",
+  "风险等级为「高」的项目有哪些",
+];
+
 function renderTemplates() {
   const box = Q.get("qTemplates");
-  if (!Q.templates.length) { box.innerHTML = ""; return; }
+  if (!box) return;
+  if (!Q.templates.length) {
+    box.innerHTML = `<span class="q-tpl-note">示例问法：</span>`
+      + Q_FALLBACK.map((q) => `<button data-fill="1">${qEsc(q)}</button>`).join("");
+    box.querySelectorAll("button[data-fill]").forEach((btn) => {
+      btn.onclick = () => {
+        const input = Q.get("qQuestion");
+        if (!input) return;
+        input.value = btn.textContent;
+        input.focus();
+      };
+    });
+    return;
+  }
   box.innerHTML = Q.templates
     .map((t, i) => `<button data-i="${i}">${qEsc(t.title)}</button>`).join("");
   box.querySelectorAll("button").forEach((btn) => {
@@ -535,7 +576,7 @@ function renderResult(d, ms) {
     // 0 行时给出诊断（表空？条件太严？取值写错？），别只丢一句"没有数据"
     const hint = d.hint
       ? `<div class="empty"><b>没有查到数据</b><div class="empty-hint">${qEsc(d.hint)}</div></div>`
-      : '<div class="empty">查询执行成功，但没有匹配的数据。</div>';
+      : '<div class="empty">查询成功，无匹配数据。</div>';
     Q.get("qResult").innerHTML = hint;
     Q.last = d;
     return;
@@ -599,7 +640,7 @@ async function runSql(sql) {
    SSE 帧格式是 `data: {json}\n\n`，浏览器按 chunk 给到，所以要带缓冲地切帧
    ——一个 chunk 可能是半帧，也可能一次给好几帧。
    服务端不支持流式、或非 200 时抛 stream-unavailable，由调用方退回同步接口。 */
-async function askStream(payload, onDelta) {
+async function askStream(payload, onDelta, onEvent) {
   const res = await fetch("/api/nlq/ask-stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -623,6 +664,7 @@ async function askStream(payload, onDelta) {
       let ev;
       try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
       if (ev.stage === "delta") onDelta(ev.delta || "");
+      else if (ev.stage === "tool") { if (onEvent) onEvent(ev); }
       else if (ev.stage === "done") result = ev.result;
       else if (ev.stage === "error") throw new Error(ev.error || "生成失败");
     }
@@ -631,10 +673,22 @@ async function askStream(payload, onDelta) {
   return result;
 }
 
+/* 查证模式的进度文案：让用户知道模型此刻在干什么，而不是干等 */
+function toolLabel(ev) {
+  const a = ev.args || {};
+  if (ev.tool === "list_tables") return "查找表「" + (a.keyword || "全部") + "」";
+  if (ev.tool === "describe_table") return "看 " + (a.table || "") + " 的字段";
+  if (ev.tool === "sample_values") {
+    return "看 " + (a.table || "") + "." + (a.column || "") + " 的实际取值";
+  }
+  if (ev.tool === "run_sql") return "试跑一条查询验证条件";
+  return ev.tool || "调用工具";
+}
+
 async function ask(engine, clarified) {
   Q.get("qRuleBox").hidden = true;
   const question = Q.get("qQuestion").value.trim();
-  if (!question) { toast("先写一句你想查什么"); return; }
+  if (!question) { toast("请先输入查询需求"); return; }
   const btn = Q.get("qAsk");
   btn.disabled = true; btn.textContent = "生成中…";
   const t0 = performance.now();
@@ -643,6 +697,7 @@ async function ask(engine, clarified) {
     // 流式优先：能一边生成一边看 SQL，长 SQL 也不用干等
     Q.get("qSqlCard").hidden = false;
     Q.get("qSql").value = "";
+    Q.get("qSqlMeta").textContent = "";
     let d;
     try {
       d = await askStream({ question, engine, clarified: !!clarified }, (piece) => {
@@ -651,6 +706,9 @@ async function ask(engine, clarified) {
         const ta = Q.get("qSql");
         ta.value = acc;
         ta.scrollTop = ta.scrollHeight;   // 跟着最新写出来的字往下滚
+      }, (ev) => {
+        // 查证模式：工具调用没有 delta，进度就靠这行字告诉用户
+        Q.get("qSqlMeta").textContent = "查证中：" + toolLabel(ev);
       });
     } catch (e) {
       if (String(e.message) !== "stream-unavailable") throw e;
@@ -665,8 +723,8 @@ async function ask(engine, clarified) {
     }
     Q.get("qSqlMeta").textContent = (question ? "来自：" + question : "") +
       (d.note ? "　✎ " + d.note : "");   // 复用人工修正时带上他自己写的原因
-    if (d.retried) toast("第一次 SQL 执行报错，已自动修正");
-    if (d.learned) toast("这条已记下，下次同类问题规则能直接答");
+    if (d.retried) toast("SQL 执行报错，已自动修正");
+    if (d.learned) toast("已记录，同类问题将优先使用规则");
     const ruleBox = Q.get("qRuleBox");
     if (d.ruleSql && d.ruleSql !== d.sql) {
       ruleBox.hidden = false;
@@ -699,7 +757,7 @@ async function ask(engine, clarified) {
 async function copySql() {
   const ta = Q.get("qSql");
   const text = ta.value;
-  if (!text.trim()) { toast("还没有 SQL 可复制"); return; }
+  if (!text.trim()) { toast("暂无 SQL 可复制"); return; }
 
   let done = false;
 
@@ -732,7 +790,7 @@ async function copySql() {
     btn.textContent = "已复制 ✓";
     setTimeout(() => { btn.textContent = old; }, 1400);
   } else {
-    toast("复制失败，请手动选中后按 ⌘C / Ctrl+C");
+    toast("复制失败，请手动选择后按 ⌘C / Ctrl+C");
   }
 }
 
@@ -741,7 +799,7 @@ Q.get("qRetryAi").onclick = () => ask("llm");
 Q.get("qVerify").onclick = async () => {
   const question = Q.get("qQuestion").value.trim();
   const sql = Q.get("qSql").value.trim();
-  if (!question || !sql) { toast("先查一次再标记"); return; }
+  if (!question || !sql) { toast("请先执行一次查询"); return; }
   const btn = Q.get("qVerify");
   btn.disabled = true; btn.textContent = "保存中…";
   try {
@@ -771,8 +829,31 @@ Q.get("qLlmForget").onclick = async () => {
   } catch (e) { toast("清除失败：" + e.message); }
 };
 
-Q.get("qAsk").onclick = () => ask("hybrid");
-Q.get("qAskAi").onclick = () => ask("llm");
+/* 生成方式：照 DBX 的 Ask / Agent 双模式。
+   ask   = 规则优先，规则没把握才调大模型（pp6 原有的 hybrid，也是默认）
+   agent = 查证：先 list/describe/sample/试跑，再落笔
+   模式是切换器而不是第三个按钮——DBX 也是这么分层的。 */
+let ASK_MODE = "ask";
+try {
+  if (localStorage.getItem("pp6.askMode") === "agent") ASK_MODE = "agent";
+} catch (e) { /* 桌面壳里 localStorage 可能被禁，忽略即可 */ }
+
+(function initAskMode() {
+  const box = Q.get("qMode");
+  if (!box) return;
+  box.querySelectorAll("button").forEach((b) => {
+    b.classList.toggle("on", b.dataset.mode === ASK_MODE);
+    b.onclick = () => {
+      ASK_MODE = b.dataset.mode === "agent" ? "agent" : "ask";
+      try { localStorage.setItem("pp6.askMode", ASK_MODE); } catch (e) { /* 同上 */ }
+      box.querySelectorAll("button").forEach((x) => {
+        x.classList.toggle("on", x === b);
+      });
+    };
+  });
+})();
+
+Q.get("qAsk").onclick = () => ask(ASK_MODE === "agent" ? "agent" : "hybrid");
 
 Q.get("qRun").onclick = () => runSql(Q.get("qSql").value);
 
@@ -833,3 +914,11 @@ Q.get("qExport").onclick = () => {
 /* 启动就拉一次配置：顶栏的 AI 状态灯和导入页提示都依赖它，
    不能等用户切到查询页才加载——否则第一眼看到的永远是「未配置」。 */
 loadConfig();
+
+/* 首屏把光标放进输入框：打开就能打字，省掉「先点一下」这一步。
+   preventScroll 防止长页面被浏览器拽到输入框位置。 */
+window.addEventListener("load", () => {
+  const t = document.getElementById("aiChatText1");
+  if (!t || t.value) return;
+  try { t.focus({ preventScroll: true }); } catch (_) { t.focus(); }
+});

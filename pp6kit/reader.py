@@ -12,6 +12,7 @@ from .model import (
     FORM_KIND_LABEL,
     OP_BY_LABEL,
     TABLE_COLUMN_TYPES,
+    VALUE_ORIGIN_BY_LABEL,
     WF_KIND_BY_LABEL,
     WF_ONGOING,
     Bo,
@@ -856,6 +857,10 @@ def read_workbook(path: Path) -> tuple[Project, list[str], dict]:
                 result_fields=[] if all_results else split_list(results_raw),
                 result_all=all_results,
                 auto_generated=truthy(get("auto")),
+                # 老工作簿没有这两列 → 默认生成、用途留空（由 blueprint 按口径补）。
+                # 「是/否」用 truthy 判：空也当「是」，只有明确写「否」才关。
+                enabled=(True if _blank(get("enabled")) else truthy(get("enabled"))),
+                origin=VALUE_ORIGIN_BY_LABEL.get(str(get("origin") or "").strip(), ""),
             ), spec.S_VALUE, row_no)
 
     # ---- 表单脚本

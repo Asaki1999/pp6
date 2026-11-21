@@ -65,7 +65,8 @@ const CTRL_LABEL = {
  * 原来的第三档「按 Excel」被用户砍掉了：要么全关联、要么全不关联，
  * 想看单个对象，用对象卡片上的「关联项目」开关。`1_业务对象` 的「关联项目」
  * 列仍然有效（命令行 / 接口直接传 Excel 时照旧认它），只是应用内以两档为准。
- * 普通模式 / 流程模式共享同一档（localStorage: pp6.plPre），存量包用 pp6.plPrePatch。
+ * 普通模式 / 流程模式共享同一档，**不落盘**（默认恒为「不关联」，见 state.plPre）；
+ * 存量包修订页那条仍记 localStorage：pp6.plPrePatch。
  *
  * 协议没变：仍然是 POST /api/parse + X-Project-Link，服务端照旧重新分析、不信任前端。
  */
@@ -145,8 +146,12 @@ const state = {
   plDeferred: false,
   // 第 1 步「业务对象关联项目」的两档（初始页控件，导入前就定）：
   // "off" 不关联（默认） / "on" 全部关联。
-  // 普通模式与流程模式共享同一档，存 localStorage。
-  plPre: readPref(PL_PRE_KEY, PL_PRE_MODES, "off"),
+  // 普通模式与流程模式共享同一档。
+  // 2026-11-20 用户口径：**默认必须是不关联**。以前这里读 localStorage 记住
+  // 上次选择，结果「上次点了关联 → 下次打开默认就是关联」，用户看到的就是
+  // 默认值被改掉了。现在固定以「不关联」开局，不再记忆这一档
+  // （选了关联后的会话内行为不变，只是下次打开重新回到不关联）。
+  plPre: "off",
   // 存量包修订页的三档："off" 全不勾 / "on" 全勾 / "keep" 按包内（保留现状）
   plPrePatch: readPref(PL_PRE_PATCH_KEY, PL_PRE_PATCH_MODES, "keep"),
   // 对象卡片上的「关联项目」开关：{ 对象编码: true|false }
@@ -319,7 +324,7 @@ async function handleFile(file, { fromAi = false, quiet = false } = {}) {
         // 和页面上选的档位对不上的头）
         state.plLinked = prevLinked;
         decisions = null;
-        toast(`按「${modeLabel}」分析失败：${err.message}，已按 Excel 里的内容原样分析`, 7000);
+        toast(`按「${modeLabel}」分析失败（${err.message}），已按 Excel 内容解析`, 7000);
       }
     }
 
@@ -329,7 +334,7 @@ async function handleFile(file, { fromAi = false, quiet = false } = {}) {
     if (!fromAi && !quiet && !looksLikeTemplate(data)) {
       setLoading(false);
       if (!window.PP6_AI_READY) {
-        toast("这不是标准 Excel 模板，需要 AI 识别；先到「设置」里填一个 Key", 9000);
+        toast("该文件不是标准模板，需由大模型识别；请先在「系统设置」配置 API Key", 9000);
         if (typeof window.PP6_OPEN_AI === "function") window.PP6_OPEN_AI();
         return;
       }
@@ -367,7 +372,7 @@ async function handleFile(file, { fromAi = false, quiet = false } = {}) {
         state.plModalShown = true;
         setLoading(false);
         window.ProjLink.openModal(vm);
-        toast(`分析完成：有 ${pending + direct} 个字段需要确认，确认完再生成预览`, 6000);
+        toast(`分析完成：${pending + direct} 个字段待确认，确认后生成预览`, 6000);
         return;
       }
     }
@@ -380,14 +385,14 @@ async function handleFile(file, { fromAi = false, quiet = false } = {}) {
       const all = state.data.objects || [];
       const n = all.filter((o) => o.flowDriven).length;
       if (!all.length) {
-        toast("已解析，但这份 Excel 里没有业务对象：先到 1_业务对象 填一行", 7000);
+        toast("解析完成，但 1_业务对象 中没有内容，请先填写", 7000);
       } else {
         toast(n
           ? `已解析：${n} 个流程对象，可以导出对象包`
           : `已解析：${all.length} 个对象`, 6000);
       }
     }
-    if (fromAi) toast("已按预览生成，选择模块后下载 zip", 5000);
+    if (fromAi) toast("已按预览生成，选择模块后下载导入包", 5000);
   } catch (err) {
     toast("解析失败：" + err.message);
     if (!quiet) goStep(1);
@@ -410,7 +415,7 @@ async function downloadBlankTemplate() {
       // 已打包的 App 里 Python 代码是打包那一刻的：旧后端会忽略 ?blank=1，
       // 返回带示例的模板（文件名里没有「空白」）。别在这儿骗用户说下到的是空白表。
       if (name.includes("空白")) {
-        toast("已下载空白模板，填好再拖回这里：" + name, 7000);
+        toast("空白模板已下载：" + name, 7000);
       } else {
         toast("当前 App 后端还是旧版：这次下载的是带「采购申请」示例的模板；"
               + "空白模板要重新打包后才生效（网页版 ./bin/pp6 ui 已经是新的）", 10000);
@@ -464,10 +469,12 @@ function syncAiNextLabel() {
   const btn = $("#btnToPack");
   if (!btn) return;
   const check = state.plPre === "on";
-  btn.textContent = check ? "下一步：核对字段 →" : "下一步：生成预览 →";
+  // 这一步已经预览完了，点它真正做的是「按当前预览重新出一份 Excel → 解析 → 出包」，
+  // 所以不能再写「下一步：生成预览」——那是第 1 步的动作。
+  btn.textContent = check ? "核对字段并出包 →" : "核对完成，去出包 →";
   btn.title = check
-    ? `先核对${plTargetLabel()}字段；确认后才下载导入包`
-    : "生成预览后，在结果页下载导入包";
+    ? `先核对${plTargetLabel()}字段；确认后直接出包`
+    : "按当前预览生成导入包（回到结果页下载）";
 }
 
 /* 两个菜单的两档单选同步：普通模式 / 流程模式共享同一档（state.plPre），
@@ -518,10 +525,10 @@ function syncPlTargetUI() {
   const hint = $("#plPreHint");
   if (hint) {
     hint.textContent = state.plPre !== "on"
-      ? "导入前先选：关联=这份 Excel 里的对象都关联到所选业务对象；不关联=一个都不关联。"
+      ? "关联：生成对象挂到所选业务对象下，并对齐同名字段；不关联：各自独立生成。"
       : (state.plTargetKind === "project"
-        ? "关联=这份文件里的对象都关联项目；项目字段池优先用库里快照，没连库时用随包项目字段快照（要最新字段可导入项目 zip 刷新）。"
-        : `关联=这份 Excel 里的对象都关联「${plTargetLabel()}」；先输名称点「核对」，没连库时上传该对象的 zip。`);
+        ? "关联：全部对象关联项目；字段定义优先取数据库，未连接时使用随包项目字段。"
+        : `关联：全部对象关联「${plTargetLabel()}」；先输入名称并核对，未连接数据库时上传该对象 zip。`);
   }
   syncAiNextLabel();
 }
@@ -562,7 +569,7 @@ async function resolvePlTarget({ silent = false } = {}) {
   if (!name) {
     state.plTargetError = "请先输入业务对象名称";
     syncPlTargetUI();
-    if (!silent) toast("请先输入业务对象名称，再点「核对」");
+    if (!silent) toast("请先输入业务对象名称");
     return false;
   }
   state.plTargetError = "";
@@ -708,9 +715,14 @@ function bindPlPre() {
             : "关联项目没生效，已保持原来的设置（未连库时可在弹窗里选「使用随包快照」）");
           return;
         }
-        if (g.patch) state.plPrePatch = value;
-        else state.plPre = value;
-        savePref(g.key, value);
+        if (g.patch) {
+          state.plPrePatch = value;
+          savePref(g.key, value);
+        } else {
+          // 普通 / 流程两档**不落盘**：默认固定「不关联」，下次打开不继承
+          // 上次的「关联」，见 state.plPre 的注释。存量包那档（patch）仍记忆。
+          state.plPre = value;
+        }
         syncPlPreInputs();
         syncAiNextLabel();
       };
@@ -724,6 +736,9 @@ function bindPlPre() {
 
 function renderAll() {
   const d = state.data;
+  // 新的一份解析结果：上一次的「已保存 / 去这个菜单上传」收尾条必须撤掉，
+  // 否则会指着上一份 zip 说「已保存」，人以为这次也下好了。
+  hideNextStep();
   // 流程工作区是独立菜单，但数据来自同一次解析：这里顺带刷一遍，
   // 用户上传完 Excel 直接点左侧「流程」就能看到，不用再手动刷新
   $("#result").hidden = false;
@@ -761,8 +776,8 @@ function renderAll() {
     note.hidden = !flowCount;
     note.textContent = flowCount
       ? (state.flowMode
-        ? `其中 ${flowCount} 个流程对象会一起进 zip，并另给一份固定三步流程 XML。`
-        : `其中 ${flowCount} 个是流程对象：普通模式只出普通对象，切流程模式导出时会一起出。`)
+        ? `其中 ${flowCount} 个流程对象随导入包一并导出，并附固定三步流程 XML。`
+        : `其中 ${flowCount} 个为流程对象：普通模式仅导出普通对象，切换流程模式后一并导出。`)
       : "";
   }
 
@@ -785,18 +800,19 @@ function renderAll() {
       if (hit) tab = hit;
     }
     banner.className = "banner error";
-    banner.innerHTML = `<strong>${errCount} 个错误</strong>：必须先修好才能生成，详见「校验结果」。`
-      + `<div class="sub">哪类：校验错误（${esc(firstErr ? String(firstErr.message).slice(0, 60) : "结构 / 引用错误")}）`
-      + ` · 影响 ${esc(where || "详见『校验结果』页签")} · 去「${esc(tab)}」修；`
-      + `不要往包里加 manifest、txt、图标。</div>`;
+    banner.innerHTML = `<span><strong>${errCount} 个错误</strong>，需修正后才能生成。<button type="button" class="banner-act" id="bannerFix">定位首条错误 →</button></span>`
+      + `<div class="sub">类型：校验错误（${esc(firstErr ? String(firstErr.message).slice(0, 60) : "结构或引用错误")}）`
+      + ` · 位置：${esc(where || "详见「校验结果」页签")} · 修复参考「${esc(tab)}」；`
+      + `请勿在导入包中加入 manifest、txt 或图标文件。</div>`;
     banner.hidden = false;
+    bindBannerFix();
   } else if (warnCount) {
     banner.className = "banner warn";
-    banner.innerHTML = `<strong>${warnCount} 个警告</strong>：不影响生成，建议核对一下。`;
+    banner.innerHTML = `<span><strong>${warnCount} 个警告</strong>：不影响生成，建议核对。</span>`;
     banner.hidden = false;
   } else {
     banner.className = "banner ok";
-    banner.innerHTML = `<strong>校验通过</strong>：结构完整，可以生成。`;
+    banner.innerHTML = `<span><strong>校验通过</strong>：结构完整，可以生成导入包。</span>`;
     banner.hidden = false;
   }
 
@@ -843,6 +859,8 @@ function updateBar() {
   if (!d) {
     const pack = $("#btnPack") || $("#btnBuild");
     if (pack) pack.disabled = true;
+    const top = $("#btnPackTop");
+    if (top) top.disabled = true;
     if (xmlBtn) { xmlBtn.hidden = !state.flowMode; xmlBtn.disabled = true; }
     return;
   }
@@ -853,11 +871,19 @@ function updateBar() {
   $("#barSummary").textContent =
     `${d.objects.length} 个对象 · ${d.forms.length} 个表单 · ${d.lists.length} 个列表 · ${d.datasets.length} 个数据集`;
   $("#barHint").textContent = d.errorCount
-    ? "有错误，已禁用生成"
+    ? "存在错误，已禁用生成"
     : picked.length
-      ? `已选 ${picked.length} 个模块（${picked.map((m) => m.label).join(" / ")}）· 也可在下面逐个导入`
-      : "还没选模块";
-  btn.textContent = picked.length === mods.length ? "导出全部模块" : `导出选中的 ${picked.length} 个模块`;
+      ? `已选 ${picked.length} 个模块（${picked.map((m) => m.label).join(" / ")}）；也可单独导出某一模块。`
+      : "未选择模块";
+  btn.textContent = "下载导入包";
+  // 页头那个下载按钮跟着勾选状态走：禁用态与提示文案保持一致
+  const topBtn = $("#btnPackTop");
+  if (topBtn) {
+    topBtn.disabled = btn.disabled;
+    topBtn.title = picked.length === mods.length
+      ? "把全部模块打成一个导入包"
+      : `只打包勾选的 ${picked.length} 个模块`;
+  }
   if (xmlBtn) {
     xmlBtn.hidden = !state.flowMode;
     xmlBtn.disabled = !state.file || d.errorCount > 0 || !picked.length;
@@ -1142,7 +1168,7 @@ async function ensureProjectSnapshot() {
   if (st.dbConfigured) {
     if (!state.plDbHintShown) {
       state.plDbHintShown = true;
-      toast("已连接数据库，项目字段直接取自库中，无需再选项目文件", 6000);
+      toast("已连接数据库，项目字段取自库中，无需再选项目文件", 6000);
     }
     return true;
   }
@@ -1309,7 +1335,7 @@ async function applyProjectPicks() {
   if (!n) {
     // 一个都没勾 = 保留我方：不发请求、不改决策（省一次解析，也不留空头）
     window.ProjLink.closeModal();
-    toast("没有勾选任何字段：这些相近字段都按原规则生成", 5000);
+    toast("未勾选字段：相近字段按原规则生成", 5000);
     finishPlDeferred();          // 延迟渲染的话，现在才出预览/结果页
     return;
   }
@@ -1455,7 +1481,7 @@ async function downloadConfirmedExcel() {
 /* 流程模式导出：zip 走 /api/build（X-Object-Scope=all），流程 XML 单独走
    /api/workflow；固定 开始 → 审核 → 通过，不在这里画流程图。 */
 async function downloadWorkflow(btn) {
-  if (!state.file) { toast("先导入 Excel 或让 AI 生成对象"); return; }
+  if (!state.file) { toast("请先上传 Excel 或生成业务对象"); return; }
   const label = btn ? btn.textContent : "";
   if (btn) { btn.disabled = true; btn.textContent = "正在生成…"; }
   try {
@@ -1481,7 +1507,11 @@ async function downloadWorkflow(btn) {
   }
 }
 
-/* 按模块导入 / 导出：系统里每个模块单独导入，所以左边一个开关、右边两个动作 */function renderModules() {
+/* 模块列表：左边一个勾（进整包），右边一个「单独出包」。
+   以前是「导入 / 导出」两个按钮——但两个都只是下载一个 zip，用户看不出差别，
+   而「导入」还容易被理解成「帮我导进系统」（导入是用户自己做的事）。
+   现在只留一个动作，语义是「只把这一个模块打成包」。 */
+function renderModules() {
   const box = $("#modList");
   // 流程不再作为独立导出模块：对象包在「流程模式」里出，不生成流程 XML
   const mods = (state.data.modules || []).filter((m) => m.code !== "workflow");
@@ -1497,15 +1527,15 @@ async function downloadWorkflow(btn) {
     const flowHint = m.code === "workflow";
     const badges = [
       empty ? '<span class="chip">无内容</span>' : "",
-      done ? '<span class="chip accent">已导入</span>' : "",
-      hint ? `<span class="chip warn">建议先导入${need.map((n) => MOD_LABEL[n] || n).join("、")}</span>` : "",
+      done ? '<span class="chip accent">已导出过</span>' : "",
+      hint ? `<span class="chip warn">需先导入${need.map((n) => MOD_LABEL[n] || n).join("、")}</span>` : "",
     ].join("");
     return `
       <div class="mod-row ${empty ? "is-empty" : ""}">
         <label class="mod-pick">
           <input type="checkbox" data-mod="${m.code}" ${picked ? "checked" : ""} ${empty ? "disabled" : ""}>
         </label>
-        <div class="mod-main">
+        <div class="mod-main" data-toggle="${m.code}" title="${empty ? "" : "点这一行也能勾选 / 取消"}">
           <div class="mod-name">
             ${esc(m.label)}
             <span class="chip">${m.count} 项</span>
@@ -1517,12 +1547,8 @@ async function downloadWorkflow(btn) {
             : m.note ? `<div class="mod-note">${esc(m.note)}</div>` : ""}
         </div>
         <div class="mod-btns">
-          <button class="btn ghost sm" data-act="import" data-mod="${m.code}"
-                  ${empty || flowHint ? "disabled" : ""}
-                  title="${flowHint ? "流程是裸 XML，不进 zip：请到左侧「流程」工作区下载" : "单独生成这一个模块的 zip 并保存"}">导入</button>
-          <button class="btn ghost sm" data-act="export" data-mod="${m.code}"
-                  ${empty || flowHint ? "disabled" : ""}
-                  title="${flowHint ? "流程是裸 XML，不进 zip：请到左侧「流程」工作区下载" : "只导出这一个模块的 zip"}">导出</button>
+          ${empty || flowHint ? "" : `<button class="btn ghost sm" data-act="one" data-mod="${m.code}"
+                  title="只把这一个模块打成导入包（不进整包）">单独出包</button>`}
         </div>
       </div>`;
   }).join("");
@@ -1534,11 +1560,19 @@ async function downloadWorkflow(btn) {
       updateBar();
     };
   });
-  $$("#modList button[data-act]").forEach((btn) => {
-    btn.onclick = () => {
-      const code = btn.dataset.mod;
-      if (btn.dataset.act === "import") importOne(code, btn);
-      else buildZip([code], btn);
+  // 整行可点：勾选框只有 14px，鼠标要瞄准；点标题/菜单/字段名都算勾选
+  $$("#modList .mod-main[data-toggle]").forEach((row) => {
+    row.onclick = () => {
+      const cb = $(`#modList input[data-mod="${row.dataset.toggle}"]`);
+      if (!cb || cb.disabled) return;
+      cb.checked = !cb.checked;
+      cb.onchange();
+    };
+  });
+  $$("#modList button[data-act='one']").forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();          // 别顺带把整行勾选也切了
+      importOne(btn.dataset.mod, btn);
     };
   });
 }
@@ -1737,7 +1771,7 @@ function renderLists() {
 
   const dsCards = datasets.length
     ? `<div class="card">
-        <div class="card-head"><div><h3>数据集 / 选择器</h3><div class="sub">下拉框的取数来源：选择器是独立模块，一行实例叫「xx值来源」，Excel 表是 6.1_值来源</div></div></div>
+        <div class="card-head"><div><h3>数据集 / 选择器</h3><div class="sub">下拉框取数来源：选择器为独立模块（实例称「xx 值来源」），Excel 表为 6.1_值来源。</div></div></div>
         <table><thead><tr><th>名称</th><th>Key</th><th>主表</th><th>类型</th><th>返回字段</th></tr></thead>
         <tbody>${datasets.map((d) => `<tr>
           <td>${esc(d.name)}${d.auto ? ' <span class="chip">自动</span>' : ""}</td>
@@ -1812,8 +1846,8 @@ function renderFieldCheck() {
   }).join("");
 
   panel.innerHTML = `<div class="card fc-intro"><div class="sub">
-    同名同义写了两遍、或者同一个名字配了不同东西的，都列在这里。
-    这些<b>不影响出包</b>，改哪个由你判断——两个名字是不是同一件东西，工具不敢替你定。
+    同一名称重复定义、或同名但配置不一致的字段列于此处。
+    这些项<b>不影响出包</b>，是否合并请自行判断。
   </div></div>${body}`;
 }
 
@@ -1930,7 +1964,7 @@ async function buildZip(codes, trigger) {
   if (!list.length) {
     // 空态：恢复三连，而不是只禁用按钮 / 只丢一句 toast
     setZipPhase("build", "empty");
-    toast("先勾选要导出的模块。恢复：①「载入示例看效果」② 回到第 1 步描述需求 ③ 去 1_业务对象 填一行", 6000);
+    toast("请先勾选要导出的模块；或在 1_业务对象 中补充内容", 6000);
     return;
   }
   const btn = trigger || $("#btnPack") || $("#btnBuild");
@@ -1974,11 +2008,12 @@ async function buildZip(codes, trigger) {
       toast(list.length === 1
         ? `已导出「${MOD_LABEL[list[0]] || list[0]}」：${name}`
         : `已导出 ${list.length} 个模块：${name}`);
+      showNextStep(name);          // 下完别让用户自己想去哪上传
     }
   } catch (err) {
     // 异常三要素：哪类错误 / 影响哪个模块 / 去哪个页签修。
     // 「影响哪个模块」「去哪个页签」必须从真实 state.data.issues[] 推导，
-    // 拼不出时降级为「详见『校验结果』页签」，不编造假模块名 / 假页签名。
+    // 拼不出时降级为「详见「校验结果」页签」，不编造假模块名 / 假页签名。
     const d = state.data || {};
     const firstErr = (d.issues || []).find((i) => i.level === "error");
     let where = "";
@@ -1993,9 +2028,9 @@ async function buildZip(codes, trigger) {
       if (!where && msg) where = msg.slice(0, 40);
     }
     const category = firstErr ? "校验错误" : "出包错误";
-    const whereText = where ? `影响 ${where}` : "详见『校验结果』页签";
+    const whereText = where ? `影响 ${where}` : "详见「校验结果」页签";
     setZipPhase("build", "error", { category, module: whereText, tab, message: err.message });
-    toast(`生成失败（${category} / ${whereText}）：${err.message}。去「${tab}」修，不要往包里加 manifest、txt、图标。`, 6000);
+    toast(`生成失败（${category} / ${whereText}）：${err.message}。请到「${tab}」修正，并确认包内没有 manifest、txt 或图标文件。`, 6000);
     // 不清空 state.data / state.buildReport / #aiResult（A5）
   } finally {
     btn.disabled = false;
@@ -2027,7 +2062,8 @@ async function importOne(code, btn) {
     const name = decodeURIComponent(res.headers.get("X-Filename") || `${code}.zip`);
     if (await saveBlob(blob, name)) {
       state.imported.add(code);
-      toast(`「${MOD_LABEL[code] || code}」已保存：${name}　→　拿到系统里 ${(state.data.modules.find((m) => m.code === code) || {}).menu || ""} 上传`);
+      toast(`「${MOD_LABEL[code] || code}」已保存：${name}；请在 ${(state.data.modules.find((m) => m.code === code) || {}).menu || ""} 上传`);
+      showNextStep(name);
       renderModules();
     }
   } catch (err) {
@@ -2227,6 +2263,7 @@ function renderAiBo(d) {
         <button class="ai-tab active" data-ai="obj">业务对象</button>
         ${d.form ? '<button class="ai-tab" data-ai="form">表单布局</button>' : ""}
         ${d.list ? '<button class="ai-tab" data-ai="list">列表视图</button>' : ""}
+        <button class="ai-tab" data-ai="values">值来源</button>
       </div>
 
       <div class="ai-panel" data-ai-panel="obj">
@@ -2241,6 +2278,7 @@ function renderAiBo(d) {
 
       ${d.form ? `<div class="ai-panel" data-ai-panel="form" hidden>${renderAiForm(d.form)}</div>` : ""}
       ${d.list ? `<div class="ai-panel" data-ai-panel="list" hidden>${renderAiList(d.list)}</div>` : ""}
+      <div class="ai-panel" data-ai-panel="values" hidden id="aiValuesBox"></div>
 
       ${notes}
       <div class="ai-card-foot" id="aiActions"></div>
@@ -2375,6 +2413,95 @@ function renderAiList(list) {
     </div>`;
 }
 
+/* ------------------------------ 值来源（清单 / 开关） ------------------------------
+ * 用户 2026-11-20 口径：值来源分三类，只有「工具单独做的过滤那份」让用户选要不要；
+ * 自动（对象自身）和全量（「XX选择」链接字段）是控件取数的基础，锁死。
+ * （同日稍后：用户明确不需要「自己新增值来源」这一档，入口已去掉。）
+ *
+ * 清单由后端 /api/ai/values 产出（跑的是和出包同一套 ensure），所以这里的 key
+ * 与 final 包里 data_template/*.xml 的 key 一定一致，关掉就不会再出 XML。
+ */
+function renderAiValues() {
+  const box = $("#aiValuesBox");
+  const d = state.aiData;
+  if (!box || !d) return;
+  const items = d.valueSources;
+  if (!items) {
+    box.innerHTML = '<div class="ai-vsrc-empty">正在读取值来源…</div>';
+    return;
+  }
+  const rows = items.map((it, i) => {
+    const rules = Array.isArray(it.filterRules) ? it.filterRules : [];
+    const filterText = rules.length ? `${rules.length} 条规则`
+      : (it.filterNone ? "不过滤"
+        : (it.filterField ? `${it.filterField} → ${it.filterTarget || "同名"}` : "不过滤"));
+    const resultText = it.resultAll ? "全部业务字段"
+      : (it.resultFields.length ? `${it.resultFields.length} 列` : "主键 + 名称");
+    const used = (it.usedBy || []).length
+      ? esc(it.usedBy.join("、"))
+      : '<span class="muted">未被字段引用</span>';
+    const lock = !it.toggleable;
+    return `<tr data-vsrc-row="${i}"${it.enabled ? "" : ' class="off"'}>
+      <td>${esc(it.name || it.key)}<div class="muted mono">${esc(it.key || "（保存后生成）")}</div></td>
+      <td>${esc(it.targetName || it.target || "")}</td>
+      <td><span class="chip ai-vsrc-${esc(it.origin || "auto")}">${esc(it.originLabel || "")}</span></td>
+      <td>${esc(resultText)}</td>
+      <td>${esc(filterText)}</td>
+      <td class="ai-vsrc-used">${used}</td>
+      <td class="ai-vsrc-act">
+        <label title="${lock ? "自动 / 全量是控件取数的基础，不能关闭" : "取消勾选 = 这份值来源不进包，引用它的字段改用对象选择器"}">
+          <input type="checkbox" data-vsrc-on="${i}"${it.enabled ? " checked" : ""}${lock ? " disabled" : ""}> 生成
+        </label>
+      </td>
+    </tr>`;
+  }).join("");
+  const off = items.filter((x) => !x.enabled).length;
+  box.innerHTML = `
+    <div class="ai-edit-tip">这里列出**出包时包里会有**的值来源。「自动」（对象自身那份）和「全量」（「XX选择」链接字段用的）是控件取数的基础，锁定不能关；「过滤」是工具单独为某个关联字段做的带条件那份，可以取消勾选——取消后引用它的字段改用系统原生对象下拉（不带过滤）。想改某份的过滤条件，去对象页签那个字段的「值来源」按钮里配。</div>
+    <div class="ai-vsrc-head">
+      <span class="muted">共 ${items.length} 份${off ? ` · 已关闭 ${off} 份` : ""}</span>
+    </div>
+    <div class="tbl-wrap"><table class="ai-edit ai-vsrc-table">
+      <thead><tr><th>名称 / key</th><th>目标对象</th><th>用途</th><th>返回</th><th>过滤</th><th>被谁引用</th><th>生成</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="7" class="muted">还没有值来源</td></tr>'}</tbody>
+    </table></div>`;
+}
+
+async function loadAiValues() {
+  const d = state.aiData;
+  if (!d) return;
+  d.valueSources = null;
+  renderAiValues();
+  try {
+    const got = await apiPost("/api/ai/values",
+      { bo: d.bo, form: d.form, list: d.list }, aiHeaders());
+    if (!got || got.ok === false) throw new Error((got && got.error) || "接口返回失败");
+    d.valueSources = got.valueSources || [];
+  } catch (err) {
+    d.valueSources = [];
+    toast("读取值来源清单失败：" + err.message, 6000);
+  }
+  renderAiValues();
+  bindAiValues();
+}
+
+function bindAiValues() {
+  const box = $("#aiValuesBox");
+  const d = state.aiData;
+  if (!box || !d) return;
+  box.querySelectorAll("input[data-vsrc-on]").forEach((el) => {
+    el.onchange = () => {
+      const it = (d.valueSources || [])[Number(el.dataset.vsrcOn)];
+      if (!it) return;
+      it.enabled = el.checked;
+      toast(el.checked ? `值来源 ${it.key} 会随包生成`
+        : `已关闭 ${it.key}：引用它的字段改用对象选择器`, 5000);
+      renderAiValues();
+      bindAiValues();
+    };
+  });
+}
+
 /* 显示列勾选：直接改 state.aiData.list.columns（导出/出包都读它）。
  * 只重渲染列表面板，不动其它页签；至少保留 1 列，避免出包退回「全字段」。 */
 function bindListColumnPicker(d) {
@@ -2429,7 +2556,7 @@ function bindListColumnPicker(d) {
       list.columns = fields.slice(0, 1).map((f) => ({ code: f.code, label: f.name }));
       if (!list.columns.some((c) => c.code === list.detailField)) list.detailField = "";
       apply();
-      toast("已清空，只保留第 1 列（列表至少要有一列）", 5000);
+      toast("已清空，仅保留第 1 列（列表至少保留 1 列）", 5000);
     };
   }
 }
@@ -2468,9 +2595,9 @@ function renderAiActions(d) {
   // 卡内只留「重新生成」，其余动作统一放在外面的 step-foot，
   // 避免同一个操作在两处出现、改一处忘一处
   foot.innerHTML = `
-    <span class="sub">上面的表格可以直接改字段名、类型、选项值</span>
+    <span class="sub">表格内可直接修改字段名称、类型与选项值。</span>
     <div class="ai-btns">
-      <button class="btn ghost" id="aiRedo">不满意，重新生成</button>
+      <button class="btn ghost" id="aiRedo">重新生成</button>
     </div>`;
   $("#aiRedo").onclick = () => {
     state.aiData = null;
@@ -2480,13 +2607,18 @@ function renderAiActions(d) {
     if (t) t.focus();
   };
 
-  // 对象 / 表单 / 列表 三个预览页签
+  // 对象 / 表单 / 列表 / 值来源 四个预览页签
   $$(".ai-tab").forEach((tab) => {
     tab.onclick = () => {
       $$(".ai-tab").forEach((t) => t.classList.toggle("active", t === tab));
       $$("[data-ai-panel]").forEach((panel) => {
         panel.hidden = panel.dataset.aiPanel !== tab.dataset.ai;
       });
+      // 清单是异步算出来的（要跑一遍和出包同一套值来源推导），第一次点开才拉，
+      // 之后用本地 state：用户勾掉的开关不能被一次切页签覆盖回默认。
+      if (tab.dataset.ai === "values" && d && d.valueSources == null) {
+        loadAiValues();
+      }
     };
   });
 
@@ -3197,7 +3329,7 @@ function bindAiEdit() {
         d.bo.fields.splice(idx, 1);
         $("#aiResult").innerHTML = renderAiBo(d);
         renderAiActions(d);
-        toast(`已删掉「${f.name}」`);
+        toast(`已删除字段「${f.name}」`);
       };
     }
 
@@ -3307,10 +3439,13 @@ async function analyzeSheet(file, sheet) {
     box.innerHTML = renderAiBo(d);
     bindAiSheetPick(d);
     renderAiActions(d);
-    toast(`已按「${d.sheets && d.sheets[0] ? d.sheets[0] : "你的表"}」生成字段清单，可直接改`);
+    toast(`已按「${d.sheets && d.sheets[0] ? d.sheets[0] : "所选工作表"}」生成字段清单`);
   } catch (err) {
     box.classList.add("is-error");
-    box.innerHTML = `<div class="ai-err">✗ ${esc(err.message)}</div>`;
+    box.innerHTML = `<div class="ai-err"><div>✗ ${esc(err.message)}</div>
+      <button type="button" class="btn ghost sm" id="aiSheetRetry">重新分析这张表</button></div>`;
+    const retry = $("#aiSheetRetry");
+    if (retry) retry.onclick = () => analyzeSheet(file, sheet);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = "选择文件"; }
   }
@@ -3365,6 +3500,9 @@ async function applyAiBo(d, { thenBuild = false, workflow = false } = {}) {
                                   relHeader ? { "X-Relations": relHeader } : {});
     const blob = await apiPostBlob("/api/ai/bo/apply", {
       bo: d.bo, form: d.form, list: d.list,
+      // 只在用户打开过「值来源」页签（拿到过清单）时才带：老会话不带这个键，
+      // 后端就走原来的路径（Excel 里不写自动值来源行），产物与以前逐字一致。
+      ...(d.valueSources ? { valueSources: d.valueSources } : {}),
     }, headers);
     const name = `PP6-${d.bo.name}.xlsx`;
     if (thenBuild) {
@@ -3374,7 +3512,7 @@ async function applyAiBo(d, { thenBuild = false, workflow = false } = {}) {
       // 解析完由 renderAll() 刷新流程页的计数与对象包按钮。
       await handleFile(file, workflow ? { quiet: true } : { fromAi: true });
     } else if (await saveBlob(blob, name)) {
-      toast(`已导出 ${name}，线下改完拖回第 1 步即可继续`, 7000);
+      toast(`已导出 ${name}；修改后可回到第 1 步重新导入`, 7000);
     }
     return true;
   } catch (err) {
@@ -3388,18 +3526,18 @@ async function applyAiBo(d, { thenBuild = false, workflow = false } = {}) {
   }
 }
 
-/* 第 1 步入口选择：先选 AI / Excel，再展开对应面板，避免首屏一次铺满 */
+/* 第 1 步入口：2026-11-21 起不再「先选 AI / 文件，再展开」。
+   首屏直接给输入框（用户最常走的路），文件入口是下面的紧凑卡片；
+   两个面板常驻，少一次点击，也不会一进来面对两张不知道选哪个的卡片。 */
 function renderEntry() {
-  const choice = $("#entryChoice");
   const panels = $("#entryPanels");
   const ai = $("#entryAi");
   const excel = $("#entryExcel");
-  if (!choice || !panels) return;
-  const mode = state.entryMode;
-  choice.hidden = !!mode;
-  panels.hidden = !mode;
-  if (ai) ai.hidden = mode !== "ai";
-  if (excel) excel.hidden = mode !== "excel";
+  if (!panels) return;
+  state.entryMode = state.entryMode || "ai";
+  panels.hidden = false;
+  if (ai) ai.hidden = false;
+  if (excel) excel.hidden = false;
 }
 
 /* 步骤切换：1 输入 / 2 预览 / 3 出包 */
@@ -3415,6 +3553,14 @@ function goStep(n, { scroll = true } = {}) {
     el.classList.toggle("active", cur === n);
     el.classList.toggle("done", cur < n);
   });
+  // Excel 直接解析时第 2 步（核对字段）是跳过的：数字圈改虚线 + 悬停说明，
+  // 不要让它看起来「漏做了一步」。
+  const s2 = $("#steps .step[data-step='2']");
+  if (s2) {
+    const skipped = n === 3 && !state.aiData;
+    s2.classList.toggle("skipped", skipped);
+    s2.title = skipped ? "这份 Excel 直接解析，不需要核对字段" : "";
+  }
   if (!scroll) return;   // 在「流程模式」页上传时不抢滚动位置
   // 页面滚动已交给 .workspace，window.scrollTo 作为兼容兜底保留
   const ws = $("#workspace");
@@ -3436,9 +3582,9 @@ function backToInput() {
 /* 第 1 步：描述 → AI 生成预览 */
 async function generatePreview() {
   const desc = ($("#aiChatText1") ? $("#aiChatText1").value : "").trim();
-  if (!desc) { toast("先说说这个对象要记录什么"); return; }
+  if (!desc) { toast("请先描述要生成的业务对象"); return; }
   if (!window.PP6_AI_READY) {
-    toast("还没配置 AI，先填一个免费的 Key", 4000);
+    toast("未配置大模型，请先在「系统设置」中填写 API Key", 4000);
     if (typeof window.PP6_OPEN_AI === "function") window.PP6_OPEN_AI();
     return;
   }
@@ -3448,7 +3594,7 @@ async function generatePreview() {
   goStep(2);
   box.classList.remove("is-error");
   box.innerHTML = `<div class="ai-loading"><div class="spinner"></div>
-    <span>正在让 AI 设计字段、表单和列表…（约 20 秒）</span></div>`;
+    <span>正在生成字段、表单与列表，约需 20 秒</span></div>`;
   try {
     const known = state.data ? state.data.objects.map((o) => o.code) : [];
     // 带 X-Project-Link：用户在第 1 步选了「关联」时，生成的字段里才会有
@@ -3462,7 +3608,11 @@ async function generatePreview() {
     if (log) log.innerHTML = "";
   } catch (err) {
     box.classList.add("is-error");
-    box.innerHTML = `<div class="ai-err">✗ ${esc(err.message)}</div>`;
+    // 失败不是终点：描述还在输入框里，给一个就地重试，别让人重新组织一遍语言
+    box.innerHTML = `<div class="ai-err"><div>✗ ${esc(err.message)}</div>
+      <button type="button" class="btn ghost sm" id="aiRetry">重试一次</button></div>`;
+    const retry = $("#aiRetry");
+    if (retry) retry.onclick = () => generatePreview();
   } finally {
     btn.disabled = false; btn.textContent = "生成预览";
   }
@@ -3505,9 +3655,9 @@ function aiChatAppendChanges(changes) {
    用户不该先点一个「生成」按钮才能开始说话。 */
 async function sendAiChat(text, { fresh = false } = {}) {
   const msg = (text != null ? text : $("#aiChatText").value).trim();
-  if (!msg) { toast("说说你要建什么"); return; }
+  if (!msg) { toast("请先输入修改要求"); return; }
   if (!window.PP6_AI_READY) {
-    toast("还没配置 AI，先填一个免费的 Key", 4000);
+    toast("未配置大模型，请先在「系统设置」中填写 API Key", 4000);
     if (typeof window.PP6_OPEN_AI === "function") window.PP6_OPEN_AI();
     return;
   }
@@ -3529,7 +3679,7 @@ async function sendAiChat(text, { fresh = false } = {}) {
     goStep(2);                       // 让右侧结果区显现
     box.classList.remove("is-error");
     box.innerHTML = `<div class="ai-loading"><div class="spinner"></div>
-      <span>正在让 AI 设计字段、表单和列表…（约 20 秒）</span></div>`;
+      <span>正在生成字段、表单与列表，约需 20 秒</span></div>`;
   }
 
   try {
@@ -3565,7 +3715,7 @@ async function sendAiChat(text, { fresh = false } = {}) {
       aiChatAppend("bot note", d.notices.slice(0, 4).join("\n"));
     }
     $("#aiChatHint") && ($("#aiChatHint").textContent = "在现有基础上改，已经调好的字段不会被推翻");
-    toast(first ? "已生成，继续说要改的地方即可" : "已按你的要求更新预览");
+    toast(first ? "已生成，可继续补充修改要求" : "已按修改要求更新预览");
   } catch (err) {
     pending.remove();
     if (first) {
@@ -3668,6 +3818,65 @@ async function apiPostBlob(path, payload, extraHeaders) {
    复用既有 CSS 类，style.css 零改动。                                       */
 
 const PP6ZIP_IMPORT_PATH = "系统管理 › 发布管理 › 导入同步包";
+
+/* ---------------- 出包后的收尾 & 失败即定位 ----------------
+ * 两件事以前都没有：出错只在横幅里写字，用户得自己数页签去找；
+ * 成功只有一句 toast，闪完就没了。这里把它们做成可点的下一步。 */
+
+/** 跳到「校验结果」并把第一条 error 滚进视野、闪一下 */
+function gotoIssues() {
+  const tab = $('#tabs .tab[data-panel="issues"]');
+  if (tab) tab.click();
+  const panel = $('.panel[data-panel="issues"]');
+  if (!panel) return;
+  requestAnimationFrame(() => {
+    const first = panel.querySelector(".issue.error") || panel.querySelector(".issue");
+    if (!first) return;
+    first.scrollIntoView({ block: "center", behavior: "smooth" });
+    first.classList.add("flash");
+    setTimeout(() => first.classList.remove("flash"), 1500);
+  });
+}
+
+function bindBannerFix() {
+  const btn = $("#bannerFix");
+  if (btn) btn.onclick = gotoIssues;
+}
+
+/** 出包成功后的固定收尾条：文件名 + 导入菜单 + 复制 / 再做下一个 */
+function showNextStep(name) {
+  const bar = $("#nextStepBar");
+  if (!bar) return;
+  const f = $("#nsFile");
+  if (f) f.textContent = name || "导入包";
+  const p = $("#nsPath");
+  if (p) p.textContent = PP6ZIP_IMPORT_PATH;
+  bar.hidden = false;
+  const copy = $("#nsCopy");
+  if (copy) copy.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(PP6ZIP_IMPORT_PATH);
+      toast("导入路径已复制");
+    } catch (_) {
+      // pywebview / 非安全上下文拿不到 clipboard：退化成选中文本，用户自己 ⌘C
+      toast(`复制失败，路径：${PP6ZIP_IMPORT_PATH}`, 5000);
+    }
+  };
+  const again = $("#nsAgain");
+  if (again) again.onclick = () => {
+    // 不清 state.data：下次点步骤条第 3 步还能回到这份结果
+    goStep(1);
+    const t = $("#aiChatText1");
+    if (t) { t.value = ""; t.focus(); }
+    toast("当前结果已保留，可通过步骤条返回第 3 步");
+  };
+}
+
+function hideNextStep() {
+  const bar = $("#nextStepBar");
+  if (bar) bar.hidden = true;
+}
+
 const PP6ZIP_NOTE_FORMAT = "CONFIG_SYNC_NOTE:<发布说明>";
 const PP6ZIP_LEGAL_RE = /^(bo|form|data_template|dataset)\/\d{3}-[a-z0-9_]+\.xml$/;
 const PP6ZIP_TIPS = [
@@ -3789,7 +3998,8 @@ function setZipPhase(op, phase, payload) {
     if (phase === "ok") {
       if (banner) {
         banner.className = "banner ok";
-        banner.innerHTML = `<strong>交付包已生成</strong>：状态「待导入」，按下方「交付报告」的验收提示自查后到 ${esc(PP6ZIP_IMPORT_PATH)} 导入。`;
+        // 导入菜单交给下面那条「已保存 → 下一步」，这里只说结论，避免同一句路径出现两次
+        banner.innerHTML = `<span><strong>交付包已生成</strong>：状态「待导入」，请按「交付报告」中的验收项自查。</span>`;
         banner.hidden = false;
       }
       renderBuildReport(p.report, p.name);
@@ -3797,16 +4007,18 @@ function setZipPhase(op, phase, payload) {
     } else if (phase === "error") {
       if (banner) {
         banner.className = "banner error";
-        banner.innerHTML = `<strong>生成失败（${esc(p.category || "出包错误")} / ${esc(p.module || "详见『校验结果』页签")}）</strong>：`
-          + `${esc(p.message || "请核对后重试")}。去「${esc(p.tab || "校验结果")}」修；`
-          + `不要往包里加 manifest、txt、图标。`;
+        banner.innerHTML = `<span><strong>生成失败（${esc(p.category || "出包错误")} / ${esc(p.module || "详见「校验结果」页签")}）</strong>：`
+          + `${esc(p.message || "请核对后重试")}。</span>`
+          + `<button type="button" class="banner-act" id="bannerFix">定位首条错误 →</button>`
+          + `<div class="sub">请到「${esc(p.tab || "校验结果")}」修正；请勿在导入包中加入 manifest、txt 或图标文件。</div>`;
         banner.hidden = false;
+        bindBannerFix();
       }
     } else if (phase === "empty") {
       if (banner) {
         banner.className = "banner warn";
-        banner.innerHTML = `<strong>还没有可导出的内容</strong>：先勾选要导出的模块；`
-          + `恢复动作：①「载入示例看效果」② 回到第 1 步描述需求 ③ 去 <code>1_业务对象</code> 填一行。`;
+        banner.innerHTML = `<span><strong>暂无可导出内容</strong>：请先勾选模块；`
+          + `或在 <code>1_业务对象</code> 中补充内容。</span>`;
         banner.hidden = false;
       }
     }
@@ -3910,7 +4122,7 @@ function renderPackageTable(vm) {
         <td>${esc(g.label || "")}${(g.notes || []).length
           ? ` <span class="chip warn">${esc(g.notes.join("、"))}</span>` : ""}</td>
         <td class="sub">${esc(g.source || "")}</td></tr>`).join("")
-    || `<tr><td colspan="4" class="sub">（还没有模块数据，先解析一份 Excel）</td></tr>`;
+    || `<tr><td colspan="4" class="sub">（暂无模块数据，请先解析 Excel）</td></tr>`;
 
   let entryRows;
   if (vm.entries === null) {
@@ -4095,21 +4307,22 @@ function bind() {
     pickViaInput($("#fileInput"));
   };
 
-  // ---- 第 1 步：先选入口，再展开对应面板
-  $$("#entryChoice [data-entry]").forEach((b) => {
-    b.onclick = () => {
-      state.entryMode = b.dataset.entry;
-      renderEntry();
-      // 「已经有一份文件」入口的可见控件现在是 #btnReimportPick（不再是 label）
-      const focus = state.entryMode === "ai" ? $("#aiChatText1") : $("#btnReimportPick");
-      if (focus && focus.focus) focus.focus();
+  // ---- 第 1 步：入口常驻（见 renderEntry），这里只绑步骤条回退
+  $$("#steps .step").forEach((el) => {
+    el.onclick = () => {
+      const cur = Number(el.dataset.step);
+      if (cur === 1) { backToInput(); return; }
+      if (cur === 2) {
+        if (state.aiData) goStep(2);
+        else toast("尚无 AI 预览：请先用文字生成或上传 Excel");
+        return;
+      }
+      if (cur === 3) {
+        if (state.data) goStep(3);
+        else toast("尚无生成结果：请先描述需求或上传 Excel");
+      }
     };
   });
-  const entryBack = $("#entryBack");
-  if (entryBack) entryBack.onclick = () => {
-    state.entryMode = "";
-    renderEntry();
-  };
 
   // ---- 第 1 步：一个输入口（描述 + 拖文件都行）
   const dz = $("#dzInline");
@@ -4210,7 +4423,7 @@ function bind() {
         state.plDeferred = false;       // 回第 1 步改 Excel：这次不出预览
         window.ProjLink.closeModal();
         backToInput();
-        toast("改完 Excel 后，重新选一次这个文件即可重新解析", 6000);
+        toast("修改 Excel 后重新选择该文件即可解析", 6000);
       };
     }
     const back = $("#plLater");
@@ -4266,6 +4479,9 @@ function bind() {
   if (blankTplBtn) blankTplBtn.onclick = downloadBlankTemplate;
   const packBtn = $("#btnPack") || $("#btnBuild");
   if (packBtn) packBtn.onclick = () => buildZip();
+  // 顶部主操作（结果页页头）：和卡片底部同一个动作，省一次滚动
+  const packTop = $("#btnPackTop");
+  if (packTop) packTop.onclick = () => buildZip(undefined, packTop);
   const xmlBtn = $("#btnFlowXml");
   if (xmlBtn) xmlBtn.onclick = () => downloadWorkflow(xmlBtn);
 

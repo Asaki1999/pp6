@@ -1885,9 +1885,115 @@ def _apply_source_configs(proj, bo, fields: list[dict]) -> list[str]:
     return notices
 
 
+def _demote_controls_of(proj, key: str) -> list[str]:
+    """把控件从「挂这份值来源」退回对象选择器。"""
+    touched: list[str] = []
+    for form in proj.forms:
+        for ff in form.fields:
+            if ff.value_source != key:
+                continue
+            ff.value_source = ""
+            if ff.field_type == "linkdata":
+                ff.field_type = "selectObject"
+            touched.append(ff.label or ff.name)
+    return touched
+
+
+def _apply_value_sources(proj, items) -> list[str]:
+    """把「值来源」页签的清单应用成模型：开 / 关。
+
+    ``items is None``（老会话没打开过页签）→ 一行都不碰，产物与改造前逐字一致。
+    带清单时先跑一遍自动生成（与出包同一函数），否则前端看到的 key 在这里不存在。
+    """
+    notices: list[str] = []
+    if items is None:
+        return notices
+    from . import blueprint as _bp
+
+    _bp.ensure_self_value_sources(proj)
+    _bp._ensure_value_sources(proj, announce=False)
+    by_key = {d.key: d for d in proj.datasets}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        ds = by_key.get(key)
+        if ds is None:
+            continue
+        want = bool(item.get("enabled", True))
+        if want == bool(ds.enabled):
+            continue
+        if not want and not ds.toggleable():
+            notices.append(
+                f"值来源 {key}（{ds.origin_label() or '默认'}）是控件取数的基础，"
+                f"不能关闭，已忽略")
+            continue
+        ds.enabled = want
+        if want:
+            notices.append(f"值来源 {key}：已开启，随包生成")
+        else:
+            touched = _demote_controls_of(proj, key)
+            notices.append(
+                f"值来源 {key}：已关闭，不生成选择器 XML"
+                + (f"；控件 {'、'.join(touched)} 改用对象选择器" if touched else ""))
+    return notices
+
+
+def ai_value_sources(payload: dict, projlink_header: str | None = None) -> dict:
+    """预览「值来源」页签的清单：出包时包里会有哪些值来源、谁在用、能不能关。
+
+    key 必须与出包一致 → 这里跑的是和 build 完全同一套
+    ``ensure_self_value_sources`` + ``_ensure_value_sources``，输入也同一份
+    payload（对象 + 表单 + 列表），所以同一份配置两次请求拿到的 key 不变。
+    """
+    probe: dict = {}
+    ai_apply_bo(payload, None, [], projlink_header, probe=probe)
+    proj = probe.get("proj")
+    if proj is None:
+        raise ValueError("缺少对象信息")
+    from . import blueprint as _bp
+
+    _bp.ensure_self_value_sources(proj)
+    _bp._ensure_value_sources(proj, announce=False)
+
+    used_by: dict[str, list[str]] = {}
+    for form in proj.forms:
+        for ff in form.fields:
+            if ff.value_source:
+                used_by.setdefault(ff.value_source, []).append(
+                    f"{form.name}·{ff.label or ff.name}")
+
+    items = []
+    for ds in proj.datasets:
+        bo = proj.bo(ds.from_table) or next(
+            (b for b in proj.bos if b.tbl_name == ds.from_table), None)
+        target = bo.code if bo is not None else ds.from_table
+        items.append({
+            "key": ds.key,
+            "name": ds.name,
+            "target": target,
+            "targetName": (bo.name if bo is not None else "") or target,
+            "origin": ds.guess_origin(),
+            "originLabel": ds.origin_label(),
+            "enabled": bool(ds.enabled),
+            "toggleable": bool(ds.toggleable()),
+            "resultAll": bool(ds.result_all),
+            "resultFields": list(ds.result_fields or []),
+            "filterRules": [r.to_dict() for r in (ds.filter_rules or [])],
+            "filterLogic": ds.filter_logic or "AND",
+            "filterField": ds.filter_field or "",
+            "filterTarget": ds.filter_target or "",
+            "filterNone": ds.filter_rules == [],
+            "usedBy": used_by.get(ds.key, []),
+        })
+
+    return {"ok": True, "valueSources": items}
+
+
 def ai_apply_bo(payload: dict, relations_header: str | None = None,
                 notices: list[str] | None = None,
-                projlink_header: str | None = None) -> tuple[bytes, str]:
+                projlink_header: str | None = None,
+                probe: dict | None = None) -> tuple[bytes, str]:
     """把 AI 生成的「对象 + 表单 + 列表」落成一份 Excel。
 
     前端会把 /api/ai/bo 的完整结果回传（含 form/list），
@@ -2193,6 +2299,22 @@ def ai_apply_bo(payload: dict, relations_header: str | None = None,
         if decisions:
             _relations.apply_confirmations(proj, decisions)
 
+    # 值来源清单（用户关掉的 / 自己加的）：只在这一层做，因为它必须看到**完整**
+    # 的 proj（对象 + 表单控件 + 字段级值来源配置）才能算准 key 与引用关系。
+    # 名单为空（老会话没打开过「值来源」页签）→ 一行都不碰，产物与改造前一致。
+    vs_items = payload.get("valueSources")
+    if vs_items is not None:
+        vs_notices = _apply_value_sources(proj, vs_items)
+        if notices is not None:
+            notices.extend(vs_notices)
+
+    if probe is not None:
+        # 只给 /api/ai/values 用：把构造好的 proj 交出去，不落 Excel。
+        # 返回空 bytes 而不是 None，是为了不破坏现有调用方对 tuple 的解包。
+        probe["proj"] = proj
+        probe["bo"] = bo
+        return b"", ""
+
     wb = build_workbook(proj)
     buf = io.BytesIO()
     wb.save(buf)
@@ -2236,14 +2358,15 @@ def nlq_test() -> dict:
     }
 
 
-def _nlq_ask_impl(payload: dict, on_delta=None) -> dict:
-    """engine: hybrid（默认）/ local / llm / auto
+def _nlq_ask_impl(payload: dict, on_delta=None, on_event=None) -> dict:
+    """engine: hybrid（默认）/ local / llm / auto / agent
 
     hybrid = 规则先跑，规则没把握才调 AI，AI 答对了顺便沉淀成示例。
     这是默认模式：简单问题秒出结果不花钱，复杂问题交给 AI。
 
     on_delta 非空时代表「流式调用」：AI 每吐一段就回调，前端能实时看到 SQL
     在长出来。规则命中的分支不会有 delta——那本来就是毫秒级返回。
+    on_event 是 agent 模式的工具进度（正在查哪张表），与 delta 分开走。
     """
     question = (payload.get("question") or "").strip()
     if not question:
@@ -2276,6 +2399,20 @@ def _nlq_ask_impl(payload: dict, on_delta=None) -> dict:
                         "origin": "clarify", "origin_label": "待确认",
                         "question": question}
 
+        if mode == "agent":
+            # 查证模式：模型自己 list/describe/sample/试跑，证据够了才落笔。
+            # 不降级到规则——用户选了这个模式就是要 AI 查证，悄悄换成规则
+            # 会拿到一个「看起来答了但其实没查证」的结果。
+            from .nlq import agent as nlq_agent
+            return nlq_agent.run(
+                conn, pack, question, cfg, allowed,
+                examples=nlq_store.pick_examples(
+                    question,
+                    tables=nlq_engine.select_tables(pack, question, pinned=pinned)),
+                pinned=pinned,
+                instructions=nlq_store.load_instructions(),
+                on_event=on_event)
+
         if mode == "llm":
             return _ask_ai(conn, pack, question, cfg, learn=True, pinned=pinned,
                            on_delta=on_delta)
@@ -2307,13 +2444,28 @@ def _nlq_ask_impl(payload: dict, on_delta=None) -> dict:
                    "source": f"规则没看懂这个问题（{exc}），已改由 AI 分析",
                    "origin": "rule", "origin_label": "规则生成",
                    "question": question}
+        except nlq_guard.SqlRejected:
+            # 安全闸拦下的（写了破坏性语句/越界表）：这不是"规则不够聪明"，
+            # 是问题本身不能执行，换个模型也不该答。直接顶回去。
+            raise
+        except Exception as exc:
+            # 规则生成的 SQL 跑不通：典型是 ONLY_FULL_GROUP_BY 下的非聚合列
+            # （实测「每个项目阶段的数量」就死在这），或者库结构变了。
+            # 把一条执行不了的 SQL 顶给用户是最差的结果——有模型就让它重来。
+            if not has_key:
+                raise
+            res = {"sql": "", "columns": [], "rows": [],
+                   "source": f"规则生成的 SQL 跑不通（{str(exc)[:60]}），已改由 AI 分析",
+                   "origin": "rule", "origin_label": "规则生成",
+                   "question": question}
         if not has_key:
             res["source"] += "（未配置大模型，仅用规则）"
             return res
 
         verdict = nlq_hybrid.judge(question, res.get("sql", ""),
                                    len(res.get("rows") or []),
-                                   _expected_tables(pack, question))
+                                   _expected_tables(pack, question),
+                                   pack=pack)
         if not nlq_hybrid.should_try_ai(verdict, "hybrid"):
             res["verdict"] = "规则答对了"
             return res
@@ -2551,7 +2703,8 @@ def nlq_ask_stream(payload: dict):
         try:
             res = _nlq_ask_impl(
                 payload,
-                on_delta=lambda piece: box.put({"stage": "delta", "delta": piece}))
+                on_delta=lambda piece: box.put({"stage": "delta", "delta": piece}),
+                on_event=lambda ev: box.put(ev))
             box.put({"stage": "done", "result": res})
         except Exception as exc:      # 闸门拒绝 / 未配 Key / 所有渠道失败
             box.put({"stage": "error", "error": str(exc)})
@@ -3150,6 +3303,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(ai_from_sheet(self._body(), hint=hint, sheet=sheet,
                                          with_form=with_form, with_list=with_list,
                                          projlink_header=_projlink_header(self.headers)))
+            elif self.path == "/api/ai/values":
+                # 预览「值来源」页签的清单（出包时包里会有哪些、谁在用、能不能关）
+                self._json(ai_value_sources(json.loads(self._body()),
+                                            _projlink_header(self.headers)))
             elif self.path == "/api/ai/bo/apply":
                 # 这条以前只收 X-Relations：导出的 Excel 因此永远写着「关联项目=否」，
                 # 用户拿它回头出包时 ensure_project_links 不补字段（2026-11-21 报的坑）。

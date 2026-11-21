@@ -860,13 +860,13 @@ def _validate_fields(bo: Bo, issues: list[Issue],
             issues.append(Issue(
                 "warn", w,
                 f"未知数据类型 {f.type_new}：将按字符串生成。"
-                f"导出一份含该类型字段的对象包执行 bin/pp6 learn 可自动校准",
+                f"如需校准类型映射，导出一份含该类型字段的对象包后执行 pp6 learn",
             ))
         elif not fieldtypes.is_verified(f.type_new):
             hint = fieldtypes.note_for(f.type_new)
             issues.append(Issue(
                 "warn", w,
-                f"类型 {f.type_new}（{fieldtypes.labels().get(f.type_new)}）尚未用真实导出包校验，{hint}；导入后请核对",
+                f"类型 {f.type_new}（{fieldtypes.labels().get(f.type_new)}）尚未经真实导出包验证，{hint}；导入后请核对",
             ))
         # 「关联对象/字典」这一列的填法（两类字段要求不同）：
         #   object → **必填**，且必须能对上系统里真实存在的对象编码，填错导入后是空下拉
@@ -906,7 +906,7 @@ def _validate_fields(bo: Bo, issues: list[Issue],
         if (f.code.endswith("Id") or f.code.endswith("ID")) and not _is_native_code(f.code, target):
             issues.append(Issue(
                 "warn", w,
-                f"命名不符合规范：{f.code} 建议去掉 Id 后缀（如 {f.code[:-2]}），提升阅读体验",
+                f"命名不符合规范：{f.code} 建议去掉 Id 后缀（如 {f.code[:-2]}）",
             ))
         col = f.resolved_field_name()
         if not col.endswith("_"):

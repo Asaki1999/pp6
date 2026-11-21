@@ -564,8 +564,8 @@ window.ProjLink = (function () {
     _candChoice.clear();                   // 多候选下拉也回到「最匹配」
     if (head) {
       head.textContent = rows.length
-        ? `这些字段和${tName()}相近，要按${tName()}定义覆盖吗？`
-        : `${tName()}字段已自动对齐，下面是改动明细`;
+        ? `以下字段与「${tName()}」定义相近，是否覆盖？`
+        : `「${tName()}」字段已自动对齐，以下为改动明细`;
     }
     body.innerHTML = bodyHtml(_vm);
     mask.hidden = false;

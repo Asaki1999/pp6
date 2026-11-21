@@ -41,12 +41,16 @@ class Verdict:
 
 # 问句里出现这些词，SQL 里就该有对应的聚合
 COUNT_WORDS = ("多少", "几个", "数量", "条数", "统计", "总数", "分布", "占比")
-AGG_WORDS = ("平均", "均值", "总和", "合计", "最大", "最小")
+# 「最多/最少」既可能是排序也可能是聚合（「工时最多的人」= SUM + ORDER BY）。
+# 少了它们，规则引擎只 SELECT 一列人员、既不 SUM 也不排序，judge 还会判「答对了」。
+AGG_WORDS = ("平均", "均值", "总和", "合计", "最大", "最小", "最多", "最少")
 # 问句要求排序取前 N。
 # 中文里「进度最高的5个项目」比「前5个项目」更常用，「最X」和数字之间还常隔一个「的」，
 # 所以中间允许夹「的」——local._rank_order 里修过同一个坑，两个模块必须一致。
+# 2026-11-20 补：还要允许「最多的**前**5个」——「前」和「最X」会叠用，
+# 旧正则要求数字紧跟「最X的」，这种叠用直接漏判，20 题评测里踩到。
 TOP_RE = re.compile(
-    r"(?:前|最高|最低|最大|最小|最多|最少|最长|最短|top)\s*(?:的)?\s*(\d+)", re.I)
+    r"(?:前|最高|最低|最大|最小|最多|最少|最长|最短|top)\s*(?:的)?\s*前?\s*(\d+)", re.I)
 # 问句点名了某个对象/角色，SQL 里就该出现对应线索
 ROLE_RE = re.compile(r"(?:项目经理|项目负责人|责任人|负责人|执行人|处理人)")
 # 「超支/超期/延期/逾期」这类语义，SQL 必须真的比较数字
@@ -56,13 +60,19 @@ OVER_RE = re.compile(r"超支|超额|超期|延期|逾期|超出预算")
 CMP_NODES = (exp.GT, exp.GTE, exp.LT, exp.LTE)
 # 明确的业务状态词：问句里出现，SQL 就必须有状态/阶段筛选。
 # 「立项」这类会出现在对象名里的词不算，避免误伤。
+# 这层是**兜底词表**：真正的业务状态判断走 enum_misses（从 schema 枚举反查），
+# 这里只保留最通用的几个，避免漏掉 schema 里没采到的枚举。
 STATUS_RE = re.compile(
     r"执行中|进行中|已完成|已关闭|未关闭|已暂停|暂停|已终止|终止|"
-    r"未开始|已开始|审批中|待审批|已立项|待立项|已归档|草稿")
+    r"未开始|已开始|审批中|待审批|已立项|待立项|已归档|草稿|"
+    r"跟踪中|已跟踪|处理中|待处理|已处理|挂起")
 # 时间条件词：SQL 里必须出现日期函数/字段，不能只查全量。
+# 末尾的 `\d{4}\s*年` 是 2026-11-20 补的：用户直接写具体年份（「在2026年的」）
+# 比「今年」更常见，旧词表只认相对时间，这类问句的时间条件漏了也不报错。
 DATE_RE = re.compile(
     r"上个月|上月|本月|这个月|今年|去年|明年|本周|上周|本季度|上季度|"
-    r"今天|昨天|最近\s*\d+\s*(?:天|周|月|年)|近\s*\d+\s*(?:天|周|月|年)")
+    r"今天|昨天|最近\s*\d+\s*(?:天|周|月|年)|近\s*\d+\s*(?:天|周|月|年)|"
+    r"\d{4}\s*年")
 # 「张三负责的 / 李四提交的」：SQL 里要么出现这个人名，要么关联人员表。
 PERSON_RE = re.compile(r"([\u4e00-\u9fa5]{2,4})\s*(?:负责|经办|提交|创建|处理)的")
 # 问句明确要求排序
@@ -105,8 +115,53 @@ def has_numeric_comparison(sql: str) -> bool:
     return False
 
 
+def enum_misses(pack, question: str, sql: str, wcols: set[str], wsql: str) -> list[str]:
+    """问句提到了某个枚举值，SQL 却没按那列筛（或用错了值）。
+
+    这是 judge 里唯一**读业务元数据**的规则：不维护状态词表，而是直接问
+    schema「你有哪些枚举、中文标签是什么」。所以「跟踪中」「已挂起」这种
+    永远列不完的业务状态，它也能判——词表方案注定漏（2026-11-20 实测：
+    「跟踪中的风险有哪些」返回全部 86 条，judge 判「答对了」）。
+
+    只检查 SQL 实际引用到的表：160 张表全扫是没必要的开销。
+    """
+    if pack is None:
+        return []
+    from . import guard
+
+    refs = guard.referenced_tables(sql)
+    wlow = (wsql or "").lower()
+    out: list[str] = []
+    for tname in refs:
+        t = pack.tables.get(tname)
+        if t is None:
+            continue
+        for c in t.columns:
+            if not c.enums:
+                continue
+            hit = next(((lab, code) for lab, code in c.enums.items()
+                        if len(lab) >= 2 and lab in question), None)
+            if hit is None:
+                continue
+            label, code = hit
+            if code == label:
+                break                    # 码值本身就是中文，不需要映射
+            has_col = c.name.lower() in wcols
+            has_code = code.lower() in wlow
+            # WHERE 里出现中文标签 = 走了名称子查询（state_id_ IN (SELECT ... name_ = '执行中')），
+            # 这是正确写法，不能因为「没出现码值」就判错
+            has_label = label in (wsql or "")
+            if not (has_col or has_code or has_label):
+                out.append(f"问了「{label}」，但 SQL 没按 {c.name} 筛（库里是 '{code}'）")
+            elif has_col and not has_code and not has_label:
+                out.append(f"「{label}」在库里是 '{code}'，不能用中文原名比较")
+            break                        # 每张表报一条就够，别把 Verdict 刷满
+    return out
+
+
 def judge(question: str, sql: str, rows: int,
-          expected_tables: list[str] | None = None) -> Verdict:
+          expected_tables: list[str] | None = None,
+          pack=None) -> Verdict:
     """判断规则生成的 SQL 是否真的回答了问题。
 
     只做**能确定**的判定，猜不出来就放过（宁可让规则答，也别无谓地调 AI）。
@@ -138,11 +193,19 @@ def judge(question: str, sql: str, rows: int,
     if expected_tables:
         first_from = re.search(r"FROM\s+`?([a-z0-9_]+)`?", sql, re.I)
         if first_from and first_from.group(1) not in expected_tables:
-            # 只有「问旬点名的对象一个都没用到」才算错。
-            # 「每个客户有多少项目」主表是 pp_project、经合同连到客户，是对的。
-            used_all = set(re.findall(r"`?(pp_[a-z0-9_]+)`?", sql))
-            if not (used_all & set(expected_tables)):
-                bad.append(f"主表是 {first_from.group(1)}，不是问的那个对象")
+            main = first_from.group(1)
+            primary = expected_tables[0] if expected_tables else ""
+            # 问的是 A，主表却是 A_xxx（A 的附属表）——这不是「跨表查询」，
+            # 是选错了粒度。实测「计划完成时间在2026年的项目」主表用了
+            # pp_project_plan，JOIN 里又有 pp_project，旧逻辑因此放过了它。
+            if primary and main.startswith(primary + "_"):
+                bad.append(f"问的是 {primary}，主表却用了它的附属表 {main}")
+            else:
+                # 只有「问句点名的对象一个都没用到」才算错。
+                # 「每个客户有多少项目」主表是 pp_project、经合同连到客户，是对的。
+                used_all = set(re.findall(r"`?(pp_[a-z0-9_]+)`?", sql))
+                if not (used_all & set(expected_tables)):
+                    bad.append(f"主表是 {main}，不是问的那个对象")
 
     # 6) 问句里的数字条件没出现在 SQL 里（「进度低于50」却没 50）
     for num in re.findall(r"(?:低于|高于|大于|小于|超过|不足)\s*(\d+)", q):
@@ -197,6 +260,10 @@ def judge(question: str, sql: str, rows: int,
     # 9.4) 明确要求排序，SQL 却没有 ORDER BY
     if SORT_RE.search(q) and "ORDER BY" not in up:
         bad.append("问了排序，但 SQL 没有 ORDER BY")
+
+    # 9.5) 枚举值：问句提到的业务状态，SQL 有没有真的按它筛
+    #      比 STATUS_RE 词表可靠——词表永远列不全库里的业务枚举
+    bad.extend(enum_misses(pack, q, sql, wcols, wsql))
 
     # 9) 问「每个 X 的 Y」，分组维度却是 X 自己的父级（选错对象）
     m = re.match(r"^(?:每个|各个|各)\s*([\u4e00-\u9fa5]{2,10}?)\s*(?:负责|的|有)", q)

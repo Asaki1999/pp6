@@ -1027,8 +1027,8 @@ def _():
 
 
 
-@case("PL29", "projlink", "字段对齐成关联对象后，原文本框控件强制改成下拉并接上取值来源",
-      "P0", ["D2", "控件类型跟随类型", "notice 可见"])
+@case("PL29", "projlink", "字段对齐成关联对象后，原文本框控件按表单种类改（新建 linkdata / 详情 selectObject）",
+      "P0", ["D2", "控件类型跟随类型", "详情页不挂值来源", "notice 可见"])
 def _():
     # 「项目级别」精确同名 + 同族（字符串→object 都是 varchar 族）→ 自动对齐，
     # 不需要决策头。用户原来把控件做成了文本框——对齐后那个文本框就是死控件。
@@ -1049,15 +1049,37 @@ def _():
 
     import json as _json
 
-    form = pick(body, "form/")
-    frag = [t for t in all_tags(form, "formField") if attrs(t).get("name") == "gradeId"]
-    assert frag, [attrs(t).get("name") for t in all_tags(form, "formField")]
-    got = attrs(frag[0])
-    assert got["fieldType"] == "select", got
-    opts = _json.loads(got["fieldOptions"].replace("&quot;", '"'))
-    assert opts.get("value_source"), opts
-    # notice 要让用户知道界面上发生了什么（不是静默改控件）
-    assert "控件「项目级别」text → select" in comment_of(body), comment_of(body)
+    def control_of(text: str) -> tuple[str, dict]:
+        frag = [t for t in all_tags(text, "formField") if attrs(t).get("name") == "gradeId"]
+        assert frag, [attrs(t).get("name") for t in all_tags(text, "formField")]
+        got = attrs(frag[0])
+        opts = _json.loads(got["fieldOptions"].replace("&quot;", '"'))
+        return got["fieldType"], opts
+
+    forms = {n: t for n, t in texts(body).items() if n.startswith("form/")}
+    create = next(t for n, t in forms.items() if "create_" in n)
+    detail = next(t for n, t in forms.items() if "detail" in n)
+
+    # 新建（编辑态）：对齐后控件不再是死文本框。本用例没有 grade 的值来源
+    # （包里只有 project/contract 两份选择器），所以 _demote_unwired_links 会把
+    # linkdata 降级成 selectObject —— 但没有值来源时**不能**挂着 value_source
+    # 硬说自己是 linkdata（那种下拉点开是空的）。有值来源的场景见 LNK17。
+    create_type, create_opts = control_of(create)
+    assert create_type == "selectObject", create_type
+    assert not create_opts.get("value_source"), create_opts
+
+    # 详情（查看态）：系统原本的字段类型 selectObject，**不带**值来源。
+    # 2026-11-20 用户反馈：以前详情页的「项目类型」成了挂着值来源的下拉，
+    # 和线上详情表单（selectObject）不一致。
+    detail_type, detail_opts = control_of(detail)
+    assert detail_type == "selectObject", detail_type
+    assert not detail_opts.get("value_source"), detail_opts
+    assert "boCode" in detail_opts, detail_opts
+
+    # notice 要让用户知道界面上发生了什么（不是静默改控件）——
+    # 对齐那一步把文本框换成了关联控件，文案里如实写着新类型
+    note = comment_of(body)
+    assert "控件「项目级别」text → linkdata" in note, note
 
 
 @case("PL30", "projlink", "树形关联对象（options.tree）对齐后控件用 linkdata，取值来源与树形配置都在",
@@ -1922,7 +1944,7 @@ def _():
     got = _json.loads(lines[-1])
     # ① 弹窗标题与摘要：一眼看出「自动覆盖几个、要你确认几个、无关几个」
     assert got["M_opened"] is True, got
-    assert "要按项目定义覆盖吗" in got["M_title"], got["M_title"]
+    assert "定义相近，是否覆盖" in got["M_title"], got["M_title"]
     assert got["M_titleOk"] and got["M_summary"], got
     # ② 三组分开（语义相近 / 可能相关 / 需确认），自动的行不列
     assert all(got["M_groups"]), got["M_groups"]
@@ -2465,10 +2487,10 @@ def _():
     got = _json.loads(lines[-1])
     assert got["0_static"]["importBarOnTop"] is True, \
         "普通模式的「关联项目」选项不在 AI 卡上方：会被长卡片挤到折叠线下，用户看不见"
-    assert got["0_static"]["entryChoice"] is True, \
-        "首屏没有先选 AI / Excel 的入口"
-    assert got["0_static"]["entryProgressive"] is True, \
-        "AI/Excel 面板没有默认收起、选了才展开"
+    assert got["0_static"]["entryDirect"] is True, \
+        "首屏没有直达输入 / 文件入口：又退回了「先选入口再展开」那一步"
+    assert got["0_static"]["noEntryGate"] is True, \
+        "首屏还留着 AI / Excel 二选一的入口页：输入框应该直接可见"
     # 普通/存量两页的选项栏；流程模式复用普通页，不再单独一套
     assert got["0_static"]["twoBars"] is True, "普通/存量页没有同款选项栏"
     assert got["0_static"]["barsAtTop"] is True, \
@@ -2482,13 +2504,13 @@ def _():
     assert got["0_static"]["noAllPrefix"] is True, \
         "选项标签又加了「全部」：控件本身就是对整份 Excel 的批量设置，不需要重复"
     assert got["0_static"]["btnPreviewLabel"] is True, \
-        "AI 预览默认（不关联）不是「生成预览」：用户会以为没关联还要核对字段"
+        "AI 预览默认（不关联）应写「核对完成，去出包」：这页已经是预览了，不能再写「生成预览」"
     assert got["0_static"]["btnCheckDynamic"] is True, \
-        "按钮没有按 state.plPre 在「生成预览 / 核对字段」之间切换"
+        "按钮没有按 state.plPre 在「核对完成，去出包 / 核对字段并出包」之间切换"
     assert got["0_static"]["btnToPackNoGenerate"] is True, \
-        "AI 预览仍出现「下一步：生成导入包」"
+        "AI 预览仍出现「下一步：生成导入包」或旧的「下一步：生成预览」"
     assert got["0_static"]["btnPackLabel"] is True, \
-        "结果页的「下载导入包 zip」被改坏了（真正的生成入口）"
+        "结果页的「下载导入包」被改坏了（真正的生成入口）"
     assert got["0_static"]["aiSheetAcceptsDoc"] is True, \
         "AI 文件入口的 accept 里没有 .pdf/.docx"
     assert got["0_static"]["fileInputAcceptsDoc"] is True, \

@@ -822,8 +822,16 @@ def _linkage(bo: Bo | None, bf: BoField, ff, results: list[LinkField],
     """值来源返回列 -> 本表单控件（link_linkage）。
 
     用户显式配过（Excel「联动字段」列 / app 上的联动映射）就以他为准；
-    没配就按「返回列的物理列名 == 本对象某字段的物理列名」自动对上——
-    样本里项目的 ``zhuan_ye_`` 自动带到表单的 ``zhuanYe``（专业）。
+    没配就按下面两条自动对上（先物理列名，再文案同名）：
+
+      1. 返回列的物理列名 == 本对象某字段的物理列名 —— 样本里项目的
+         ``zhuan_ye_`` 自动带到表单的 ``zhuanYe``（专业）。
+      2. 上一条对不上时，**返回列的显示名 == 本对象某文本字段的显示名**。
+         用户 2026-11-20 的实例：值来源返回 ``name_``（label「项目名称」），
+         本对象另有一个 varchar 字段也叫「项目名称」（物理列 project_name_），
+         两条列名不同 → 以前只回显不带值，选了项目名称填不进去。
+         只认**完全相同的文案**，且只往文本字段里带（varchar/clob），
+         不做近义猜测：猜错会覆盖用户已填的内容。
     """
     explicit: dict[str, str] = {}
     labels: dict[str, str] = {}
@@ -838,6 +846,7 @@ def _linkage(bo: Bo | None, bf: BoField, ff, results: list[LinkField],
             labels[name] = str(item["label"]).strip()
 
     auto: dict[str, str] = {}
+    by_label: dict[str, str] = {}
     if bo is not None:
         for sf in bo.fields:
             # 系统字段（id/name/createTime/updateTime…）不参与联动：
@@ -849,9 +858,14 @@ def _linkage(bo: Bo | None, bf: BoField, ff, results: list[LinkField],
             if sf.code == bf.code or sf.is_system or is_system_code(sf.code):
                 continue
             auto.setdefault(sf.resolved_field_name(), sf.code)
+            # 文案同名兜底：只收文本字段（clob 也算），别的类型被同名文案绑上
+            # 会把字符串塞进数字/日期/关联控件，比不联动更糟。
+            if sf.name and (sf.type_new or "") in ("varchar", "clob"):
+                by_label.setdefault(sf.name.strip(), sf.code)
 
     controls = {f.name for f in form.fields} if form is not None else None
     out: list[dict] = []
+    used: set[str] = set()
     for rf in results:
         name = rf.column
         if labels.get(name):
@@ -861,6 +875,13 @@ def _linkage(bo: Bo | None, bf: BoField, ff, results: list[LinkField],
         field_code = explicit.get(name)
         if field_code is None:
             field_code = auto.get(name, "")
+            if not field_code:
+                # 文案同名兜底；一个控件只承接一列，先到先得（多列同名时不抢）
+                cand = by_label.get((label or "").strip(), "")
+                if cand and cand not in used:
+                    field_code = cand
+        if field_code:
+            used.add(field_code)
         if controls is not None and field_code and field_code not in controls:
             # 本表单没有这个控件 → 只回显该列，不往不存在的控件上带值
             field_code = ""

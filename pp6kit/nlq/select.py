@@ -192,6 +192,14 @@ def _score_table(t: Table, qn: str, ctx: dict,
     # 1) 对象名命中：全名最高，别名次之（越长的别名越具体）
     labels = _alias_hits(t, qn)
     if labels:
+        # 别名可能只是某个**字段短语**的一部分：「计划完成时间」里的「计划」
+        # 不是对象名。不排除的话，「计划完成时间在2026年的项目」会被选成
+        # 「项目计划」表（实测：19 分 vs 项目表 15 分）。
+        # 只排除「严格包含于某个 ≥4 字字段短语」的别名，整句就在问计划的
+        # 问句（specific 为空）不受影响。
+        labels = [lab for lab in labels
+                  if not any(lab != sp and lab in sp for sp in ctx["specific"])]
+    if labels:
         matched = True
         best = labels[0]
         full = _table_label(t)
@@ -363,7 +371,12 @@ def choose(pack: SchemaPack, question: str, helpers,
     if not scored:
         raise KeyError("没认出你要查哪个对象，试着带上对象名（如「项目」「任务」「风险」）")
 
-    scored.sort(key=lambda x: (-x[0], -x[1].rows, -len(x[1].columns)))
+    # 同分时的排序：标签短的优先，其次行数多的。
+    # 中文里短标签是更基础的对象，长标签是它的细分——「项目」(pp_project)
+    # 与「项目计划」(pp_project_plan) 同分时，用户说「项目」要的几乎总是前者。
+    # 旧键是「行数多的优先」，2026-11-20 实测踩到：「计划完成时间在2026年的
+    # 项目」被选成 pp_project_plan（43 行 > 项目表 32 行）。
+    scored.sort(key=lambda x: (-x[0], len(x[1].label or ""), -x[1].rows))
     best_score, best, best_why, _best_hit = scored[0]
 
     # ---- 口语兜底：只在「没有任何对象被点名」时生效

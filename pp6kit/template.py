@@ -99,9 +99,14 @@ def sheet_data(proj: Project) -> dict[str, list[list]]:
             ])
 
     for lst in proj.lists:
+        # 「级联详情字段」必须写回：AI 预览里选了它、下载 Excel 时丢掉，
+        # 拖回出包就没有 cascade_configuration —— 用户看到的是「列表上选了
+        # 级联显示，导入后点不动」（2026-11-20 反馈）。位序与 spec.COLUMNS[S_LIST]
+        # 逐位对齐，漏一个后面全串列，所以别再在这里省列。
         out[spec.S_LIST].append([
             lst.key, lst.name, lst.bo_code, ",".join(lst.views), ",".join(lst.columns),
             lst.sort_field, lst.sort_dir, "是" if lst.tree else "否", lst.parent_field, lst.title_field,
+            lst.detail_field,
         ])
 
     for ds in proj.datasets:
@@ -132,6 +137,10 @@ def sheet_data(proj: Project) -> dict[str, list[list]]:
                 # （位置在「过滤目标」之后、「自动」之前）。
                 ds.filter_rules_text(),
                 "是" if ds.auto_generated else "否",
+                # 是否生成 / 用途：必须往返，否则用户关掉的那份下次打开又回来了，
+                # 而「自动/全量」也会失去锁定依据（见 model.VALUE_ORIGIN_*）
+                "是" if ds.enabled else "否",
+                ds.origin_label(),
                 "",          # 说明：仅备注，不写回
             ])
             continue

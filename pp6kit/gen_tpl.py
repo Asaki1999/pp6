@@ -6,11 +6,12 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from .ids import new_id
-from .model import Bo, DataSet, ListDef
+from .model import Bo, DataSet, ListDef, camel_to_snake, slug
 from .xmlw import DECL_STANDALONE, el, json_attr, wrap
 
 # 值来源的过滤/返回列推导只信 links 一处（rule_id 必须与表单 link_condition 同源）
 from . import links as _links
+from . import naming as _naming
 
 _VIEW_LABEL = {"grid": "表格视图", "board": "看板视图", "gantt": "甘特视图", "chart": "图表视图"}
 
@@ -23,6 +24,12 @@ def _now_iso() -> str:
 
 _FIELD_TYPE = {"number": "number", "datetime": "date", "dic": "select"}
 
+# 列表列里要打开「跟字段控件一致」的控件类型（见 _mk_col）。
+# 只有下拉/选择器这类「取值要靠控件渲染器」的列才需要；文本、数字、
+# 日期在列表里本来就是原样显示，开了反而多一次没必要的合并查询。
+_SAME_CONTROL_TYPES = {"linkdata", "selectObject", "dropSelector",
+                       "dropSelectOrg", "dictionary"}
+
 # 骨架里的按钮文案来自繁体界面的样例（關閉），生成包统一成简体——
 # 不然同一张列表上「下一步」和「關閉」两种字形并存。
 _LABEL_SIMPLE = {"關閉": "关闭"}
@@ -30,6 +37,95 @@ _LABEL_SIMPLE = {"關閉": "关闭"}
 
 def _col_type(field) -> str:
     return _FIELD_TYPE.get(field.type_new, "text")
+
+
+def _display_name(col_name: str) -> str:
+    """下拉列在列表里的**显示字段名**（``displayName``）。
+
+    线上「项目列表」（template_list 里 project_list_table 的 23 列）里，凡是
+    关联数据 / 人员这类下拉列，都带一个 ``displayName``；文本、数字、日期列
+    一律没有。它配合模板属性 ``display_field: true``（接口合并）用：合并接口
+    按这个名字回填显示值，所以它必须是**列别名**而不是物理列名，也不能是中文。
+
+    取值形态对照线上（classification_id_ → classification_name、
+    manager_ids_ → manager_name、create_by_ → create_by_name）：
+    去掉尾下划线与 ``_id``/``_ids``，接 ``_name``；与物理列名撞了就再加一层。
+    """
+    base = col_name[:-1] if col_name.endswith("_") else col_name
+    for tail in ("_ids", "_id"):
+        if base.endswith(tail):
+            base = base[: -len(tail)]
+            break
+    if not base.isascii():
+        # 字段编码是中文时（手填对象）物理列名也会是中文：先翻英文再落 slug，
+        # 保证 displayName 是纯英文小写，导入后不会因为中文别名取不到数。
+        base = camel_to_snake(_naming.to_english(base))
+    base = slug(base) or "field"
+    got = f"{base}_name"
+    return got if got != col_name else f"{base}_display_name"
+
+
+def _control_of(control_form, f):
+    """本对象「新建表单」里这个字段的控件（列表列要跟它一个形态）。"""
+    if control_form is None:
+        return None
+    for ff in getattr(control_form, "fields", ()):
+        name = getattr(ff, "name", "")
+        if name and (name == f.code or name == f.name):
+            return ff
+    return None
+
+
+def _link_config(target) -> dict:
+    """linkdata 列的 link_config：目标对象的 id/名称列（线上项目列表逐键一致）。"""
+    return {
+        "id": target.id_column,
+        "text": target.name_column,
+        "databaseNameById": target.id_column,
+        "typeById": "varchar",
+        "type": "first",
+        "structure": "list",
+        "color": "color_",
+    }
+
+
+def _list_type(f, control_form, targets, value_keys=None) -> tuple[str, dict, str]:
+    """这一列在列表里用什么控件 + field_options + 显示字段名。
+
+    「打开跟字段控件一致」：关联字段在表单里是 linkdata（挂了值来源）就出
+    linkdata 列，是 selectObject（系统原生对象下拉）就出 selectObject 列。
+    以前列表一律按 text 出，导入后下拉字段在列表上显示的是主键 ID（或空白），
+    跟表单里看到的名称对不上。
+    """
+    if f.type_new == "object":
+        ctl = _control_of(control_form, f)
+        vs = (getattr(ctl, "value_source", "") or "") if ctl else ""
+        # 值来源必须**在本包里**才用 linkdata：用户把那份关掉了（enabled=False）、
+        # 或它压根不在包里时，写成 linkdata 就是一个指向空 key 的下拉。
+        if value_keys is not None and vs not in value_keys:
+            vs = ""
+        if ctl is not None and getattr(ctl, "field_type", "") == "linkdata" \
+                and vs and vs != f.object_type:
+            target = (targets or {}).get(f.object_type)
+            if target is None:
+                target = _links.offline_target(f.object_type, f.name)
+            multi = bool((f.options or {}).get("multiple"))
+            return ("linkdata",
+                    {"linkdata": vs,
+                     "link_config": _link_config(target),
+                     "multiple": "Y" if multi else "N"},
+                    _display_name(f.resolved_field_name()))
+        return ("selectObject",
+                {"boCode": f.object_type or "", "multiple": False},
+                _display_name(f.resolved_field_name()))
+    if f.type_new == "dic":
+        # 字典/选项列：不带 dictionary 就只能显示存储值（如 1/2/3）
+        return "dictionary", {"dictionary": f.value_source()}, ""
+    if f.type_new == "user":
+        return ("dropSelector",
+                {"selector_type": "user", "store": "id", "multiple": False},
+                _display_name(f.resolved_field_name()))
+    return _FIELD_TYPE.get(f.type_new, "text"), {}, ""
 
 
 def _form_cascade(detail_form_key: str, source_field: str) -> dict:
@@ -68,27 +164,58 @@ def _form_cascade(detail_form_key: str, source_field: str) -> dict:
     }
 
 
-def _build_columns(bo: Bo, listdef: ListDef, snip_col: dict) -> tuple[list[dict], list[str]]:
+def _mk_col(f, bo: Bo, snip_col: dict, control_form=None, targets=None,
+            used_display: set | None = None, value_keys=None) -> dict:
+    """一个字段 → 一列 displayColumns（下拉类带 field_options + displayName）。"""
+    col = copy.deepcopy(snip_col)
+    col["origLabel"] = f.name
+    col["label"] = f.name
+    col["name"] = f.resolved_field_name()
+    col["dataType"] = f.resolved()["datatype"]
+    col["objName"] = bo.tbl_name
+    col["objLabel"] = bo.name
+    field_type, options, display = _list_type(f, control_form, targets, value_keys)
+    col["field_type"] = field_type
+    col["fieldType"] = field_type
+    col["field_options"] = options
+    col["fieldOptions"] = copy.deepcopy(options)
+    # 「跟字段控件一致」（设计器里的 same 开关，active-value Y）：
+    # 下拉类列要打开它，列表才会按表单控件的渲染器取数——关着的时候
+    # 只有我们自己拼的 displayName，选择器/关联列点开是空的、显示的是主键。
+    # 依据：原生导出包 006-xmhbfxxb.xml 的「创建人」列
+    #       {"same":"Y","field_type":"dropSelector",...,"displayName":"create_by_"}
+    # 文本/数字/日期保持骨架里的 "N"（那些列本来就是原样显示，不需要控件渲染）。
+    if field_type in _SAME_CONTROL_TYPES:
+        col["same"] = "Y"
+    col["align"] = "right" if f.type_new == "number" else "left"
+    col["sortable"] = True
+    if display:
+        if used_display is not None:
+            # 同一对象里两个字段撞到同一个别名（projectId / project）：
+            # 加序号才不同名，否则合并接口返回的列互相覆盖。
+            base, n = display, 2
+            while display in used_display:
+                display = f"{base}{n}"
+                n += 1
+            used_display.add(display)
+        col["displayName"] = display
+    return col
+
+
+def _build_columns(bo: Bo, listdef: ListDef, snip_col: dict,
+                   control_form=None, targets=None,
+                   value_keys=None) -> tuple[list[dict], list[str]]:
     notices: list[str] = []
     wanted = listdef.columns or [f.code for f in sorted(bo.fields, key=lambda x: x.sn)]
     out: list[dict] = []
+    used_display: set = set()
     for code in wanted:
         f = bo.field_by_code(code)
         if f is None:
             notices.append(f"列表 {listdef.key}: 显示字段 {code} 在对象 {bo.code} 中不存在，已跳过")
             continue
-        col = copy.deepcopy(snip_col)
-        col["origLabel"] = f.name
-        col["label"] = f.name
-        col["name"] = f.resolved_field_name()
-        col["dataType"] = f.resolved()["datatype"]
-        col["objName"] = bo.tbl_name
-        col["objLabel"] = bo.name
-        col["field_type"] = _col_type(f)
-        col["fieldType"] = _col_type(f)
-        col["align"] = "right" if f.type_new == "number" else "left"
-        col["sortable"] = True
-        out.append(col)
+        out.append(_mk_col(f, bo, snip_col, control_form, targets, used_display,
+                           value_keys))
     return out, notices
 
 
@@ -202,7 +329,9 @@ def _patch_buttons(raw: str, bo: Bo, form_key: str, new_label: str = "",
 def render_list(listdef: ListDef, bo: Bo, form_key: str, snip: dict, tenant: str = "-999",
                 detail_form_key: str = "", new_button_label: str = "",
                 form_keys: set[str] | None = None,
-                import_form_key: str = "") -> tuple[str, list[str]]:
+                import_form_key: str = "",
+                control_form=None, targets=None,
+                value_keys=None) -> tuple[str, list[str]]:
     notices: list[str] = []
     # 库里有同 key 的列表模板 → 沿用原 id（导入按更新处理）
     tpl_id = listdef.exist_key or new_id()
@@ -256,7 +385,8 @@ def render_list(listdef: ListDef, bo: Bo, form_key: str, snip: dict, tenant: str
         "objName": bo.tbl_name,
     }, indent=2))
 
-    columns, col_notices = _build_columns(bo, listdef, col_snip)
+    columns, col_notices = _build_columns(bo, listdef, col_snip, control_form,
+                                          targets, value_keys)
     notices.extend(col_notices)
     toolbar_form_key = form_key
 
@@ -282,8 +412,12 @@ def render_list(listdef: ListDef, bo: Bo, form_key: str, snip: dict, tenant: str
                     "root_pid": "",
                     "root_script": "",
                 })
+            # display_field 是「接口合并」的**布尔开关**（线上 4 个原生包 +
+            # 项目列表 23 列的 attrs 全是 true）。以前这里把它改写成标题字段名，
+            # 开关变成了字符串 —— 合并接口读不到 displayName，关联列在列表里
+            # 就退化成显示主键。标题字段走 titleField（看板）那条路，别混。
             if "display_field" in a:
-                a["display_field"] = _title_field_name(bo, listdef)
+                a["display_field"] = True
             if view == "board":
                 a["titleField"] = _title_field_name(bo, listdef)
                 # 看板必须有分组维度，否则卡片全堆一列没法用。
@@ -331,6 +465,12 @@ def render_list(listdef: ListDef, bo: Bo, form_key: str, snip: dict, tenant: str
                         detail_form_key, _title_field_name(bo, listdef))
                 else:
                     a.pop("cascade_configuration", None)
+            # 接口合并（显示字段名）总开关：有下拉列带 displayName 才开。
+            # 线上「项目列表」的 attrs.display_field 就是 true —— 开了它，
+            # 平台才按 displayName 把关联数据/人员/字典的名称合并回列表；
+            # 没有下拉列就别开，白多一次合并查询。
+            if any(c.get("displayName") for c in columns):
+                a["display_field"] = True
             tpl_attrs["attrs"] = json_attr(a)
             # 级联详情：给选中字段的列注入 cascade_configuration，
             # 点击该列 → 全屏打开详情表单（主键 bo 传过去）。
@@ -351,19 +491,8 @@ def render_list(listdef: ListDef, bo: Bo, form_key: str, snip: dict, tenant: str
                         # 选了「级联详情字段」但「显示字段」里没它：以前只记一条
                         # notice 就跳过，用户看到的是「明明选了级联，导入后点不动」。
                         # 级联必须有一列可点，这里直接把该列补到最前面。
-                        hit = copy.deepcopy(col_snip)
-                        hit.update({
-                            "origLabel": f.name,
-                            "label": f.name,
-                            "name": col_name,
-                            "dataType": f.resolved()["datatype"],
-                            "objName": bo.tbl_name,
-                            "objLabel": bo.name,
-                            "field_type": _col_type(f),
-                            "fieldType": _col_type(f),
-                            "align": "right" if f.type_new == "number" else "left",
-                            "sortable": True,
-                        })
+                        hit = _mk_col(f, bo, col_snip, control_form, targets,
+                                      value_keys=value_keys)
                         columns.insert(0, hit)
                         notices.append(
                             f"列表 {listdef.key}: 级联详情字段 {listdef.detail_field} "
@@ -382,17 +511,14 @@ def render_list(listdef: ListDef, bo: Bo, form_key: str, snip: dict, tenant: str
             if listdef.sort_field and "sortColumns" in tpl_attrs:
                 f = bo.field_by_code(listdef.sort_field)
                 if f:
-                    col = copy.deepcopy(col_snip)
-                    col.update({
-                        "origLabel": f.name,
-                        "label": f.name,
-                        "name": f.resolved_field_name(),
-                        "dataType": f.resolved()["datatype"],
-                        "objName": bo.tbl_name,
-                        "objLabel": bo.name,
-                        "direction": listdef.sort_dir or "desc",
-                    })
+                    col = _mk_col(f, bo, col_snip, control_form, targets,
+                                  value_keys=value_keys)
+                    col["direction"] = listdef.sort_dir or "desc"
+                    # 排序列只是排序依据，不带控件配置（原来就这样，别让
+                    # 排序也去合并一次下游数据）
                     col.pop("field_options", None)
+                    col.pop("fieldOptions", None)
+                    col.pop("displayName", None)
                     tpl_attrs["sortColumns"] = json_attr([col])
 
         # 按钮改写在 if/else **外面**：chart 视图也带 functionButtons，

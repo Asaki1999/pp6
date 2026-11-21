@@ -27,6 +27,9 @@ from .model import (
     Form,
     FormField,
     Project,
+    VALUE_ORIGIN_AUTO,
+    VALUE_ORIGIN_FILTERED,
+    VALUE_ORIGIN_LINK,
     value_source_key,
     value_source_key_notes,
     value_source_name,
@@ -420,7 +423,12 @@ def _ensure_value_sources(project: Project, announce: bool = True) -> list[str]:
                 # value_source 恰好等于对象编码的仍走下面的流程：
                 # 那是 blueprint 的默认填法，要按「本包/系统是否已有数据集」决定
                 # 是引用还是替换。
-                wired.add((bo.code, bf.code))
+                #
+                # 例外：用户把这份值来源关了（enabled=False）。这时「不动」等于
+                # 留一个指向不存在 XML 的控件 —— 必须让它回到「没有值来源」，
+                # 才能被 _demote_unwired_links 降级成对象选择器。
+                if getattr(ds_by_key.get(ff.value_source), "enabled", True):
+                    wired.add((bo.code, bf.code))
 
     key_by_field: dict[tuple[str, str], str] = {}
     created: list[str] = []
@@ -529,7 +537,15 @@ def _ensure_value_sources(project: Project, announce: bool = True) -> list[str]:
                                  # 见 model.DataSet 上两个开关的说明：链接字段的
                                  # 值来源要「全部业务字段 + 主键、默认不过滤」。
                                  result_all=group_is_link,
-                                 auto_filter=not group_is_link)
+                                 auto_filter=not group_is_link,
+                                 # 用途：用户在「值来源」页签里靠它决定能不能关。
+                                 #   链接字段那份 = 全量（锁死，控件取数靠它）
+                                 #   带过滤的那份 = 过滤（可关，关了字段降级）
+                                 #   其余 = 自动（默认口径，锁死）
+                                 origin=(VALUE_ORIGIN_LINK if group_is_link
+                                         else (VALUE_ORIGIN_FILTERED
+                                               if (sig[0] or sig[1])
+                                               else VALUE_ORIGIN_AUTO)))
                     project.datasets.append(ds)
                     ds_by_key[cand] = ds
                     created.append(f"{ds.name}({cand})")
@@ -539,8 +555,12 @@ def _ensure_value_sources(project: Project, announce: bool = True) -> list[str]:
             if not key:
                 continue
             used_keys.add(key)
-            for bo, f in users:
-                key_by_field[(bo.code, f.code)] = key
+            # 用户关掉的那份值来源**不接线**：控件保持按对象编码的默认填法，
+            # 随后 _demote_unwired_links 会把它降级成对象选择器（普通下拉、
+            # 不带任何过滤）——这正是「我不要这份过滤」的语义。
+            if getattr(ds_by_key.get(key), "enabled", True):
+                for bo, f in users:
+                    key_by_field[(bo.code, f.code)] = key
 
     # 这两条是**模型层**的事实（数据集建了/复用了），不代表「包里会有」：
     # 没勾「选择器」模块时它们不会进包、控件也会降级，那时由调用方传
@@ -578,7 +598,13 @@ def _ensure_value_sources(project: Project, announce: bool = True) -> list[str]:
     # 「控件改用对象选择器」那条是表单事实，任何情况都要报。
     if announce:
         notices.extend(_link_dataset_defaults(project, ds_by_key))
-    notices.extend(_demote_unwired_links(project, ds_by_key, wired))
+    # 降级判定只看「真会进包」的值来源：用户关掉的那份仍在 ds_by_key 里，
+    # 原样传进去会被当成「包内有值来源」，控件就不会降级 —— 下拉指向一份
+    # 不存在的 XML，导入后点开是空的（比普通下拉更糟）。
+    notices.extend(_demote_unwired_links(
+        project,
+        {k: v for k, v in ds_by_key.items() if getattr(v, "enabled", True)},
+        wired))
     if announce:
         notices.extend(_value_source_notes(project, plan, key_by_field))
     return notices
@@ -796,6 +822,8 @@ def ensure_self_value_sources(project: Project) -> list[str]:
             result_all=True,
             auto_filter=False,
             auto_generated=True,
+            # 用户说的「自动的那一个」：对象自身那份，界面上锁死、不能关
+            origin=VALUE_ORIGIN_AUTO,
         )
         project.datasets.append(ds)
         taken.add(key)

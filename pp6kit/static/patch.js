@@ -136,11 +136,11 @@ function pHint() {
   const empty = P.snap && (P.snap.objects || []).length === 0;
   el.style.color = "";
   if (empty) {
-    el.textContent = "包里没有可加字段的 bo/*.xml → 改用工作区 1 反解后重新出包";
+    el.textContent = "包内没有可新增字段的 bo/*.xml；请在「普通模式」反解后重新出包";
     return;
   }
   if (!P.snap) {
-    el.textContent = "先上传 zip，再选对象和字段";
+    el.textContent = "请先上传 zip，再选择对象与字段";
     return;
   }
   const kinds = [];
@@ -204,7 +204,7 @@ async function pUploadZip(file) {
     // P0-2：消费 P.snap 已有的 entries/comment/copies（后端 patch.py 零改动）
     pRenderPackageStruct();
     pEmptyState();
-    toast(`读到了 ${P.snap.objects.length} 份业务对象 XML，选一个开始加字段`, 4500);
+    toast(`已读取 ${P.snap.objects.length} 份业务对象 XML，请选择对象后新增字段`, 4500);
   } catch (err) {
     pFail(err);
   } finally {
@@ -288,7 +288,7 @@ function pRenderExisting() {
   const files = ((P.snap && P.snap.objects) || []).filter((o) => P.selected.has(o.file));
   card.hidden = !P.snap || files.length === 0;
   if (!files.length) {
-    box.innerHTML = '<div class="sub">先在上一步勾至少一个业务对象。</div>';
+    box.innerHTML = '<div class="sub">请先在上一步勾选至少一个业务对象。</div>';
     return;
   }
   box.innerHTML = files.map((o) => {
@@ -560,7 +560,7 @@ async function pImportFields(file) {
     const res = await pApi("/api/patch/fields", await file.arrayBuffer(), true);
     const data = await res.json();
     const rows = (data.fields || []).map((f) => ({ ...pEmptyField(), ...f }));
-    if (!rows.length) { toast("字段表里没有读到字段行"); return; }
+    if (!rows.length) { toast("字段表中未读取到字段行"); return; }
     P.fields = P.fields.filter((f) => String(f.code || "").trim())
       .concat(rows);
     pRenderFields(); pHint();
@@ -578,7 +578,7 @@ async function pPreview(btn) {
     const box = pId("patchReport");
     box.hidden = false;
     box.textContent = data.report || JSON.stringify(data, null, 2);
-    toast("预览完成，确认无误再下载", 4000);
+    toast("预览完成，确认无误后下载", 4000);
   } catch (err) { pFail(err); } finally { pBusy(btn, false); }
 }
 
@@ -602,7 +602,7 @@ async function pBuild(btn) {
       `原包 ${P.fileName} 未改动；包里除 bo/*.xml 外的内容均按原字节保留。\n` +
       `导入方式：系统管理 → 发布管理 → 导入同步包，直接上传新 zip。\n` +
       `本包对齐 CONFIG_SYNC_NOTE: 注释格式（发布说明写在 zip comment 里）。`;
-    toast(`已生成 ${jobs.length} 份新 zip`, 5000);
+    toast(`已生成 ${jobs.length} 个导入包`, 5000);
   } catch (err) { pFail(err); } finally { pBusy(btn, false); }
 }
 
@@ -611,7 +611,7 @@ async function pWorkbook(btn) {
   try {
     const res = await pApi("/api/patch/workbook", pSpec());
     await pDownload(res, "pp6-加字段-规格表.xlsx");
-    toast("规格表已下载，可继续补表单/列表后走主流程出包", 5000);
+    toast("规格表已下载；补齐表单、列表后可回到主流程出包", 5000);
   } catch (err) { pFail(err); } finally { pBusy(btn, false); }
 }
 
@@ -763,7 +763,7 @@ function pBind() {
   if (reset) reset.onclick = () => {
     P.renames = {};
     pRenderExisting(); pHint();
-    toast("已还原全部改名", 3000);
+    toast("已还原全部名称修改", 3000);
   };
 
   pId("patchAddRow").onclick = () => {
@@ -771,11 +771,11 @@ function pBind() {
   };
   pId("patchPasteAdd").onclick = () => {
     const rows = pParsePaste(pId("patchPaste").value);
-    if (!rows.length) { toast("没解析出字段行，检查列顺序"); return; }
+    if (!rows.length) { toast("未解析出字段行，请检查列顺序"); return; }
     P.fields = P.fields.filter((f) => String(f.code || "").trim()).concat(rows);
     pId("patchPaste").value = "";
     pRenderFields(); pHint();
-    toast(`追加了 ${rows.length} 个字段`, 3500);
+    toast(`已追加 ${rows.length} 个字段`, 3500);
   };
   pId("patchPickXlsx").onclick = () => pId("patchXlsxInput").click();
   pId("patchXlsxInput").onchange = (e) => {

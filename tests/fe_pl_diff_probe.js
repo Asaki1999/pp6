@@ -260,8 +260,8 @@ PL.openModal(vmAll);
 out.M_opened = mask.hidden === false;
 out.M_title = title.textContent;
 const html = body.innerHTML;
-out.M_titleOk = html.indexOf("要按项目定义覆盖吗") >= 0
-  || (title.textContent || "").indexOf("要按项目定义覆盖吗") >= 0;
+out.M_titleOk = html.indexOf("定义相近，是否覆盖") >= 0
+  || (title.textContent || "").indexOf("定义相近，是否覆盖") >= 0;
 out.M_summary = html.indexOf("已自动覆盖") >= 0
   && html.indexOf("需要你确认") >= 0 && html.indexOf("按原规则生成") >= 0;
 out.M_groups = ["语义相近", "可能相关", "需确认"].map((g) => html.indexOf(g) >= 0);
@@ -362,7 +362,7 @@ if (HTML) {
   out.B_keepMine = page.indexOf('id="plLater"') >= 0 && page.indexOf("保留我的") >= 0;
   out.B_noRejectAll = page.indexOf('id="plRejectAll"') < 0;
   out.B_step2 = page.indexOf("确认相近字段") >= 0;
-  out.B_title = page.indexOf("要按项目定义覆盖吗") >= 0;
+  out.B_title = page.indexOf("定义相近，是否覆盖") >= 0;
 }
 
 /* ⑥ 目标不是项目（关联其他业务对象）：所有「项目」文案都要换成目标名。
@@ -384,7 +384,7 @@ PL.openModal(vmOther);
 const otherBody = body.innerHTML;
 out.T_opened = mask.hidden === false;
 out.T_title = el("plModalTitle").textContent;
-out.T_titleOk = out.T_title === "这些字段和合同相近，要按合同定义覆盖吗？";
+out.T_titleOk = out.T_title === "以下字段与「合同」定义相近，是否覆盖？";
 out.T_cover = otherBody.indexOf("按合同覆盖") >= 0;
 out.T_metaTarget = otherBody.indexOf("合同对象：contract") >= 0;
 out.T_metaTable = otherBody.indexOf("pp_contract") >= 0;

@@ -315,12 +315,11 @@ function staticChecks() {
 
   out["0_static"] = {
     hasImportBar: /id="plPreImportBar"/.test(html),
-    // 首屏先选入口：AI / Excel 面板默认隐藏，选了才展开
-    entryChoice: /id="entryChoice"/.test(html)
-      && /data-entry="ai"/.test(html) && /data-entry="excel"/.test(html),
-    entryProgressive: /id="entryPanels"[^>]*hidden/.test(html)
-      && /id="entryAi"[^>]*hidden/.test(html) && /id="entryExcel"[^>]*hidden/.test(html)
-      && /renderEntry/.test(src) && /entryMode/.test(src),
+    // 2026-11-21：入口不再先选后展开。首屏就是输入框 + 文件卡片，
+    // 两个面板常驻（HTML 里不能带 hidden），少一次点击。
+    entryDirect: /id="entryAi"/.test(html) && /id="entryExcel"/.test(html)
+      && !/id="entryAi"[^>]*hidden/.test(html) && !/id="entryExcel"[^>]*hidden/.test(html),
+    noEntryGate: !/id="entryChoice"/.test(html) && !/data-entry="ai"/.test(html),
     importBarOnTop: /id="plPreImportBar"/.test(html)
       && html.indexOf('id="plPreImportBar"') < html.indexOf('id="aiChatLaunch"'),
     // 普通/存量两页的选项栏；流程模式复用普通页，不再单独一套
@@ -329,17 +328,30 @@ function staticChecks() {
     barsAtTop: html.indexOf('id="plPreImportBar"') < html.indexOf('id="aiChatLaunch"')
       && html.indexOf('id="plPrePatchBar"') < html.indexOf('id="patchPickZip"'),
     sameTitle: (html.match(/业务对象关联项目/g) || []).length >= 2,
-    sameHint: (html.match(/先选：/g) || []).length >= 2,
+    // 两页各自带一句说明，且都讲清「关联 / 不关联」分别是什么
+    // （2026-11-21：不再用「先选：」当特征串——那只是行文开头，改文案就会误红）
+    sameHint: (() => {
+      const i1 = html.indexOf('id="plPreHint"');          // 普通模式那句说明
+      const i2 = html.indexOf('id="plPrePatchBar"');      // 存量包选项栏
+      if (i1 < 0 || i2 < 0) return false;
+      const j2 = html.indexOf("</div>", i2);
+      const importHint = html.slice(Math.max(0, i1 - 120), i1 + 400);
+      const patchHint = html.slice(i2, j2 < 0 ? i2 + 800 : j2 + 6);
+      const ok = (x) => /class="sub"/.test(x) && /关联/.test(x) && /不关联/.test(x);
+      return ok(importHint) && ok(patchHint);
+    })(),
     patchAllLabel: /name="plPrePatch" value="on">\s*关联<\/label>/.test(html),
     patchOffLabel: /name="plPrePatch" value="off">\s*不关联<\/label>/.test(html),
     noAllPrefix: !/> 全部[^<]*<\/label>/.test(html),
-    // AI 预览的按钮只做核对，不生成 zip；生成包在结果页，且在核验窗口之后
-    // 默认（不关联）是「生成预览」，选关联项目才切到「核对字段」
-    btnPreviewLabel: /id="btnToPack"[^>]*>下一步：生成预览/.test(html),
+    // AI 预览的按钮只做核对，不生成 zip；生成包在结果页，且在核验窗口之后。
+    // 2026-11-21：文案从「下一步：生成预览」改成「核对完成，去出包」——
+    // 这页本身已经是预览了，再写「生成预览」等于说原地踏步；选关联才提「核对字段」。
+    btnPreviewLabel: /id="btnToPack"[^>]*>核对完成，去出包/.test(html),
     btnCheckDynamic: /state\.plPre === "on"/.test(src)
-      && /"下一步：核对字段/.test(src) && /"下一步：生成预览/.test(src),
-    btnToPackNoGenerate: !/下一步：生成导入包/.test(html),
-    btnPackLabel: /id="btnPack"[^>]*>下载导入包 zip/.test(html),
+      && /"核对字段并出包/.test(src) && /"核对完成，去出包/.test(src),
+    btnToPackNoGenerate: !/下一步：生成导入包/.test(html)
+      && !/下一步：生成预览/.test(html),
+    btnPackLabel: /id="btnPack"[^>]*>下载导入包</.test(html),
     // PDF / Word 入口：accept 里要有 .pdf/.docx；前端走 /api/extract
     aiSheetAcceptsDoc: /id="aiSheetInput"[^>]*accept="[^"]*\.pdf[^"]*\.docx/.test(html),
     fileInputAcceptsDoc: /id="fileInput"[^>]*accept="[^"]*\.pdf[^"]*\.docx/.test(html),

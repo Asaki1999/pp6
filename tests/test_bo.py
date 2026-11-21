@@ -780,14 +780,24 @@ def _():
     col = header.index("显示字段") + 1
     got = ws.cell(row=3, column=col).value
     assert got == "name,classificationId", got
+    # 级联详情必须写回 Excel：只留在内存里，用户「下载 → 拖回出包」就丢了，
+    # 表现是「列表上选了级联显示，导入后点不动」（2026-11-20 反馈）
+    dcol = header.index("级联详情字段") + 1
+    assert ws.cell(row=3, column=dcol).value == "name", \
+        ws.cell(row=3, column=dcol).value
 
     zip_body, _ = W.build_zip(xlsx_body, [], {})
     z = _zf.ZipFile(_io.BytesIO(zip_body))
     tpl = next(n for n in z.namelist() if n.startswith("data_template/"))
     import xml.etree.ElementTree as ET
     node = next(ET.fromstring(z.read(tpl)).iter("dataTemplateTpl"))
-    cols = [c["name"] for c in _json.loads(node.get("displayColumns") or "[]")]
+    cols_json = _json.loads(node.get("displayColumns") or "[]")
+    cols = [c["name"] for c in cols_json]
     assert cols == ["name_", "classification_id_"], cols
+    clickable = [c for c in cols_json if (c.get("cascade_configuration") or {}).get("formKey")]
+    assert clickable, "级联详情没生成 cascade_configuration：点列打不开详情表单"
+    assert clickable[0]["cascade_configuration"]["type"] == "form"
+    assert clickable[0]["enabledCascade"] is True and clickable[0]["triggerEvent"] == "font"
 
 
 @case("BO37", "bo", "两种模式的内置字段口径：普通 16 个，流程再加 7 个", "P0",
@@ -1219,3 +1229,237 @@ def _():
         if row[2]:
             texts[row[2]] = str(row[7] or "")
     assert "中药：OTC、RX" in texts["productClass"], texts["productClass"]
+
+
+def _vs_payload(value_sources=None) -> dict:
+    """值来源用例的固定夹具：本对象有「项目类型」→ 能推导出 filtered 那份。"""
+    payload = {
+        "bo": {"code": "purchase", "name": "采购申请", "fields": [
+            {"code": "name", "name": "名称", "type": "varchar", "length": 100},
+            {"code": "classificationId", "name": "项目类型", "type": "object",
+             "objectType": "classification"},
+            {"code": "projectId", "name": "所属项目", "type": "object",
+             "objectType": "project"},
+        ]},
+        "form": {"key": "create_purchase", "name": "新建采购申请", "fields": [
+            {"name": "name", "label": "名称", "type": "text"},
+            {"name": "classificationId", "label": "项目类型", "type": "linkdata"},
+            {"name": "projectId", "label": "所属项目", "type": "linkdata"},
+        ]},
+        "list": None,
+    }
+    if value_sources is not None:
+        payload["valueSources"] = value_sources
+    return payload
+
+
+@case("BO46", "bo", "值来源清单：自动锁死、过滤那份可关；关掉后字段降级对象选择器", "P0",
+      ["/api/ai/values 的 key 与出包一致（同一套 ensure）",
+       "自动/全量 toggleable=False，过滤那份 toggleable=True",
+       "关闭后不出 data_template XML，控件 fieldType 变 selectObject",
+       "经 Excel 往返（build_zip 直接读这份 Excel）关闭状态仍生效"])
+def _():
+    import io as _io
+    import zipfile as _zf
+
+    from pp6kit import webui as W
+
+    got = W.ai_value_sources(_vs_payload())
+    items = got["valueSources"]
+    filtered = [it for it in items if it["origin"] == "filtered"]
+    assert filtered, [(it["key"], it["origin"]) for it in items]
+    target = filtered[0]
+    assert target["toggleable"] is True and target["enabled"] is True
+    auto = [it for it in items if it["origin"] == "auto"]
+    assert auto and not any(it["toggleable"] for it in auto), \
+        [(it["key"], it["origin"], it["toggleable"]) for it in items]
+
+    body, _ = W.ai_apply_bo(_vs_payload([{"key": target["key"], "enabled": False}]))
+    zb, _ = W.build_zip(body, [], {})
+    z = _zf.ZipFile(_io.BytesIO(zb))
+    names = z.namelist()
+    assert not any(n.endswith(f"{target['key']}.xml") for n in names), names
+    form_xml = z.read(next(n for n in names if n.startswith("form/"))).decode()
+    seg = form_xml.split('name="projectId"', 1)[1][:240]
+    assert 'fieldType="selectObject"' in seg, seg
+
+
+@case("BO47", "bo", "值来源只有三类用途：自定义新增已移除，传进来也不出包", "P1",
+      ["清单里的 origin 只在 auto / link / filtered 之中",
+       "带 custom 标记的项被忽略（包里找不到那个 key）",
+       "/api/ai/values 不再返回 targets（新增浮层的产物）"])
+def _():
+    import io as _io
+    import zipfile as _zf
+
+    from pp6kit import webui as W
+
+    got = W.ai_value_sources(_vs_payload())
+    origins = {it["origin"] for it in got["valueSources"]}
+    assert origins <= {"auto", "link", "filtered"}, origins
+    assert "targets" not in got, got.keys()
+
+    body, _ = W.ai_apply_bo(_vs_payload([{
+        "custom": True, "name": "有效项目值来源", "target": "project",
+        "key": "active_project_value",
+        "filterRules": [{"field": "name_", "operator": "not_equal",
+                         "source": "fixed", "value": "X"}],
+    }]))
+    zb, _ = W.build_zip(body, [], {})
+    z = _zf.ZipFile(_io.BytesIO(zb))
+    assert not [n for n in z.namelist() if "active_project_value" in n], z.namelist()
+
+
+def _list_cols(value_sources=None) -> tuple[list[dict], str]:
+    """列表列的固定夹具：出包后把 data_template 的 displayColumns 解出来。"""
+    import io as _io
+    import json as _json
+    import re as _re
+    import zipfile as _zf
+
+    from pp6kit import webui as W
+
+    payload = {
+        "bo": {"code": "purchase", "name": "采购申请", "fields": [
+            {"code": "name", "name": "名称", "type": "varchar", "length": 100},
+            {"code": "classificationId", "name": "项目类型", "type": "object",
+             "objectType": "classification"},
+            {"code": "projectId", "name": "所属项目", "type": "object",
+             "objectType": "project"},
+            {"code": "managerId", "name": "责任人", "type": "user"},
+            {"code": "category", "name": "类别", "type": "dic"},
+            {"code": "amount", "name": "金额", "type": "number"},
+        ]},
+        "form": {"key": "create_purchase", "name": "新建采购申请", "fields": [
+            {"name": "name", "label": "名称", "type": "text"},
+            {"name": "classificationId", "label": "项目类型", "type": "linkdata",
+             "valueSource": "classification_value"},
+            {"name": "projectId", "label": "所属项目", "type": "linkdata"},
+            {"name": "managerId", "label": "责任人", "type": "user"},
+            {"name": "category", "label": "类别", "type": "select"},
+            {"name": "amount", "label": "金额", "type": "number"},
+        ]},
+        "list": {"key": "purchase_list", "name": "采购申请列表",
+                 "columns": ["name", "classificationId", "projectId",
+                             "managerId", "category", "amount"]},
+    }
+    if value_sources is not None:
+        payload["valueSources"] = value_sources
+    body, _ = W.ai_apply_bo(payload)
+    zb, _ = W.build_zip(body, [], {})
+    z = _zf.ZipFile(_io.BytesIO(zb))
+    xml = z.read(next(n for n in z.namelist()
+                      if n.startswith("data_template/"))).decode()
+    raw = _re.search(r'displayColumns="([^"]*)"', xml).group(1)
+    return _json.loads(raw.replace("&quot;", '"')), xml
+
+
+@case("BO48", "bo", "列表下拉列：控件形态跟表单一致，并带纯英文的显示字段名", "P0",
+      ["关联列 field_type 与表单控件一致（linkdata / selectObject）",
+       "linkdata 列带 linkdata key + link_config",
+       "下拉列的 displayName 有值、与物理列名不同、纯 ASCII",
+       "模板 attrs.display_field 开启（接口合并）",
+       "字典列带 dictionary key，数字列不带 displayName"])
+def _():
+    cols, xml = _list_cols()
+    by = {c["name"]: c for c in cols}
+
+    cls = by["classification_id_"]
+    assert cls["field_type"] == "selectObject", cls["field_type"]
+    assert cls["field_options"]["boCode"] == "classification"
+    proj = by["project_id_"]
+    assert proj["field_type"] == "linkdata", proj["field_type"]
+    assert proj["field_options"]["linkdata"] == "project_value"
+    assert proj["field_options"]["link_config"]["text"] == "name_"
+    assert proj["field_options"]["link_config"]["id"] == "id_"
+    assert by["manager_id_"]["field_type"] == "dropSelector"
+    assert by["manager_id_"]["field_options"]["selector_type"] == "user"
+    assert by["category_"]["field_type"] == "dictionary"
+    assert by["category_"]["field_options"]["dictionary"]
+    assert by["amount_"]["field_type"] == "number"
+
+    for name in ("classification_id_", "project_id_", "manager_id_"):
+        dn = by[name].get("displayName")
+        assert dn, f"{name} 缺显示字段名"
+        assert dn != name, f"{name} 的显示字段名不能等于原字段名"
+        assert dn.isascii() and dn.replace("_", "").isalnum(), f"{name} 显示字段名不是纯英文：{dn}"
+        assert not any("\u4e00" <= ch <= "\u9fff" for ch in dn), dn
+    assert by["amount_"].get("displayName") is None, "数字列不该有显示字段名"
+
+    # 「跟字段控件一致」开关（显示列上的 same）：下拉类列必须打开，
+    # 文本/数字列保持关闭。依据原生导出包 006-xmhbfxxb.xml 的「创建人」列
+    # （{"same":"Y","field_type":"dropSelector"}）；2026-11-20 用户反馈
+    # 列表上的下拉列这个开关没打开，点开取不到名称。
+    for name in ("classification_id_", "project_id_", "manager_id_", "category_"):
+        assert by[name].get("same") == "Y", f"{name} 没打开「跟字段控件一致」：{by[name].get('same')}"
+    assert by["amount_"].get("same") == "N", by["amount_"].get("same")
+
+    import json as _json
+    tpl_attrs = _json.loads(
+        __import__("re").search(r'dataTemplateTpl[^>]*attrs="([^"]*)"', xml)
+        .group(1).replace("&quot;", '"'))
+    assert tpl_attrs.get("display_field") is True, "接口合并没开，displayName 不会生效"
+
+
+@case("BO49", "bo", "值来源被关掉后，列表列不能指向空 key（退回原生对象下拉）", "P0",
+      ["关闭 project_value", "列表那列从 linkdata 变成 selectObject",
+       "field_options 里不再有 linkdata key"])
+def _():
+    cols, _ = _list_cols([{"key": "project_value", "enabled": False}])
+    by = {c["name"]: c for c in cols}
+    proj = by["project_id_"]
+    assert proj["field_type"] == "selectObject", proj["field_type"]
+    assert "linkdata" not in proj["field_options"], proj["field_options"]
+    assert proj["field_options"]["boCode"] == "project"
+    assert proj.get("displayName") == "project_name", proj.get("displayName")
+
+
+@case("BO50", "bo", "详情表单的关联对象一律 selectObject，不再挂着值来源（AI 路径）", "P0",
+      ["「项目类型」与「项目选择」在详情页都是 selectObject",
+       "fieldOptions 里没有 value_source / datasource",
+       "boCode 仍写着目标对象编码"])
+def _():
+    # 2026-11-20 用户反馈：生成的详情页里「项目类型」成了下拉框、还挂着值来源，
+    # 与线上详情表单（关联对象 = selectObject，只带 boCode + store=id）不一致。
+    # 根因在字段对齐链路（projlink._rewrite_refs）不传 form.kind，见 PL29。
+    payload = {
+        "bo": {"code": "purchase_apply", "name": "采购申请", "fields": [
+            {"code": "projectName", "name": "项目名称", "type": "varchar"},
+            {"code": "code", "name": "项目编号", "type": "varchar"},
+            {"code": "classificationId", "name": "项目类型", "type": "object",
+             "objectType": "classification"},
+            {"code": "purchaseOrder", "name": "采购订单", "type": "varchar"},
+            {"code": "projectId", "name": "项目选择", "type": "object",
+             "objectType": "project", "isLink": True},
+        ]},
+        "form": {"key": "create_purchase_apply", "name": "新建采购申请",
+                 "fields": [
+            {"name": "projectId", "label": "项目选择", "type": "selectObject"},
+            {"name": "projectName", "label": "项目名称", "type": "text"},
+            {"name": "code", "label": "项目编号", "type": "text"},
+            {"name": "classificationId", "label": "项目类型", "type": "selectObject"},
+            {"name": "purchaseOrder", "label": "采购订单", "type": "text"},
+        ]},
+        "list": {"key": "purchase_apply_list", "name": "采购申请列表", "views": ["grid"],
+                 "columns": ["projectId", "projectName", "code", "classificationId"]},
+    }
+    xlsx_body, _ = webui.ai_apply_bo(payload)
+    zip_body, _ = webui.build_zip(xlsx_body, [])
+
+    import io as _io
+    import zipfile as _zf
+    z = _zf.ZipFile(_io.BytesIO(zip_body))
+    hits = [n for n in z.namelist() if n.startswith("form/") and "detail" in n]
+    assert hits, z.namelist()
+    detail = z.read(hits[0]).decode().replace("&quot;", '"')
+
+    for code, target in (("classificationId", "classification"), ("projectId", "project")):
+        m = re.search(r'name="%s"[^>]*fieldType="selectObject"' % code, detail)
+        assert m, f"详情表单的 {code} 不是 selectObject：{detail[:400]}"
+        assert f'"boCode":"{target}"' in detail, f"{code} 丢了 boCode={target}"
+
+    # 详情页是查看态：不许带值来源（带了就是一个能点开的下拉）
+    assert '"value_source"' not in detail, "详情表单还挂着值来源"
+    assert '"datasource":"valuesource"' not in detail, "详情表单还写着 datasource=valuesource"
+    # 网格里的单元格也要是同一个口径（formField 与 grid cell 两处都写）
+    assert '"field_type":"select"' not in detail, "详情表单里仍有普通 select 控件"

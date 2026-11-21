@@ -2868,9 +2868,33 @@ def _rewrite_refs(project, bo_code: str, mapping: dict[str, str],
                     #   · select / linkdata（树形关联）保持原样，只补取值来源；
                     #   · 其他类型（text / dictionary / number…）换成对象该有的控件，
                     #     并记一条 notice，让用户知道界面上发生了什么。
-                    if ff.field_type not in ("select", "linkdata"):
+                    #
+                    # 控件类型必须按**表单种类**取（control_for 的 kind 参数）：
+                    # 详情 / 展开详情 / 条件专用一律 selectObject（系统原本的字段
+                    # 类型，不带值来源）。以前这里不传 kind，object 落到
+                    # 「select + value_source=<对象编码>」——用户导入后详情页的
+                    # 「项目类型」变成一个挂着值来源的下拉，和线上详情表单对不上
+                    # （2026-11-20 用户反馈）。
+                    want_type = control_for(bf, form.kind)
+                    if want_type == "selectObject":
+                        # 详情态的核对口径：只认 selectObject、且**不挂**值来源。
+                        # 已经对的不动，省得把用户手调的必填/只读覆盖掉。
+                        changed = False
+                        if ff.field_type != "selectObject":
+                            ff.field_type = "selectObject"
+                            notes.append(
+                                f"表单 {form.key} 控件「{ff.label or bf.name}」"
+                                f"→ selectObject（详情/条件态用对象选择器）")
+                            bump("表单控件（改对象选择器）")
+                            changed = True
+                        if ff.value_source:
+                            ff.value_source = ""
+                            changed = True
+                        if changed:
+                            continue
+                    elif ff.field_type not in ("select", "linkdata"):
                         old_type = ff.field_type
-                        ff.field_type = control_for(bf)
+                        ff.field_type = want_type
                         ff.value_source = bf.object_type or ""
                         notes.append(
                             f"表单 {form.key} 控件「{ff.label or bf.name}」{old_type} → "

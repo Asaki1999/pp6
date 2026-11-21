@@ -978,6 +978,10 @@ def _guard_template_key_clash(project: Project, plan) -> None:
     if plan.has("list"):
         entries += [(x.key, "5_列表", f"列表「{x.name or x.key}」") for x in project.lists]
     for ds in project.datasets:
+        # 不生成的那份不占 key：否则用户关掉一份值来源后，列表/其它数据集的
+        # 同名 key 会被一个根本不进包的东西挡住，报「key 重复」而无法出包。
+        if not getattr(ds, "enabled", True):
+            continue
         code = mod_def.module_of_dataset(ds.ds_type)
         if not plan.has(code):
             continue
@@ -1320,12 +1324,24 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
             res.notices.append(f"列表 {lst.key}: 对象 {lst.bo_code} 不存在，已跳过")
             continue
         imp = list_import_form.get(bo.code)
+        # 列表列要跟「新建表单」里同一个字段的控件一个形态（linkdata / selectObject），
+        # 关联字段还得知道目标对象的 id/名称列才能写 link_config。
+        ctl_form = list_create_form.get(bo.code)
+        targets = {}
+        for bf in bo.fields:
+            if bf.type_new == "object" and bf.object_type:
+                got = link_plan.target(bf.object_type)
+                if got is not None:
+                    targets[bf.object_type] = got
         xml, notices = gen_tpl.render_list(
             lst, bo, list_form_of_bo.get(bo.code, ""), snippets, tenant,
             detail_form_key=detail_of_bo.get(bo.code, ""),
             new_button_label=_new_button_label(bo),
             form_keys=all_form_keys,
-            import_form_key=imp.key if imp else "")
+            import_form_key=imp.key if imp else "",
+            control_form=ctl_form, targets=targets,
+            value_keys={ds.key for ds in project.datasets
+                        if getattr(ds, "enabled", True)})
         res.notices.extend(notices)
         zp, entry = _write_zip(out / "data_template", "data_template", f"{prefix}-{lst.key}.xml", xml)
         res.artifacts.append(Artifact("列表", lst.key, zp, entry,
@@ -1333,6 +1349,12 @@ def build(project: Project, snippets: dict, out_dir: Path | None = None,
 
     # ---- 数据集 / 值来源 / 筛选器
     for ds in project.datasets:
+        # 用户关掉的值来源（「值来源」页签 / 6.1_值来源 的「是否生成」=否）：
+        # 不出 XML。引用它的控件已在 _ensure_value_sources 里降级成对象选择器。
+        if not getattr(ds, "enabled", True):
+            res.notices.append(
+                f"值来源 {ds.key} 已按你的选择跳过（不出选择器 XML）")
+            continue
         code = mod_def.module_of_dataset(ds.ds_type)
         if not plan.has(code):
             continue

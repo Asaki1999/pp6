@@ -1209,3 +1209,42 @@ def lnk26():
     full_opts = _field_options(_form_xml(full, "create_caiGou"), "projectId")
     assert {it["name"]: it["field"] for it in full_opts["link_linkage"]}.get(
         "zhuan_ye_") == zhuanYe_code(full)
+
+
+@case("LNK27", "links", "文案同名也能联动：值来源「项目名称」列带进本对象同名文本字段", "P0",
+      ["返回列 name_ 的 label=项目名称，本对象有个 varchar「项目名称」→ 自动带上",
+       "同名列 name_/code_ 仍按物理列名绑定（老口径不变）",
+       "数字字段即使文案同名也不绑（不把字符串塞进数字控件）",
+       "一个控件只承接一列（多列文案相同时先到先得）"])
+def _():
+    excel, _ = webui.ai_apply_bo({
+        "bo": {"code": "purchase_apply", "name": "采购申请", "fields": [
+            {"code": "projectId", "name": "项目选择", "type": "object",
+             "objectType": "project"},
+            {"code": "projectName", "name": "项目名称", "type": "varchar",
+             "length": 200},
+            {"code": "code", "name": "项目编号", "type": "varchar", "length": 50},
+            {"code": "amount", "name": "项目名称", "type": "number"},
+        ]},
+        "form": {"key": "create_purchase_apply", "name": "新建采购申请", "fields": [
+            {"name": "projectId", "label": "项目选择", "type": "linkdata"},
+            {"name": "projectName", "label": "项目名称", "type": "text"},
+            {"name": "code", "label": "项目编号", "type": "text"},
+            {"name": "amount", "label": "项目名称", "type": "number"},
+        ]},
+    })
+    body, _ = webui.build_zip(excel)
+    opts = _field_options(_form_xml(body, "create_purchase_apply"), "projectId")
+    by_name = {it["name"]: it["field"] for it in opts["link_linkage"]}
+
+    # ① 文案同名：项目对象的 name_ 显示名是「项目名称」，本对象的 projectName
+    #    也叫「项目名称」、物理列却不同（name_ vs project_name_）→ 必须带上。
+    assert by_name["name_"] == "projectName", by_name
+    # ② 老口径：物理列名同名的照样绑（code_ 与本对象 code）
+    assert by_name["code_"] == "code", by_name
+    # ③ 数字字段文案也叫「项目名称」，但类型不是文本 → 不许绑
+    assert by_name.get("amount_", "") != "amount", by_name
+    # ④ 一个控件不能同时接两列：name_ 已占用 projectName，没有第二列再绑它
+    assert [k for k, v in by_name.items() if v == "projectName"] == ["name_"], by_name
+    # ⑤ id_ 是主键，永远只回显
+    assert by_name["id_"] == "", by_name
