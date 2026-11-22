@@ -236,7 +236,8 @@ def _parse_bo(root) -> Bo | None:
     return bo
 
 
-def _parse_form(root) -> tuple[Form, list[FormField]] | None:
+def _parse_form(root, notes: list[str] | None = None
+                ) -> tuple[Form, list[FormField]] | None:
     defs = _child(root, "formDefs")
     if defs is None:
         return None
@@ -298,11 +299,53 @@ def _parse_form(root) -> tuple[Form, list[FormField]] | None:
         return ""
 
     fname = fdef.attrib.get("name", "")
+    # 表单类型判定：**以 extendAttr 为准，表单名只在两处兜底**
+    # （我们自己写死的「条件专用_/导入专用_」前缀、以及名字里的「详情」字样）。
+    #
+    # 只看名字是不行的：原生「项目详情表单」的名字是「项目基本信息」、key 是
+    # project_summary，一个「详情」字样都没有 → 反解成新建表单，重出就是
+    # 「底部三个按钮 + 字段可编辑」，用户「反解 → 改 → 重出」这条链路上
+    # 详情页的所有规范等于全废（2026-11-25 QA 实测：6 张反解表单里 3 张详情
+    # 全被认成新建）。
+    #
+    # 依据原生样本的 extendAttr：
+    #   项目详情表单 1.zip → form/001-project_summary.xml
+    #       customClass="pp-projectOverview"、form_item_eidt_mode=true、buttons=[]
+    #   项目流程详情表单.zip → form/001-total_project_create_details.xml
+    #       customClass 缺省（名字里有「详情」，走下方兜底）
+    #   新建项目表单.zip → 001-create_project.xml   customClass="pp-drawer-add"
+    #   项目流程新建表单.zip → 001-project_create_start.xml
+    #       customClass="pp-add-process-details"（**不能**按 contains("details") 判，
+    #       那是新建档的类名，只能按前缀）
+    # 我们自己生成的详情档是 pp-details-sideslip / pp-drawer-details，一并认。
+    #
+    # form_item_eidt_mode（「单行编辑模式」）是按表单类型写出来的：只有详情类为 true
+    # （见 model.form_style.singleLineEdit），所以它能把客户自定义类名的那张
+    # 「项目基本信息」兜住，不必去硬编码 pp-projectOverview 这种项目专有类名。
+    custom = str(ext.get("customClass") or "").strip()
+    # 「条件专用_」「导入专用_」是我们自己生成时写死的前缀，比任何样式类都硬：
+    # 一张条件表单就算被人开了单行编辑、甚至带了详情样式类，也不该被抢判成详情。
     if fname.startswith("条件专用_"):
         kind = "condition"
     elif fname.startswith("导入专用_"):
         kind = "import"
-    elif "详情" in fname:
+    elif custom.startswith("pp-drawer-details"):
+        # 展开详情样式：spec 的「表单类型」没有这一档，按详情处理（重出为紧凑详情）
+        kind = "detail"
+        if notes is not None:
+            notes.append(
+                f"表单 {fdef.attrib.get('key', '')}：按详情表单反解"
+                f"（原为展开详情样式 {custom}，重出按紧凑详情）"
+            )
+    elif custom.startswith("pp-details"):
+        kind = "detail"
+    # 名字/开关兜底：
+    #   · form_item_eidt_mode=true 是详情档才有的（见 model.form_style.singleLineEdit），
+    #     用来兜住 customClass 是客户自定义类名的那张「项目基本信息」(pp-projectOverview)；
+    #   · 名字含「详情」兜住 customClass 缺键的流程详情表单。
+    # 反例：样例里的 project_create_details_v2 名字带 details、customClass 却是
+    # pp-drawer-add（真身是新建表单），所以绝不能按名字里的 details/详情 单独判。
+    elif ext.get("form_item_eidt_mode") or "详情" in fname:
         kind = "detail"
     else:
         kind = "create"
@@ -458,7 +501,7 @@ def inspect_path(path: Path) -> tuple[Project, list[str]]:
                 if bo:
                     proj.bos.append(bo)
             elif kind == "form":
-                got = _parse_form(root)
+                got = _parse_form(root, notes)
                 if got:
                     form, _ = got
                     proj.forms.append(form)

@@ -707,7 +707,8 @@ code { background: #f1f4f9; padding: 1px 5px; border-radius: 4px; }
 
 
 /* ---------- 响应式：窄窗口收成图标条，再窄则退化为纯顶栏 ---------- */
-@media (max-width: 1120px) {
+/* 断点从 1120 收到 1040：1080 的笔记本上侧栏仍保留文字标签，扫一眼就知道切哪个工作区 */
+@media (max-width: 1040px) {
   :root { --side-w: 62px; }
   .side-brand { justify-content: center; padding: 0; }
   .side-brand-text, .side-ver, .side-label, .side-path, .side-tip,
@@ -3368,7 +3369,7 @@ code { background: #f5f7fa; border: 1px solid var(--border); border-radius: 3px;
   .q-layout { grid-template-columns: 1fr; }
   .q-side { position: static; }
 }
-@media (max-width: 1120px) {
+@media (max-width: 1040px) {
   /* 侧栏收成图标条时，导航项跟着变窄，不能保留 38px 的内边距 */
   .mode { height: 40px; padding: 0; justify-content: center; }
   .side-brand { height: var(--top-h); }
@@ -3423,3 +3424,264 @@ code { background: #f5f7fa; border: 1px solid var(--border); border-radius: 3px;
 .mod-main[data-toggle] { cursor: pointer; }
 .mod-row:hover { background: #fafcff; }
 #modList .mod-btns { opacity: 1; pointer-events: auto; }
+
+/* ==========================================================================
+   视觉 v2 · 亲和层（2026-11-21）
+
+   目标：在「配色对齐 8112」的基础上，把界面从「内部后台」拉向「现代工作台」。
+   四个抓手，按收益排序——
+     1. 留白：卡片间距 14→18，内边距 12→20，首屏输入区加高；
+     2. 线条：边框降到 #eaeef6，卡片不再悬停浮起，层次交给柔和阴影；
+     3. 圆角：卡片 8→12、控件 4→8、常用词条改胶囊，去掉硬边直角感；
+     4. 主次：首屏主按钮加高加大 + 轻投影，次级按钮悬停才染色。
+   灰阶整体提亮一档（正文 #1b1f2a / 次要 #6f7a92 / 辅助 #a5b0c4），
+   主色仍是 8112 的 #1677ff，不改任何一个 token 的语义。
+   本层只做视觉与密度，不动 DOM、文案与业务逻辑；要回退删掉整段即可。
+   ========================================================================== */
+
+:root {
+  --bg: #f4f6fb;
+  --surface: #ffffff;
+  --border: #eaeef6;
+  --border-strong: #dee3ee;
+  --line: #f1f4f9;
+  --text: #1b1f2a;
+  --text-2: #4d5768;
+  --muted: #6f7a92;
+  --faint: #a5b0c4;
+  --accent-soft: #eaf3ff;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --radius-lg: 14px;
+  --shadow-1: 0 1px 2px rgba(20, 32, 60, .04), 0 2px 8px rgba(20, 32, 60, .035);
+  --shadow-2: 0 8px 24px rgba(20, 32, 60, .09);
+  --shadow-3: 0 18px 50px rgba(20, 32, 60, .18);
+}
+
+::selection { background: #d8e9ff; }
+
+/* ---------- 骨架：内容宽一点、四周松一点 ---------- */
+main { max-width: 1180px; padding: 24px 30px 88px; }
+.topbar { padding: 0 30px; }
+.ctx-title { font-size: 17.5px; }
+.ai-pill { height: 30px; padding: 0 12px; border-radius: 8px; }
+
+/* ---------- 侧栏：项高 40、激活项一条左侧竖线 + 淡蓝底 ---------- */
+.side-scroll { padding: 16px 12px 18px; }
+.side-label { padding: 0 12px; margin-bottom: 7px; letter-spacing: .07em; }
+.modes { gap: 3px; }
+.mode {
+  position: relative;
+  height: 40px; padding: 0 12px; gap: 10px;
+  border-radius: 8px; font-size: 13.5px;
+}
+.mode svg { width: 18px; height: 18px; }
+.mode:hover { background: #f2f5fb; }
+.mode.active { background: var(--accent-soft); box-shadow: none; }
+.mode.active::before {
+  content: ""; position: absolute; left: 0; top: 9px; bottom: 9px; width: 3px;
+  border-radius: 0 3px 3px 0; background: var(--accent);
+}
+
+/* ---------- 卡片：12 圆角、淡边框、只在悬停时加一点点影 ---------- */
+.card, .rail-card, .pl-pre-top, .ai-box.ai-chat-launch { border-radius: 12px; }
+.card {
+  margin-bottom: 16px;
+  border-color: var(--border);
+  box-shadow: var(--shadow-1);
+}
+.card:hover { box-shadow: var(--shadow-1); border-color: var(--border); }
+.card-head {
+  min-height: 56px; padding: 14px 20px;
+  background: #fff; border-bottom: 1px solid var(--line);
+}
+.card-head h3 { font-size: 14.5px; letter-spacing: 0; }
+.card-head .sub { font-size: 12px; line-height: 1.6; }
+
+/* ---------- 按钮：主按钮有分量，次级按钮悬停才染色 ---------- */
+.btn { border-radius: 8px; transition: background .15s, border-color .15s, color .15s, box-shadow .15s, transform .15s; }
+.btn:not(.primary):not(:disabled):hover { background: #f7faff; }
+.btn.primary { box-shadow: 0 2px 6px rgba(22, 119, 255, .20); }
+.btn.primary:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(22, 119, 255, .26); }
+.btn.primary:active { transform: translateY(0); box-shadow: 0 2px 6px rgba(22, 119, 255, .20); }
+.btn.primary:disabled { box-shadow: none; transform: none; }
+
+/* ---------- 首屏输入区：一个完整的写作块，不是「卡片里再套个框」 ---------- */
+.ai-chat-launch { padding: 22px 24px 16px; border-color: var(--border); box-shadow: var(--shadow-1); }
+.ai-chat-launch .ai-chat-head h3 { font-size: 16.5px; letter-spacing: -.01em; }
+.chat-launch-sub { font-size: 13px; line-height: 1.65; margin: 5px 0 14px; }
+.ai-chat-input {
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+}
+.ai-chat-launch .ai-chat-input textarea {
+  min-height: 100px; padding: 14px 16px;
+  font-size: 14px; line-height: 1.75;
+  border: 0; background: #fff;
+}
+.ai-chat-input:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(22, 119, 255, .10); }
+.ai-chat-input textarea:focus { box-shadow: none; }
+.ai-chat-foot {
+  padding: 9px 12px 9px 16px;
+  background: #fafbfe;
+  border-top: 1px solid var(--line);
+}
+.ai-chat-foot .btn.ghost { height: 34px; background: #fff; }
+.ai-chat-foot .btn.primary { height: 36px; padding: 0 20px; font-size: 14px; }
+.ai-chat-quick { gap: 8px; margin-top: 14px; }
+.chip-btn {
+  padding: 5px 12px; border-radius: 999px;
+  background: #f7f9fd; border-color: var(--border);
+  font-size: 12.5px; color: var(--text-2);
+}
+.chip-btn:hover { background: var(--accent-soft); border-color: #cfe2ff; }
+.dz-inline-quiet .dz-inline-foot { padding-top: 12px; gap: 6px 26px; }
+.dz-inline-quiet #aiHint { font-size: 12px; }
+
+/* ---------- Excel 卡片：和输入卡同一族，只是更矮 ---------- */
+.ai-box-lite { padding: 18px 20px; border-radius: 12px; box-shadow: var(--shadow-1); }
+.ai-box-lite .ai-head h3 { font-size: 14.5px; }
+.ai-box-lite .ai-head .sub { font-size: 12px; line-height: 1.6; }
+.reimport { padding: 16px 18px; border-radius: 10px; border-color: var(--border-strong); }
+.reimport-pick { height: 34px; border-radius: 8px; font-size: 13px; }
+
+/* ---------- 步骤条：圆圈 26，线更淡，当前步一圈柔光 ---------- */
+.steps { margin-bottom: 18px; }
+.steps .step { gap: 9px; font-size: 13.5px; }
+.steps .step b { width: 26px; height: 26px; font-size: 12.5px; border-width: 1.5px; }
+.steps .step.active b { box-shadow: 0 0 0 4px rgba(22, 119, 255, .10); }
+.step-line { height: 2px; margin: 0 14px; border-radius: 2px; background: #e9edf5; }
+
+/* ---------- 首屏右栏：说明卡改成「小标题 + 圆点条目」，靠留白分隔而不是虚线 ---------- */
+.entry-grid { gap: 20px; grid-template-columns: minmax(0, 1fr) 292px; }
+.entry-main { gap: 16px; }
+.rail-card { padding: 18px 18px 16px; border-color: var(--border); box-shadow: var(--shadow-1); }
+.rail-card h4 { font-size: 13.5px; margin-bottom: 12px; }
+.rail-list { gap: 14px; }
+.rail-list li { position: relative; padding-left: 13px; gap: 3px; }
+.rail-list li + li { padding-top: 0; border-top: 0; }
+.rail-list li::before {
+  content: ""; position: absolute; left: 0; top: 7px;
+  width: 5px; height: 5px; border-radius: 50%; background: rgba(22, 119, 255, .5);
+}
+.rail-list b { font-size: 13px; }
+.rail-list span { font-size: 12.5px; line-height: 1.55; }
+.rail-quiet { background: #fafbfd; }
+.rail-quiet p { font-size: 12.5px; line-height: 1.65; }
+
+/* ---------- 关联开关条：和卡片同一张脸 ---------- */
+.pl-pre-top { margin-bottom: 16px; padding: 12px 18px; border-color: var(--border); box-shadow: var(--shadow-1); }
+.pl-pre-top .sub { font-size: 12px; color: var(--muted); }
+
+/* ---------- 页签 / 表格：行再高一档，悬停更淡 ---------- */
+.tabs { margin-bottom: 18px; }
+.tab { padding: 11px 14px; font-size: 13.5px; }
+th { padding: 10px 14px; background: #fafbfd; }
+td { padding: 11px 14px; }
+tbody tr:hover { background: #f7faff; }
+.chip { border-radius: 6px; padding: 1px 7px; }
+
+/* ---------- 数字对齐 / 提示条 / 弹窗 ---------- */
+/* 复选框和单选框 13 → 15：默认尺寸在 14 号字旁边偏小，勾选框总是显得抠搜 */
+input[type="checkbox"], input[type="radio"] { width: 15px; height: 15px; }
+.mod-items .chip, .mod-row .chip { border-radius: 6px; padding: 2px 8px; }
+.stats, #stats, td, .q-stats b, .next-step b span { font-variant-numeric: tabular-nums; }
+.banner { border-radius: 8px; padding: 9px 13px; }
+.next-step { border-radius: 10px; }
+.toast { border-radius: 10px; padding: 10px 16px; }
+.pl-modal { border-radius: 14px; }
+.pl-modal-head { padding: 18px 22px; }
+.pl-modal-head h3 { font-size: 16px; }
+.pl-modal-body { padding: 20px 22px; }
+.pl-modal-foot { padding: 14px 22px; }
+
+/* ---------- 结果页：页头主操作与内容块的分量对齐 ---------- */
+.file-row .btn.primary { height: 36px; padding: 0 18px; font-size: 13.5px; }
+#stats { gap: 0 14px; padding: 11px 18px; border-radius: 10px; }
+#stats b { font-size: 15px; }
+.pl-entry { padding: 12px 16px; border-radius: 10px; }
+.mod-row { padding: 12px 20px; }
+.mod-actions { gap: 18px; }
+
+/* ---------- 数据查询：空状态 + 更清楚的统计数字 ---------- */
+/* 左栏不再拉成满高：右栏有时是一整块空状态，拉齐后左下角会空一大片 */
+.q-layout { align-items: start; }
+.q-side > .card { height: auto; }
+.q-stats { gap: 14px 16px; padding: 16px; }
+.q-stats b { font-size: 21px; letter-spacing: -.02em; }
+.q-mode { border-radius: 8px; overflow: hidden; }
+.q-tpl button {
+  padding: 6px 14px; border-radius: 999px;
+  background: #f7f9fd; border-color: var(--border);
+}
+.q-ask textarea { border-radius: 8px; font-size: 14.5px; padding: 13px 15px; }
+
+.q-empty {
+  padding: 64px 24px 68px;
+  text-align: center;
+  background: #fbfcfe;
+  border-style: dashed;
+  border-color: #e3e9f4;
+  box-shadow: none;
+}
+.q-empty svg { width: 44px; height: 44px; color: #c8d4e8; }
+.q-empty h3 { margin: 14px 0 6px; font-size: 15px; font-weight: 600; }
+.q-empty p { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.75; }
+
+/* ---------- 设置：卡片宽度跟着表单走，右边不再空半屏 ---------- */
+.set-layout { grid-template-columns: 176px minmax(0, 620px); max-width: 840px; gap: 20px; }
+.set-tab { padding: 9px 13px; }
+.set-form { gap: 16px; }
+.set-form label { font-size: 13px; }
+.set-form input, .set-form select { height: 36px; border-radius: 8px; padding: 0 12px; }
+.set-form textarea { border-radius: 8px; padding: 10px 12px; }
+
+/* ---------- 窄窗口：本层的选择器写在文件最后，必须把自己的响应式再声明一遍，
+              否则会盖掉上面各段 @media（CSS 里后写的非媒体规则优先级相同就会赢） ---------- */
+@media (max-width: 1240px) {
+  main { padding: 22px 24px 76px; }
+  .topbar { padding: 0 24px; }
+  .entry-grid { grid-template-columns: minmax(0, 1fr) 268px; }
+  .ai-chat-launch { padding: 20px 20px 16px; }
+}
+@media (max-width: 1080px) {
+  main { padding: 20px 20px 72px; }
+  .ai-chat-launch { padding: 18px 18px 14px; }
+  /* 单列：输入卡在上，两张说明卡并排在下 */
+  .entry-grid { grid-template-columns: minmax(0, 1fr); }
+  .entry-rail {
+    position: static;
+    display: grid; grid-template-columns: 1fr 1fr; align-items: start;
+  }
+  .rail-card { padding: 16px 16px 14px; }
+}
+@media (max-width: 1040px) {
+  /* 图标条：44 的方块 + 居中图标，激活项只留淡蓝底（左侧竖线在 44px 内没有意义） */
+  :root { --side-w: 72px; }
+  .side-scroll { padding: 14px 12px; }
+  .side-brand { padding: 0; justify-content: center; }
+  .mode { height: 44px; padding: 0; justify-content: center; border-radius: 10px; }
+  .mode svg { width: 20px; height: 20px; }
+  .mode.active::before { display: none; }
+}
+@media (max-width: 900px) {
+  .entry-rail { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+  :root { --side-w: 0px; }
+  main { padding: 18px 14px 72px; }
+  .topbar { padding: 0 14px; }
+}
+
+/* ---------- 已保存的 Key / 密码：掩码黑点 ----------
+   type=password 里填一串 •，默认 13px 下点偏小、看不清；
+   这里把字号提到 16px 让点更实，字距只微调 1px（拉太开会像虚线）。 */
+.set-form input[type="password"] {
+  letter-spacing: 1px;
+  font-size: 16px;
+}
+.set-form input[type="password"]::placeholder {
+  letter-spacing: normal;
+}

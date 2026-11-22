@@ -221,6 +221,56 @@ async function ensureQueryReady() {
   }
 }
 
+/* ---------------- Key / 密码：已保存就显示黑点 ----------------
+   以前「已保存」只是把输入框留空、在 placeholder 写「留空则沿用」，
+   看着跟没配一样。现在直接填一串黑点：一眼看出有值；点进去自动清空
+   可直接覆盖，不改就还原黑点，提交时按「未修改」处理，语义不变。 */
+const SECRET_DOTS = "•".repeat(20);
+
+function maskSecret(el, on, ph) {
+  if (!el) return;
+  if (on) {
+    el.value = SECRET_DOTS;
+    el.dataset.masked = "1";
+    el.dataset.saved = "1";
+    el.placeholder = "";
+  } else {
+    el.value = "";
+    el.dataset.masked = "";
+    el.dataset.saved = "";
+    el.placeholder = ph || el.dataset.phEdit || "";
+  }
+}
+
+/* 掩码只是展示：聚焦即清空让用户输入新值，失焦仍为空则还原黑点 */
+function bindSecretFocus(el, phEdit) {
+  if (!el) return;
+  el.dataset.phEdit = phEdit;
+  el.addEventListener("focus", () => {
+    if (el.dataset.masked !== "1") return;
+    el.dataset.masked = "";
+    el.value = "";
+    el.placeholder = phEdit;
+  });
+  el.addEventListener("blur", () => {
+    if (!el.value && el.dataset.saved === "1") maskSecret(el, true);
+  });
+}
+
+/* 掩码态 = 用户没动过，提交时当空值（后端沿用已存的 Key / 密码） */
+function secretValue(el) {
+  return el && el.dataset.masked === "1" ? "" : (el ? el.value : "");
+}
+
+/* 切页面会重新读配置：只有框里本来就空着、或是我们自己填的黑点时才重新掩码，
+   用户手打进去还没保存的值不能被覆盖。 */
+function canMask(el) {
+  return !!el && (!el.value || el.dataset.masked === "1");
+}
+
+bindSecretFocus(Q.get("qKey"), "输入新 Key 以替换已保存的");
+bindSecretFocus(Q.get("qPass"), "输入新密码以替换已保存的");
+
 async function loadConfig() {
   try {
     const d = await qApi("/api/nlq/config");
@@ -229,7 +279,8 @@ async function loadConfig() {
     if (!Q.get("qPort").value) Q.get("qPort").value = db.port || 3306;
     if (!Q.get("qUser").value) Q.get("qUser").value = db.user || "root";
     if (!Q.get("qDb").value) Q.get("qDb").value = db.database || "";
-    if (db.password_set) Q.get("qPass").placeholder = "已保存，留空则不修改";
+    // 用户刚敲进去、还没保存的新值不能被「已保存」的黑点盖掉
+    if (db.password_set && canMask(Q.get("qPass"))) maskSecret(Q.get("qPass"), true);
 
     Q_PROVIDERS = d.providers || [];
     renderProviders(Q_PROVIDERS);
@@ -251,7 +302,7 @@ async function loadConfig() {
     Q_CHANNEL_KEY = ch.key || "";
     if (ch.key) Q.get("qProvider").value = ch.key;
     if (ch.api_key_set) {
-      Q.get("qKey").placeholder = "已保存（留空则沿用）";
+      if (canMask(Q.get("qKey"))) maskSecret(Q.get("qKey"), true);
       const box = Q.get("qLlmSaved");
       box.hidden = false;
       Q.get("qLlmSavedText").textContent =
@@ -324,7 +375,7 @@ function dbPayload() {
     host: Q.get("qHost").value.trim(),
     port: Q.get("qPort").value.trim() || "3306",
     user: Q.get("qUser").value.trim(),
-    password: Q.get("qPass").value,
+    password: secretValue(Q.get("qPass")),
     database: Q.get("qDb").value.trim(),
   };
 }
@@ -367,8 +418,7 @@ Q.get("qTest").onclick = async () => {
   try {
     await qApi("/api/nlq/save-config", { db: dbPayload() });
     const d = await qApi("/api/nlq/test");
-    Q.get("qPass").value = "";
-    Q.get("qPass").placeholder = "已保存，留空则不修改";
+    maskSecret(Q.get("qPass"), true);
     renderConnStats(d);
     Q.templates = d.templates || [];
     renderTemplates();
@@ -394,7 +444,7 @@ Q.get("qSaveLlm").onclick = async () => {
   const box = Q.get("qLlmStatus");
   const base = Q.get("qBase").value.trim();
   const model = currentModel();
-  const key = Q.get("qKey").value.trim();
+  const key = secretValue(Q.get("qKey")).trim();
   if (!base) { toast("请先选一个平台，或手填接口地址"); return; }
   if (!model) { toast("请填写模型名称（选择平台后自动填充）"); return; }
   if (!key && !AI_READY) { toast("请粘贴 API Key"); return; }
@@ -428,9 +478,8 @@ Q.get("qSaveLlm").onclick = async () => {
       instructions: Q.get("qInstr").value.trim(),
     });
 
-    // 第三步：保存成功，清空输入框、刷新状态
-    Q.get("qKey").value = "";
-    Q.get("qKey").placeholder = "已保存，留空则不修改";
+    // 第三步：保存成功，输入框换成黑点（不是留空，留空看着像没配）
+    maskSecret(Q.get("qKey"), true);
     AI_READY = true;
     AI_BRIEF = model;
     paintAiState();
@@ -546,7 +595,14 @@ function renderTemplates() {
 }
 
 /* ---------------- 生成 / 执行 ---------------- */
+/* 空状态只在「这次会话第一次出结果之前」出现，一旦有 SQL 或结果就撤掉 */
+function clearEmpty() {
+  const e = Q.get("qEmpty");
+  if (e) e.hidden = true;
+}
+
 function showSql(sql, question, generated) {
+  clearEmpty();
   Q.get("qSqlCard").hidden = false;
   Q.get("qSql").value = sql;
   Q.get("qSqlMeta").textContent = question ? "来自：" + question : "";
@@ -557,6 +613,7 @@ function showSql(sql, question, generated) {
 }
 
 function renderResult(d, ms) {
+  clearEmpty();
   if (d.clarify) return renderClarify(d);
   Q.get("qResultCard").hidden = false;
   // 规则/记忆答的都可以一键让 AI 重答；已经是 AI 的就不用了
@@ -821,7 +878,7 @@ Q.get("qLlmForget").onclick = async () => {
                           api_key: "", model: currentModel(), clear_key: true }] },
     });
     Q.get("qLlmSaved").hidden = true;
-    Q.get("qKey").placeholder = "粘贴平台的 Key（sk-...）";
+    maskSecret(Q.get("qKey"), false, "粘贴平台的 Key（sk-...）");
     AI_READY = false;
     AI_BRIEF = "";
     paintAiState();

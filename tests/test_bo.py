@@ -1463,3 +1463,84 @@ def _():
     assert '"datasource":"valuesource"' not in detail, "详情表单还写着 datasource=valuesource"
     # 网格里的单元格也要是同一个口径（formField 与 grid cell 两处都写）
     assert '"field_type":"select"' not in detail, "详情表单里仍有普通 select 控件"
+
+
+@case("BO51", "bo", "级联字典字段的列表列出成 select，并打开「跟字段控件一致」", "P0",
+      ["控件是级联形态（select + 数据字典）时，列表列也出 select",
+       "列 field_options 与表单控件同口径：datasource=dictionary + cascadeParentCode",
+       "same=\"Y\"：类型不一致时设计器会把这个开关自动关掉",
+       "级联链的父级列同样出 select，但不带 cascadeParentCode",
+       "非级联的 dic 字段仍是 dictionary 列，same 也是 Y"])
+def _():
+    import json as _json
+
+    data = build({
+        S.S_BO: [{"对象名称": "测试级联", "对象编码": "csjl", "物理表名": "pp_csjl"}],
+        S.S_FIELD: [
+            {"对象编码": "csjl", "序号": 1, "字段编码": "mingCheng",
+             "字段名称": "名称", "数据类型": "字符串"},
+            {"对象编码": "csjl", "序号": 2, "字段编码": "pinZhongLeiBie",
+             "字段名称": "品种类别", "数据类型": "选项", "选项值": "中药,化药"},
+            {"对象编码": "csjl", "序号": 3, "字段编码": "pinZhongFenLei",
+             "字段名称": "品种分类", "数据类型": "选项",
+             "选项值": "中药：OTC、RX\n化药：转增加", "级联父字段": "pinZhongLeiBie"},
+            {"对象编码": "csjl", "序号": 4, "字段编码": "zhanLueLeiBie",
+             "字段名称": "战略类别", "数据类型": "选项", "选项值": "新品,其他"},
+        ],
+        S.S_FORM: [{"表单key": "create_csjl", "表单名称": "新建测试级联",
+                    "对象编码": "csjl", "表单类型": "新建表单"}],
+        S.S_FORMFIELD: [
+            {"表单key": "create_csjl", "字段编码": "mingCheng",
+             "显示标签": "名称", "控件类型": "text"},
+            {"表单key": "create_csjl", "字段编码": "pinZhongLeiBie",
+             "显示标签": "品种类别", "控件类型": "dictionary"},
+            {"表单key": "create_csjl", "字段编码": "pinZhongFenLei",
+             "显示标签": "品种分类", "控件类型": "dictionary",
+             "级联父字段": "pinZhongLeiBie"},
+            {"表单key": "create_csjl", "字段编码": "zhanLueLeiBie",
+             "显示标签": "战略类别", "控件类型": "dictionary"},
+        ],
+        S.S_LIST: [{"列表key": "csjl_list", "列表名称": "测试级联列表",
+                    "对象编码": "csjl", "视图类型": "grid",
+                    "显示字段": "mingCheng,pinZhongLeiBie,pinZhongFenLei,zhanLueLeiBie"}],
+    })
+    xml = pick(data, "data_template/")
+    raw = re.search(r'displayColumns="([^"]*)"', xml).group(1)
+    cols = _json.loads(raw.replace("&quot;", '"'))
+    by = {c["label"]: c for c in cols}
+    assert set(by) >= {"品种类别", "品种分类", "战略类别"}, sorted(by)
+
+    # ① 级联子级：列类型跟表单控件一致（都是 select），否则 same 打不开
+    child = by["品种分类"]
+    assert child["field_type"] == "select", child["field_type"]
+    assert child["same"] == "Y", f"「跟字段控件一致」没打开：{child.get('same')}"
+    o = child["field_options"]
+    assert o["datasource"] == "dictionary", o
+    assert o["options_source"] == "bo_attr", o
+    assert o["dictionary"] == "csjl_pinZhongFenLei", o
+    assert o["cascadeEnabled"] is True, o
+    assert o["cascadeParentCode"] == "pinZhongLeiBie", o
+    assert o["init_linkage"] is True and o["selection"] is True and o["filterable"] is True, o
+    assert o["placeholder"] == "请选择", o
+    assert o["link_config"] is None and o["options"] == [], o
+    # 显示字段名照旧只给关联/人员列，字典列不带（字段选项里已有 dictionary）
+    assert child.get("displayName") is None, child.get("displayName")
+
+    # ② 级联链的父级：表单里也被改成 select 了，列必须跟着改，但不带父编码
+    parent = by["品种类别"]
+    assert parent["field_type"] == "select", parent["field_type"]
+    assert parent["same"] == "Y", parent.get("same")
+    assert parent["field_options"]["cascadeEnabled"] is False, parent["field_options"]
+    assert parent["field_options"]["cascadeParentCode"] == "", parent["field_options"]
+
+    # ③ 非级联的 dic：仍是树形「数据字典」控件，列也还是 dictionary
+    plain = by["战略类别"]
+    assert plain["field_type"] == "dictionary", plain["field_type"]
+    assert plain["same"] == "Y", plain.get("same")
+    assert plain["field_options"] == {"dictionary": "csjl_zhanLueLeiBie"}, plain["field_options"]
+
+    # ④ 表单侧确实是 select（两处必须对上，这正是 bug 的根因）
+    fx = pick(data, "form/")
+    frag = next(t for t in all_tags(fx, "formField")
+                if attrs(t).get("name") == "pinZhongFenLei")
+    assert attrs(frag).get("fieldType") == "select", attrs(frag).get("fieldType")

@@ -48,6 +48,11 @@ _FULL_ROW_TYPES = {"editor", "textarea", "tablelayout", "tabs", "card", "attachm
 # 里系统不渲染。
 _DIRECT_TYPES = {"dataTemplate", "tableField"}
 
+# 详情类表单：控件一律只读（read_rights=true）、不带底部按钮。
+# 「detail_expand」是手册里的「展开详情 / 流程详情」（pp-drawer-details），
+# 与 FORM_DETAIL 只是样式套件不同，只读与按钮口径一致。
+_DETAIL_KINDS = (FORM_DETAIL, "detail_expand")
+
 
 def _is_direct_row(row: list[FormField]) -> bool:
     return len(row) == 1 and row[0].field_type in _DIRECT_TYPES
@@ -400,12 +405,15 @@ _TABLE_CELL_TYPE = {
 }
 
 
-def _table_cell(col, index: int, scope: str) -> dict:
+def _table_cell(col, index: int, scope: str, editable: bool = True) -> dict:
     """把一列落成 tableField 控件 options.columns 里的一项。
 
     真实样本里「类型 / 显示类型 / inputType」是分开的三层：type 是单元格控件
     （text/date/select…），displayType 是只读态的呈现方式，inputType 才是对象
     字段的存储类型（clob/varchar/dic…）。少写 inputType，「编辑列」里就认不出原类型。
+
+    ``editable`` 只在详情类表单里给 False：那时控件级 read_rights 管不住子表，
+    单元格能不能改字靠的是这个键（与 ``operation`` 的增删行开关是两处独立开关）。
     """
     typ = col.input_type
     wtype, display = _TABLE_CELL_TYPE.get(typ, ("text", "text"))
@@ -418,7 +426,7 @@ def _table_cell(col, index: int, scope: str) -> dict:
         "inputType": typ,
         "align": col.align or "left",
         "fixed": "",
-        "editable": True,
+        "editable": editable,
         "isTree": False,
         "main": False,
         "nameEn": col.name_en or "",
@@ -616,17 +624,35 @@ def _apply_options(base: dict, field: FormField, parents: set[str] | None = None
                    form: Form | None = None) -> dict:
     """骨架 + 字段 -> 真正写进 XML 的 fieldOptions。
 
-    ``form`` 是**控件所属的那张表单**，只给关联对象用：联动映射要按「本表单有
-    哪些控件」裁剪（见 ``_linkdata_options``）。调用方都是手里已经有 form 的
-    生成路径（render / node_field_meta），缺省 None 只在老的单测夹具里出现。
+    ``form`` 是**控件所属的那张表单**，两处要用它：
+      1. 关联对象：联动映射要按「本表单有哪些控件」裁剪（见 ``_linkdata_options``）；
+      2. 详情类表单：业务控件一律只写 read_rights=true、不写 disabled。
+    调用方都是手里已经有 form 的生成路径（render / node_field_meta），
+    缺省 None 只在老的单测夹具里出现（那时按新建表单的口径出）。
     """
     out = copy.deepcopy(base)
     t = field.field_type
+    # 详情类表单（紧凑详情 / 展开详情）：控件一律只读、子表也不许改
+    detail = form is not None and form.kind in _DETAIL_KINDS
 
     out["required"] = "true" if field.required else "false"
     if field.placeholder:
         out["placeholder"] = field.placeholder
-    if field.readonly:
+    # 详情表单的业务控件一律只读，用 **read_rights** 表达，不写 disabled。
+    #
+    # 依据原生详情表单（PP6/表单/项目详情表单 1.zip → form/001-project_summary.xml、
+    # 项目流程详情表单.zip → form/001-total_project_create_details.xml）：
+    #   · 50 个 formField 里所有业务控件（text/select/selectObject/dropSelector/
+    #     datePicker/number/editor/tableField）都写 "read_rights": "true"；
+    #   · label / card / grid_layout / hidden 不写（这几个不走本函数）；
+    #   · **没有任何一个控件写 disabled**——disabled 是「这个控件当前不可交互」，
+    #     读权限是「这个字段没权利改」，详情页要表达的是后者。
+    # 少数故意可编辑的字段（样本里是 "false"）由字段自己的 options 覆盖，
+    # 本函数末尾 out.update(field.options) 优先级最高，自然生效。
+    # 调用方 node_field_meta 传的是流程节点权限快照的表单，口径自动一致。
+    if detail:
+        out["read_rights"] = "true"
+    elif field.readonly:
         out["disabled"] = True
 
     if t == "select":
@@ -692,14 +718,27 @@ def _apply_options(base: dict, field: FormField, parents: set[str] | None = None
         # 设计器里「编辑列」改的列才认得回哪一列。
         # scope 用「对象编码/字段编码」——与 model.TableColumn.option 算的完全一样，
         # 两处不一致的话对象里列 A、表单里列 B，改一次列就多出一列。
+        #
+        # 详情类表单：控件级 read_rights 拦不住子表——单元格 editable 与
+        # operation 的增删行是两处独立开关，必须一起关，否则详情页仍能双击改字、
+        # 还能加行删行，「对象的所有字段只读」在子表上等于没落地（QA 实测）。
+        # configurableColumns 的 forbidConfig* 不动：那是「设计器里能不能改列配置」，
+        # 与运行时可否编辑是两件事。
         cols = list(field.table_columns or [])
         scope = f"{bo_code}/{field.name}" if bo_code else field.name
-        cells = [_table_cell(c, i, scope) for i, c in enumerate(cols, 1)]
+        cells = [_table_cell(c, i, scope, editable=not detail)
+                 for i, c in enumerate(cols, 1)]
         out["columns"] = cells
         out["configurableColumns"] = [_table_configurable(c) for c in cells]
         out.setdefault("dbFieldType", "clob")
-        out.setdefault("operation",
-                       {"addEnabled": True, "deleteEnabled": True, "dragEnabled": True})
+        if detail:
+            # 详情表单：不许加行 / 删行 / 拖拽排序。这里**必须覆盖**而不是
+            # setdefault——骨架里就是三个 true，setdefault 等于不生效。
+            out["operation"] = {"addEnabled": False, "deleteEnabled": False,
+                                "dragEnabled": False}
+        else:
+            out.setdefault("operation",
+                           {"addEnabled": True, "deleteEnabled": True, "dragEnabled": True})
         out.setdefault("allowConfigRowRight", True)
         out.setdefault("hide_label", True)
         out.setdefault("default_value_type", "fixed")
@@ -986,31 +1025,38 @@ def render(form: Form, bo: Bo | None, bo_id: str, snip: Snippets,
     # 隐藏字段的计数口径，线上五个真实表单都是 count，照抄
     ext.setdefault("setHiddenField", "count")
 
-    # 手册：按钮位置右下角，仅「保存」用主要-蓝色，其余次要-灰色；
-    # 只保留 取消 / 保存并继续 / 保存 三个标准按钮
-    kept = []
-    for btn in ext.get("buttons") or []:
-        if btn.get("alias") not in ("close", "saveAndContinue", "save"):
-            continue
-        btn = dict(btn)
-        btn["style"] = "primary" if btn.get("alias") == "save" else "default"
-        attrs_ = btn.get("attrs")
-        if isinstance(attrs_, dict):
-            if btn["style"] == "primary":
-                attrs_.update({"backgroundColor": "#3388FF", "border_color": "#3388FF", "color": "#ffffff"})
-            else:
-                attrs_.update({"backgroundColor": "#ffffff00", "border_color": "#DDE1EB", "color": "#223355"})
-        kept.append(btn)
-    if kept:
-        ext["buttons"] = kept
-
-    # 手册：标签宽度按表单类型取（新建 106 / 条件专用 160），弹窗为百分比宽度
-    ext["labelWidth"] = form.resolved_label_width()
-    ext["openType"] = ext.get("openType") or "drawer"
-
     # ---- 按表单类型套样式（PP6/搭建规范手册.pdf「表单属性的配置」）
     # 四类表单的 class / 尺寸 / 按钮位置都不同，不能共用一套 extendAttr。
+    # 先取 style 再做按钮：按钮要不要输出由 style["withStandardButtons"] 决定。
     style = form_style(form.kind)
+
+    if style["withStandardButtons"]:
+        # 手册：按钮位置右下角，仅「保存」用主要-蓝色，其余次要-灰色；
+        # 只保留 取消 / 保存并继续 / 保存 三个标准按钮
+        kept = []
+        for btn in ext.get("buttons") or []:
+            if btn.get("alias") not in ("close", "saveAndContinue", "save"):
+                continue
+            btn = dict(btn)
+            btn["style"] = "primary" if btn.get("alias") == "save" else "default"
+            attrs_ = btn.get("attrs")
+            if isinstance(attrs_, dict):
+                if btn["style"] == "primary":
+                    attrs_.update({"backgroundColor": "#3388FF", "border_color": "#3388FF", "color": "#ffffff"})
+                else:
+                    attrs_.update({"backgroundColor": "#ffffff00", "border_color": "#DDE1EB", "color": "#223355"})
+            kept.append(btn)
+        if kept:
+            ext["buttons"] = kept
+    else:
+        # 详情类表单不带底部按钮：原生两份详情表单（项目详情表单 1.zip →
+        # form/001-project_summary.xml、项目流程详情表单.zip →
+        # form/001-total_project_create_details.xml）的 extendAttr.buttons
+        # 都是空数组 []，靠右上角关闭 + 遮罩关闭。
+        # 必须**显式写 []**：pop 掉会残留骨架里的那三个按钮，
+        # 用户看到的就是详情页底部多出一排「取消 / 保存并继续 / 保存」。
+        ext["buttons"] = []
+
     ext["customClass"] = style["customClass"]
     ext["labelWidth"] = style["labelWidth"]
     ext["openType"] = style["openType"]

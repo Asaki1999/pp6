@@ -1284,3 +1284,72 @@ def _():
 
     # ④ AI 失败重试
     assert 'id="aiRetry"' in js and "generatePreview()" in js
+
+
+@case("WEB46", "webui", "数据查询：没结果时不留白，出结果就把空状态撤掉",
+      "P2", ["右半屏在第一次打开时是一大片空白，不知道能问什么、能不能改库",
+             "空状态写死成常驻，查完 SQL 还盖在结果上面"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "pp6kit" / "static" / "query.js").read_text(encoding="utf-8")
+    css = (root / "pp6kit" / "static" / "style.css").read_text(encoding="utf-8")
+
+    assert 'id="qEmpty"' in html, "查询页缺少空状态"
+    assert "还没有查询" in html
+    # 空状态要顺带交代只读，别让人以为能在这里改数据
+    assert "只读执行" in html, "空状态没说明只读"
+
+    assert "function clearEmpty(" in js
+    show = js[js.index("function showSql("):js.index("function renderResult(")]
+    assert "clearEmpty()" in show, "生成出 SQL 后空状态还留着"
+    render = js[js.index("function renderResult("):]
+    assert render[:400].find("clearEmpty()") >= 0, "出结果后空状态还留着"
+
+    assert ".q-empty" in css and "text-align: center" in css
+
+
+@case("WEB47", "webui", "设置页：已保存的 Key / 密码显示成黑点，不再是空白输入框",
+      "P2", ["Key 保存后输入框留空、只在 placeholder 写「留空则沿用」，看着像没配",
+             "改成掩码后如果直接把黑点当值提交，会把库里的 Key 覆盖成「•••」"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "pp6kit" / "static" / "query.js").read_text(encoding="utf-8")
+    css = (root / "pp6kit" / "static" / "style.css").read_text(encoding="utf-8")
+
+    # ① 两个输入框都得是密码类型，否则黑点根本不会出现
+    assert 'id="qKey" type="password"' in html
+    assert 'id="qPass" type="password"' in html
+
+    # ② 掩码是一串黑点，不是留空
+    assert 'const SECRET_DOTS = "•".repeat(' in js
+    assert "function maskSecret(" in js
+    mask = js[js.index("function maskSecret("):js.index("function bindSecretFocus(")]
+    assert "SECRET_DOTS" in mask and 'dataset.masked = "1"' in mask
+
+    # ③ 已保存时走掩码，别退回「只改 placeholder」
+    assert "if (ch.api_key_set) {" in js
+    key_branch = js[js.index("if (ch.api_key_set) {"):js.index("if (ch.api_key_set) {") + 220]
+    assert "maskSecret(Q.get(\"qKey\"), true)" in key_branch
+    assert "maskSecret(Q.get(\"qPass\"), true)" in js
+    assert 'placeholder = "已保存（留空则沿用）"' not in js, "退回留空写法了"
+    assert 'placeholder = "已保存，留空则不修改"' not in js, "退回留空写法了"
+
+    # ④ 掩码只是展示：提交必须当空值，否则会把已存的 Key 覆盖成黑点串
+    assert "function secretValue(" in js
+    assert 'const key = secretValue(Q.get("qKey")).trim();' in js
+    assert "password: secretValue(Q.get(\"qPass\"))," in js
+
+    # ⑤ 聚焦清空、失焦还原；切页面不覆盖用户手输的未保存值
+    assert "function bindSecretFocus(" in js
+    assert '"focus"' in js and '"blur"' in js
+    assert "function canMask(" in js
+    assert "if (db.password_set && canMask(Q.get(\"qPass\")))" in js
+
+    # ⑥ 字号放大让黑点看得清
+    assert '.set-form input[type="password"]' in css

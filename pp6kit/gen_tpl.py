@@ -27,8 +27,11 @@ _FIELD_TYPE = {"number": "number", "datetime": "date", "dic": "select"}
 # 列表列里要打开「跟字段控件一致」的控件类型（见 _mk_col）。
 # 只有下拉/选择器这类「取值要靠控件渲染器」的列才需要；文本、数字、
 # 日期在列表里本来就是原样显示，开了反而多一次没必要的合并查询。
+# select 是级联字典字段在表单里的形态（gen_form._effective_type：级联链上的
+# dictionary 控件出成 select + datasource=dictionary），列表列与它同类型才能
+# 打开这个开关、靠控件的字典渲染器取到名称；漏了它级联列在设计器里就是关的。
 _SAME_CONTROL_TYPES = {"linkdata", "selectObject", "dropSelector",
-                       "dropSelectOrg", "dictionary"}
+                       "dropSelectOrg", "dictionary", "select"}
 
 # 骨架里的按钮文案来自繁体界面的样例（關閉），生成包统一成简体——
 # 不然同一张列表上「下一步」和「關閉」两种字形并存。
@@ -89,6 +92,49 @@ def _link_config(target) -> dict:
     }
 
 
+def _cascade_options(f, ctl) -> dict:
+    """级联字典字段在列表里的 field_options：与表单控件（select）同一套键。
+
+    键集逐键对齐 ``gen_form._dict_cascade_shape`` 的产出口径：列类型必须与
+    表单控件类型一致（都是 select），设计器里「跟字段控件一致」（same）这个
+    开关才打得开，列表才会按字典渲染器取到选项名称而不是存储值。
+    字典 key 仍走 ``f.value_source()``（全局字典 → dict_ref，自定义 → 对象编码_字段编码）。
+    """
+    parent = getattr(ctl, "cascade_parent", "") or ""
+    return {
+        "datasource": "dictionary",
+        "dictionary": f.value_source(),
+        "options_source": "bo_attr",
+        "cascadeEnabled": bool(parent),
+        "cascadeParentCode": parent,
+        "init_linkage": True,
+        "selection": True,
+        "filterable": True,
+        "placeholder": "请选择",
+        "link_config": None,
+        "options": [],
+    }
+
+
+def _cascade_control(ctl, control_form) -> bool:
+    """这个 dic 字段的控件在表单里是「级联下拉」形态吗（→ 列表列也要出 select）。
+
+    只有**级联链上**的字典控件才会被 gen_form 改成 select（子级有 cascade_parent，
+    父级是别人的 cascade_parent）。非级联的字典控件仍是树形「数据字典」控件，
+    列表列继续出 dictionary——两者不能混。
+
+    判定直接复用 ``gen_form._is_cascade_control``：「级联链」的口径只有一处实现，
+    两处各写一遍迟早不一致，而「列表列类型 ≠ 表单控件类型 → same 开关自动关掉」
+    正是本节要修的病根。
+    """
+    if ctl is None:
+        return False
+    from . import gen_form as _gen_form
+
+    return _gen_form._is_cascade_control(
+        ctl, _gen_form._cascade_parent_names(control_form))
+
+
 def _list_type(f, control_form, targets, value_keys=None) -> tuple[str, dict, str]:
     """这一列在列表里用什么控件 + field_options + 显示字段名。
 
@@ -119,7 +165,18 @@ def _list_type(f, control_form, targets, value_keys=None) -> tuple[str, dict, st
                 {"boCode": f.object_type or "", "multiple": False},
                 _display_name(f.resolved_field_name()))
     if f.type_new == "dic":
-        # 字典/选项列：不带 dictionary 就只能显示存储值（如 1/2/3）
+        # 字典/选项列：不带 dictionary 就只能显示存储值（如 1/2/3）。
+        #
+        # 但级联字段在表单里不是「数据字典」控件，而是 select + datasource=dictionary
+        # （见 gen_form._dict_cascade_shape）。以前这里对 dic 一律出 dictionary，
+        # 于是「列表列类型 = dictionary、表单控件类型 = select」——设计器里
+        # 「跟字段控件一致」（same）这个开关一比对就发现不一致，自动关掉，
+        # 列表上显示的是存储值而不是字典名称（2026 用户反馈）。
+        # 控件拿不到时（列表没配控件表单 / 字段不在表单里）退回 dictionary，
+        # 不抛错：列表能在没有表单的包里单独生成。
+        ctl = _control_of(control_form, f)
+        if _cascade_control(ctl, control_form):
+            return "select", _cascade_options(f, ctl), ""
         return "dictionary", {"dictionary": f.value_source()}, ""
     if f.type_new == "user":
         return ("dropSelector",

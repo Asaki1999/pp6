@@ -1456,7 +1456,7 @@ def _():
     assert "NOT LIKE '%测试%'" in sql2, sql2
 
 
-@case("NLQ98", "nlq", "SHOW / DESC / EXPLAIN 是只读的，不该被误杀", "P1",
+@case("NLQ130", "nlq", "SHOW / DESC / EXPLAIN 是只读的，不该被误杀", "P1",
       ["探索真实库靠这三条", "EXPLAIN DELETE 仍然拦住"])
 def _():
     """只读闸放开元数据命令，但不给写语句留后门。

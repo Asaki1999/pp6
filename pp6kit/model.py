@@ -595,7 +595,10 @@ FORM_STYLE = {
         "width": 90,
         "buttonPosition": "topRight",
         "singleLineEdit": True,
-        "withStandardButtons": True,
+        # 原生详情表单（项目详情表单 1.zip / 项目流程详情表单.zip）的
+        # extendAttr.buttons 都是空数组：详情页靠右上角关闭 + 遮罩关闭，
+        # 没有底部「取消 / 保存并继续 / 保存」那一排。
+        "withStandardButtons": False,
     },
     # 展开详情 / 流程详情：手册 pp-drawer-details + 120px + 90%，布局「展开」
     "detail_expand": {
@@ -606,7 +609,8 @@ FORM_STYLE = {
         "width": 90,
         "buttonPosition": "topRight",
         "singleLineEdit": True,
-        "withStandardButtons": True,
+        # 同上：详情类表单不带底部按钮
+        "withStandardButtons": False,
     },
     FORM_CONDITION: {
         "customClass": "",
