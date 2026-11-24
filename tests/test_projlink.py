@@ -2519,6 +2519,12 @@ def _():
     assert got["0_static"]["barsAtTop"] is True, \
         "有页面的选项栏不在导入卡片上方"
     assert got["0_static"]["sameTitle"] is True, "两个页面的标题不一致"
+    assert got["0_static"]["titleNotProjectOnly"] is True, \
+        "关联条标题写死了「项目」：目标还可以是其他业务对象，会让人以为只能关联项目"
+    # 选了「其他业务对象」但还没输名称时，显示名不能回落成「项目」（2026-11-24 用户指出）
+    assert got["8_target_label"] == {
+        "project": "项目", "otherBlank": "其他业务对象",
+        "otherNamed": "合同", "otherResolved": "合同台账"}, got["8_target_label"]
     assert got["0_static"]["sameHint"] is True, "两个页面的说明文案不一致"
     assert got["0_static"]["patchAllLabel"] is True, \
         "存量包页的选项没有和普通统一成「关联」"

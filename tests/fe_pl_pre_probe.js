@@ -327,7 +327,10 @@ function staticChecks() {
       .every((id) => html.indexOf(`id="${id}"`) >= 0),
     barsAtTop: html.indexOf('id="plPreImportBar"') < html.indexOf('id="aiChatLaunch"')
       && html.indexOf('id="plPrePatchBar"') < html.indexOf('id="patchPickZip"'),
-    sameTitle: (html.match(/业务对象关联项目/g) || []).length >= 2,
+    // 两页的标题都只写「业务对象关联」——目标可以是项目，也可以是其他业务对象；
+    // 标题里写死「项目」会让人以为只能关联项目（2026-11-24 用户指出）
+    sameTitle: (html.match(/业务对象关联(?!项目)/g) || []).length >= 2,
+    titleNotProjectOnly: !/<b>业务对象关联项目<\/b>/.test(html),
     // 两页各自带一句说明，且都讲清「关联 / 不关联」分别是什么
     // （2026-11-21：不再用「先选：」当特征串——那只是行文开头，改文案就会误红）
     sameHint: (() => {
@@ -374,7 +377,7 @@ function staticChecks() {
     importDefaultOff: /name="plPreImport" value="off" checked/.test(html),
     workflowDefaultOff: /name="plPreWorkflow" value="off" checked/.test(html),
     patchDefaultKeep: /name="plPrePatch" value="keep" checked/.test(html),
-    step1Numbering: /第 1 步 · 业务对象关联项目/.test(html),
+    step1Numbering: /第 1 步 · 业务对象关联(?!项目)/.test(html),
     // 选项只写状态（关联 / 不关联）；「全部」是多余的，控件本身就是对整份 Excel 批量设置
     saysLinked: /name="plPreImport" value="on">\s*关联<\/label>/.test(html),
     saysUnlinked: /name="plPreImport" value="off" checked>\s*不关联<\/label>/.test(html),
@@ -772,6 +775,23 @@ function scenarioPersist() {
   };
 }
 
+/* 关联目标的显示名：选了「其他业务对象」但还没输名称时不能回落成「项目」——
+ * 提示语、页签标题、十几条 toast 都从 plTargetLabel() 取名（2026-11-24 用户指出）。 */
+function scenarioTargetLabel() {
+  const page = loadApp();
+  const label = () => page.ctx.plTargetLabel();
+  page.st.plPre = "on"; page.st.plTarget = null; page.st.plTargetName = "";
+  page.st.plTargetKind = "project";
+  const project = label();
+  page.st.plTargetKind = "other";
+  const otherBlank = label();
+  page.st.plTargetName = "合同";
+  const otherNamed = label();
+  page.st.plTarget = { name: "合同台账", code: "contract_ledger" };
+  const otherResolved = label();
+  out["8_target_label"] = { project, otherBlank, otherNamed, otherResolved };
+}
+
 async function main() {
   staticChecks();
   await scenarioDefault();
@@ -781,6 +801,7 @@ async function main() {
   await scenarioDiffModal();
   await scenarioPatch();
   scenarioPersist();
+  scenarioTargetLabel();
   console.log(JSON.stringify(out));
 }
 

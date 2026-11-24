@@ -305,7 +305,7 @@
     <!-- P0-4 反解摘要卡片：必须留在 #stepInput 内，inspectZip() 的 finally 会 goStep(1) -->
     <div id="pp6zipInspectCard" hidden></div>
 
-    <!-- 第 1 步 · 业务对象关联项目
+    <!-- 第 1 步 · 业务对象关联
          生成前必须定的开关放在输入卡上方，一眼能看到。对象级选择放在导入前，
          不再导入后弹窗问一遍；两档共享一份状态（普通 / 流程同一档）。
          关联目标可以是「项目」或「其他业务对象」；选其它对象时手输名称，
@@ -314,10 +314,10 @@
       <div class="home-main">
 
         <div class="pl-pre pl-pre-top linkbar" id="plPreImportBar"
-             title="关联=这份 Excel 里每个对象都关联项目；不关联=一个都不关联；导入后不再弹选择框。">
+             title="关联=每个对象都挂到所选业务对象下（项目或其他业务对象）；不关联=一个都不关联；导入后不再弹选择框。">
           <span class="lb-l">
             <span class="lb-ic"><svg class="i"><use href="#i-link"/></svg></span>
-            <b>业务对象关联项目</b><span class="tag key">关键</span>
+            <b>业务对象关联</b><span class="tag key">关键</span>
           </span>
           <span class="pl-pre-opts seg" role="group" aria-label="业务对象关联">
             <label><input type="radio" name="plPreImport" value="off" checked> 不关联</label>
@@ -638,7 +638,7 @@
   <div class="pl-pre linkbar" id="plPrePatchBar">
     <span class="lb-l">
       <span class="lb-ic"><svg class="i"><use href="#i-link"/></svg></span>
-      <b>业务对象关联项目</b>
+      <b>业务对象关联</b>
     </span>
     <span class="pl-pre-opts seg" role="group" aria-label="存量包业务对象关联">
       <label><input type="radio" name="plPrePatch" value="off"> 不关联</label>
@@ -914,7 +914,7 @@
 
 <div class="toast" id="toast" hidden></div>
 
-<!-- 第 1 步（业务对象关联项目）已改成初始页上的 #plPreImportBar
+<!-- 第 1 步（业务对象关联）已改成初始页上的 #plPreImportBar
      两档控件，导入前就定好，导入后不再弹窗问一遍。 -->
 
 <!-- 没连数据库时，「关联」需要一个字段池：让用户导入目标业务对象的 zip。

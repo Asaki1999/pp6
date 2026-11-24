@@ -4173,6 +4173,15 @@ body.v3 .lb-ic {
   background: var(--surface); color: #0958d9;
 }
 body.v3 .lb-target { display: inline-flex; align-items: center; gap: 8px; color: var(--text-2); flex-wrap: wrap; }
+/* 关联目标的选择器与名称输入：类名是 .pl-target（不是原型里的 .lb-target），
+   之前规则写给了 .lb-target，实际一直走旧层的 12.5px 小框，不像个能选的控件。 */
+body.v3 .pl-target select, body.v3 .pl-target input[type="text"] {
+  height: 32px; padding: 0 10px; border: 1px solid #cdd5e1; border-radius: 8px;
+  background: var(--surface); color: var(--text); font-size: 14px;
+}
+body.v3 .pl-target select { font-weight: 600; padding-right: 28px; cursor: pointer; }
+body.v3 .pl-target input[type="text"] { width: 220px; }
+body.v3 .pl-target select:hover, body.v3 .pl-target input[type="text"]:hover { border-color: #b4bfd1; }
 body.v3 .lb-target select, body.v3 .lb-target input[type="text"] {
   height: 30px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 7px;
   background: var(--surface); color: var(--text); font-size: 12.5px;

@@ -101,10 +101,15 @@ function savePref(key, value) {
   }
 }
 
-/* 当前关联目标的显示名（项目 / 手输的业务对象名称）。 */
+/* 当前关联目标的显示名（项目 / 手输的业务对象名称）。
+ * 选了「其他业务对象」但还没输名称时不能回落成「项目」——提示语、页签标题、
+ * 十几条 toast 都从这里取名，回落成项目就等于告诉用户「只能关联项目」（2026-11-24 用户指出）。 */
 function plTargetLabel() {
+  if (state.plTargetKind === "other") {
+    if (state.plTarget && state.plTarget.name) return state.plTarget.name;
+    return state.plTargetName || "其他业务对象";
+  }
   if (state.plTarget && state.plTarget.name) return state.plTarget.name;
-  if (state.plTargetKind === "other" && state.plTargetName) return state.plTargetName;
   return "项目";
 }
 
