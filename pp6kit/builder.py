@@ -497,12 +497,29 @@ def safe_filename(text: str) -> str:
     return _BAD_NAME.sub("_", text).strip("_") or "导入包"
 
 
+_NAME_BYTES = 180
+
+
+def _fit_name(text: str, limit: int = _NAME_BYTES) -> str:
+    """按 **UTF-8 字节** 截断文件名，不切坏中文。
+
+    macOS 的 APFS 对文件名宽松，Linux ext4 的单段上限是 255 字节；
+    对象名一长（SEC06：60 个「项目」）按字符拼出来的包名在 CI 上就是
+    ``[Errno 36] File name too long``——包还没生成就失败了。留 75 字节给
+    「-模块名-日期.zip」。
+    """
+    raw = text.encode("utf-8")
+    if len(raw) <= limit:
+        return text
+    return raw[:limit].decode("utf-8", "ignore").rstrip("-_ .")
+
+
 def package_name(label: str, part: str, stamp: str = "") -> str:
     """统一的包名规则：{业务标签}-{内容}-{日期}.zip。
 
     例：采购申请-导入包-20261110.zip / 采购申请-表单-20261110.zip
     """
-    bits = [safe_filename(label), part]
+    bits = [_fit_name(safe_filename(label)), part]
     if stamp:
         bits.append(stamp)
     return "-".join(bits) + ".zip"
@@ -618,7 +635,7 @@ def _pack_all(out: Path, res: BuildResult, prefix: str, name: str | None = None)
     if not packable:
         return None
     out.mkdir(parents=True, exist_ok=True)
-    target = out / (name or f"{prefix}-整包（全部模块）.zip")
+    target = out / (name or f"{_fit_name(prefix)}-整包（全部模块）.zip")
     sn = 0
     used: set[str] = set()
     # 实际写进去的条目数。**只看 res.artifacts 非空是不够的**：只选「流程」时

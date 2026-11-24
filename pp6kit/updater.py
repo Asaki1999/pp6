@@ -197,7 +197,9 @@ def _payload(release: dict, info: dict, cached: bool = False,
     published = str(release.get("published_at") or release.get("created_at") or "")
     newer, basis = version.is_newer(tag, published, info.get("version", ""),
                                    info.get("builtAt", ""))
-    asset = pick_asset(release, platform_key)
+    # 平台以调用方 / 构建指纹为准：测试会在 Linux 上模拟 darwin 的构建，
+    # 真机两者本来就一致；直接看 sys.platform 会让「模拟平台」失效。
+    asset = pick_asset(release, platform_key or info.get("platform"))
     missing = bool(newer and not asset)
     notes = str(release.get("body") or "")
     if len(notes) > 6000:
