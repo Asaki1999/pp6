@@ -126,6 +126,11 @@ def run(cases, fail_fast: bool) -> tuple[int, int, int]:
             skipped += 1
         except Exception as exc:                       # noqa: BLE001
             detail = str(exc) or exc.__class__.__name__
+            # CI 上只有失败明细、没有本地终端；把最后几帧带进 detail，
+            # 才能看出是哪个 assert（本地复现不了时尤其重要）。
+            tb = traceback.format_exc().strip().splitlines()
+            if tb:
+                detail += "\n" + "\n".join(tb[-4:])
             print(f"  ✗ {c.cid:<{width}} {c.title}")
             for line in detail.splitlines()[:6]:
                 print(f"      {line}")
