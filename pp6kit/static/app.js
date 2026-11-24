@@ -518,6 +518,8 @@ function syncPlTargetUI() {
   if (kind) kind.value = state.plTargetKind;
   const other = $("#plTargetOther");
   if (other) other.hidden = state.plTargetKind !== "other";
+  const src = $("#plProjectSrc");
+  if (src) src.hidden = state.plTargetKind !== "project";
   const input = $("#plTargetName");
   if (input && input.value !== state.plTargetName) input.value = state.plTargetName;
 
@@ -708,6 +710,25 @@ function bindPlTarget() {
     };
   }
   if (check) check.onclick = () => resolvePlTarget();
+  const src = $("#plProjectSrc");
+  if (src) {
+    src.onclick = async () => {
+      const btn = src;
+      btn.disabled = true;
+      try {
+        const st = await projectSnapshotStatus(true);
+        if (st && st.dbConfigured) {
+          toast("已连接数据库，项目字段取自库中；要换来源请先改数据库连接", 7000);
+          return;
+        }
+        await askProjectZip(st || {});
+      } catch (err) {
+        toast(`读取项目字段来源失败：${err.message}`, 7000);
+      } finally {
+        btn.disabled = false;
+      }
+    };
+  }
   syncPlTargetUI();
 }
 
@@ -724,15 +745,9 @@ function bindPlPre() {
       el.onchange = async () => {
         if (!el.checked) return;
         const value = g.allowed.indexOf(el.value) >= 0 ? el.value : g.fallback;
-        // 选「关联」时先确认目标对象可用：项目看项目字段池，其他对象看名称核对。
-        // 用户取消 → 保持原来那档，不要留下一个勾着但没法对齐的状态。
-        if (value === "on" && !(await ensureLinkTarget())) {
-          syncPlPreInputs();
-          toast(state.plTargetKind === "other"
-            ? "关联对象还没核对通过，已保持原来的设置"
-            : "关联项目没生效，已保持原来的设置（未连库时可在弹窗里选「使用随包快照」）");
-          return;
-        }
+        // 点「关联」只切档，不做任何弹窗：目标对象（项目 / 其他业务对象）还没选，
+        // 上来就弹「导入项目 zip」会把人锁在项目这条路里（2026-11-24 用户反馈）。
+        // 真正的校验在解析、出包前由 ensureLinkTarget() 兜住。
         if (g.patch) {
           state.plPrePatch = value;
           savePref(g.key, value);
@@ -1205,6 +1220,15 @@ async function ensureProjectSnapshot() {
     if (!state.plDbHintShown) {
       state.plDbHintShown = true;
       toast("已连接数据库，项目字段取自库中，无需再选项目文件", 6000);
+    }
+    return true;
+  }
+  // 未连库但随包快照字段够用：直接用它继续，不弹窗打断。
+  // 想完整对齐的用户可以从「项目字段来源」主动导入项目 zip。
+  if (projectSnapshotUsable(st)) {
+    if (!state.plDbHintShown) {
+      state.plDbHintShown = true;
+      toast(`未连数据库，项目字段用随包快照（${st.fieldCount} 个字段）；要完整对齐点「项目字段来源」`, 8000);
     }
     return true;
   }

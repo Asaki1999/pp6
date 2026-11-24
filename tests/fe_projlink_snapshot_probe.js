@@ -151,7 +151,10 @@ async function openModalWith(status) {
   q("#psSub").textContent = "";
   q("#psLead2").innerHTML = "";
   ctx.fetch = async () => ({ ok: true, json: async () => status });
-  const pending = ctx.ensureProjectSnapshot();
+  // 直接调 askProjectZip：ensureProjectSnapshot 在「随包快照够用」时会静默放行，
+  // 不再打开弹窗（2026-11-24 用户反馈「点关联就跳项目弹窗」）。弹窗自身的
+  // 文案/主次按钮/处理器仍要逐条验证，所以从这里进。
+  const pending = ctx.askProjectZip(status);
   for (let i = 0; i < 40 && q("#psMask").hidden; i += 1) await flush();
   return { pending };
 }
@@ -278,13 +281,51 @@ async function main() {
   await callWithDb();
   out.G_afterNewFile = toasts.slice();
 
-  // 没连库：仍走原来的选择弹窗，且不会被连库提示污染
+  /* 没连库、随包快照够用：不再弹窗（用户点「关联」不该被项目 zip 拦住），
+   * 用一条非阻塞提示说清字段来源，并指向「项目字段来源」入口。 */
+  const NO_DB_OK = {
+    ok: true, dbConfigured: false, source: "package_snapshot",
+    sourceLabel: "随包快照", fieldCount: 51, status: "ok",
+  };
+  async function callNoDb(status) {
+    resetSnapshotState();
+    st.plDbHintShown = false;
+    q("#psMask").hidden = true;
+    ctx.fetch = async () => ({ ok: true, json: async () => status });
+    return await ctx.ensureProjectSnapshot();
+  }
+
   toasts.length = 0;
-  const noDbPending = (await openModalWith(USABLE)).pending;
+  out.G_noDbResolve = await callNoDb(NO_DB_OK);
   out.G_noDbMaskHidden = q("#psMask").hidden;
-  if (q("#psCancel").onclick) q("#psCancel").onclick();
-  out.G_noDbResolve = await noDbPending;
   out.G_noDbToasts = toasts.slice();
+  out.G_noDbFlag = st.plDbHintShown;
+
+  // 同一份文件再问一次：不重复提示
+  toasts.length = 0;
+  resetSnapshotState();
+  q("#psMask").hidden = true;
+  ctx.fetch = async () => ({ ok: true, json: async () => NO_DB_OK });
+  await ctx.ensureProjectSnapshot();
+  out.G_noDbAgainToasts = toasts.slice();
+
+  // 快照不可用：仍然必须拦住（这里才该弹窗，取消即不继续）
+  const NO_DB_BAD = {
+    ok: true, dbConfigured: false, source: "unavailable",
+    fieldCount: 0, status: "unavailable",
+  };
+  const badPending = (await (async () => {
+    resetSnapshotState();
+    st.plDbHintShown = false;
+    q("#psMask").hidden = true;
+    ctx.fetch = async () => ({ ok: true, json: async () => NO_DB_BAD });
+    const pending = ctx.ensureProjectSnapshot();
+    for (let i = 0; i < 40 && q("#psMask").hidden; i += 1) await flush();
+    return { pending };
+  })()).pending;
+  out.G_noDbUnavailable = { maskHidden: q("#psMask").hidden, title: q("#psTitle").textContent };
+  if (q("#psCancel").onclick) q("#psCancel").onclick();
+  out.G_noDbUnavailableResolve = await badPending;
 
   // 已有上传 token：快速返回，不读状态接口、不提示
   resetSnapshotState();

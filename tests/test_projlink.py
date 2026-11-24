@@ -3722,11 +3722,12 @@ def _():
     assert out["F_offSilent"] is True, "关掉关联时不该提示"
 
 
-@case("PL86", "projlink", "已连数据库：字段来源改成一条非阻塞提示，一份文件只提示一次",
+@case("PL86", "projlink", "字段来源提示：连库/没连库都只提示一次，没连库不再弹窗",
       "P0", ["dbConfigured=true → resolve true 且不弹 #psMask",
              "toast 同时点明「已连接数据库」「字段取自库中」「无需再选项目文件」",
-             "同一份文件再调用不再提示；换文件才重新提示一次",
-             "没连库仍走原弹窗；已有 token 的快速返回不提示"])
+             "没连库但随包快照够用 → 不弹窗，提示指向「项目字段来源」",
+             "随包快照不可用 → 仍然弹窗拦住，取消即不继续",
+             "已有 token 的快速返回不提示"])
 def _():
     """用户把「连库时静默跳过 zip 弹窗」误认成弹窗被删了。
     这次不恢复强制弹窗（用户要求不打扰），改成可见但不挡路的 toast。
@@ -3748,8 +3749,42 @@ def _():
     assert len(out["G_afterNewFile"]) == 1, "换文件后提示没有重新出现"
     assert len(out["G_afterNewFile"][0]) <= 40, out["G_afterNewFile"]
 
-    assert out["G_noDbMaskHidden"] is False, "没连库时不弹窗了（路径被改坏）"
+    # 没连库但随包快照够用：不弹窗、直接继续（用户反馈「点关联就跳项目弹窗」）
     assert out["G_noDbResolve"] is True, "没连库时随包快照路径被改坏"
-    assert out["G_noDbToasts"] == [], f"没连库时混进了连库提示：{out['G_noDbToasts']}"
+    assert out["G_noDbMaskHidden"] is True, "没连库又弹窗了（用户反馈的就是这个）"
+    assert len(out["G_noDbToasts"]) == 1, out["G_noDbToasts"]
+    msg = out["G_noDbToasts"][0]
+    assert "未连数据库" in msg and "随包快照" in msg and "项目字段来源" in msg, msg
+    assert out["G_noDbFlag"] is True, "没连库的提示标志没记下（会刷屏）"
+    assert out["G_noDbAgainToasts"] == [], "同一份文件里提示刷屏了"
+    # 随包快照不可用：这时才该弹窗拦住，取消就不继续
+    assert out["G_noDbUnavailable"]["maskHidden"] is False, "快照不可用时没拦住"
+    assert out["G_noDbUnavailableResolve"] is False, out["G_noDbUnavailableResolve"]
     assert out["G_tokenResolve"] is True, "已有 token 的快速返回被改坏"
     assert out["G_tokenToasts"] == [], "已有 token 时不该提示"
+
+
+@case("PL87", "projlink", "点「关联」只切档不弹窗；项目字段来源改成显式入口", "P0",
+      ["bindPlPre 切档不再调 ensureLinkTarget（弹窗就是从那儿来的）",
+       "目标行有 #plProjectSrc，只在目标为项目时显示",
+       "ensureProjectSnapshot 先用随包快照，不可用才弹窗"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    app = (root / "pp6kit" / "static" / "app.js").read_text(encoding="utf-8")
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+
+    start = app.index("function bindPlPre()")
+    seg = app[start:app.index("function renderAll()", start)]
+    assert "await ensureLinkTarget()" not in seg, \
+        "点关联又去做目标校验，会把项目 zip 弹窗带回来"
+
+    assert 'id="plProjectSrc"' in html, "目标行没有「项目字段来源」入口"
+    assert 'src.hidden = state.plTargetKind !== "project"' in app, "入口没有按目标类型显示"
+
+    start = app.index("async function ensureProjectSnapshot()")
+    seg = app[start:app.index("\n}\n", start)]
+    assert "projectSnapshotUsable(st)" in seg, "没连库时没有先用随包快照"
+    assert seg.index("projectSnapshotUsable(st)") < seg.index("askProjectZip(st)"), \
+        "随包快照可用时不该弹窗"

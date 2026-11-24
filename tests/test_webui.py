@@ -547,11 +547,11 @@ def _():
     assert ".ai-choice-pop" in css and ".ai-choice-tag" in css
 
 
-@case("WEB29", "webui", "未连库时选「关联项目」：弹窗导入项目 zip，token 随决策头发回", "P0",
+@case("WEB29", "webui", "未连库时关联项目：zip 入口与快照 token 仍在，但点关联不再弹窗", "P0",
       ["没配数据库时读不到 pp_project 字段，关联项目等于空转",
        "弹窗要能选 zip、上传到 /api/project-snapshot，拿到 token",
        "token 要进 X-Project-Link.snapshot，parse/build 用同一份快照",
-       "用户取消要回退开关，不能留下勾着但没快照的状态"])
+       "顶栏切「关联」只切档（弹窗会把人锁死在项目这条路）；单对象开关仍先确保目标"])
 def _():
     from pathlib import Path
 
@@ -578,9 +578,13 @@ def _():
     assert "function ensureLinkTarget(" in js
     assert 'if (state.plTargetKind === "project") return await ensureProjectSnapshot();' in js
     assert '/api/link-target' in js, "其它业务对象没接口可调"
-    assert 'value === "on" && !(await ensureLinkTarget())' in js
+    # 2026-11-24：顶栏切「关联」只切档，不再用 ensureLinkTarget 弹窗拦人
+    #（用户点关联就被项目 zip 挡住，连「其他业务对象」都选不了）。
+    start = js.index("function bindPlPre()")
+    seg = js[start:js.index("function renderAll()", start)]
+    assert "await ensureLinkTarget()" not in seg, "顶栏切档又去做目标校验了"
+    # 对象卡片上的单对象开关仍先确保目标就绪：那时文件已解析，弹窗是有上下文的
     assert "checked && !(await ensureLinkTarget())" in js
-    # 取消要回退勾选
     assert "syncPlPreInputs();" in js
 
 
