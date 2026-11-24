@@ -3172,7 +3172,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = self.path.split("?")[0]
         if path in ("/", "/index.html"):
-            self._send(200, (STATIC / "index.html").read_bytes(), "text/html; charset=utf-8")
+            # 首页同样不能留缓存：它引用的 JS/CSS 名字是固定的，缓存住首页
+            # 就会一直加载旧脚本（改完界面「看不到变化」的另一个来源）。
+            self._send(200, (STATIC / "index.html").read_bytes(),
+                       "text/html; charset=utf-8",
+                       extra={"Cache-Control": "no-cache, must-revalidate"})
         elif path.startswith("/static/"):
             name = path[len("/static/"):]
             target = (STATIC / name).resolve()

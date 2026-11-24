@@ -1456,3 +1456,23 @@ def _():
         assert f'name="{field}"' in env, f"环境表单丢了字段 {field}"
     for button in ("environmentNew", "environmentDelete"):
         assert f'id="{button}"' in env, f"环境卡丢了按钮 {button}"
+
+
+@case("WEB50", "webui", "首页与静态资源都不留缓存；打开浏览器带构建指纹", "P1",
+      ["index.html 固定文件名，缓存住就会一直加载旧脚本",
+       "static 仍 no-cache", "启动地址带 ?v=<提交>，旧标签不会被复用成旧页面"])
+def _():
+    status, headers, _ = req("/")
+    assert status == 200, status
+    assert "no-cache" in (headers.get("cache-control") or ""), headers.get("cache-control")
+
+    status, headers, _ = req("/static/style.css")
+    assert status == 200, status
+    assert "no-cache" in (headers.get("cache-control") or ""), headers.get("cache-control")
+
+    from pathlib import Path
+
+    app = (Path(__file__).resolve().parents[1] / "pp6kit" / "app.py").read_text(encoding="utf-8")
+    assert "def _browser_url(" in app
+    assert "v={quote(str(tag))}" in app, "浏览器地址没有带上构建指纹"
+    assert app.count("_browser_url(") >= 3, "启动与复用两条路径都要带指纹"

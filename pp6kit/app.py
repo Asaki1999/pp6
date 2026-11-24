@@ -25,6 +25,29 @@ from . import applog, instance
 APP_NAME = "PP6 Studio"
 DEFAULT_PORT = instance.DEFAULT_PORT
 
+
+def _browser_url(url: str) -> str:
+    """给浏览器一个带构建指纹的地址。
+
+    为什么：接管旧实例后仍打开同一个 `http://127.0.0.1:8770/`，Chrome / Edge
+    会把**已经开着的那个标签**切到前面而不是重新导航，用户看到的还是旧页面，
+    以为「新版没生效」。换成带 `?v=<提交>` 的地址就是一次真正的导航。
+    """
+    from urllib.parse import quote
+
+    try:
+        from . import version
+
+        info = version.build_info()
+        tag = info.get("commit") or info.get("builtAt") or info.get("version") or ""
+    except Exception:
+        tag = ""
+    if not tag:
+        return url
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}v={quote(str(tag))}"
+
+
 # 窗口迟迟不加载完就把同一地址丢给浏览器，至少能用
 LOAD_GRACE_SECONDS = 20
 
@@ -82,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{APP_NAME} 已在运行: {claim.url}", flush=True)
             if mode == "browser":
                 try:
-                    webbrowser.open(claim.url)
+                    webbrowser.open(_browser_url(claim.url))
                 except Exception:
                     log.warning("打开已有实例的页面失败", exc_info=True)
             return 0
@@ -297,8 +320,11 @@ def _run_in_browser(url: str, httpd) -> int:
     log.info("浏览器模式已启动: %s", url)
     print(f"{APP_NAME} 已启动: {url}", flush=True)
     opened = False
+    target = _browser_url(url)
+    if target != url:
+        log.info("浏览器地址带构建指纹，避免复用旧标签页: %s", target)
     try:
-        opened = webbrowser.open(url)
+        opened = webbrowser.open(target)
     except Exception:
         log.warning("调用默认浏览器失败", exc_info=True)
 
