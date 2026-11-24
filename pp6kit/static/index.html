@@ -4,10 +4,32 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>新建业务配置 · PP6 Studio</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Ctext x='16' y='23' font-size='20' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle'%3EP%3C/text%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231677ff'/%3E%3Ctext x='16' y='23' font-size='20' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle'%3EP%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body class="v3">
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-gen" viewBox="0 0 24 24"><path d="M12 3v11m0 0 4-4m-4 4-4-4"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></symbol>
+  <symbol id="i-flow" viewBox="0 0 24 24"><circle cx="5" cy="6" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="12" cy="18" r="2.2"/><path d="M7.2 6h9.6M6.2 8l4.6 8M17.8 8l-4.6 8"/></symbol>
+  <symbol id="i-patch" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M12 8v8M8 12h8"/></symbol>
+  <symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6M4.5 11.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6"/></symbol>
+  <symbol id="i-set" viewBox="0 0 24 24"><path d="M4 7h8M17 7h3M4 17h3M12 17h8"/><circle cx="14.5" cy="7" r="2.5"/><circle cx="9.5" cy="17" r="2.5"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5"/></symbol>
+  <symbol id="i-clip" viewBox="0 0 24 24"><path d="M21.4 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></symbol>
+  <symbol id="i-checkc" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4 3 19h18z"/><path d="M12 10v4M12 16.5h.01"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+  <symbol id="i-sheet" viewBox="0 0 24 24"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+</svg>
 
 <div class="app-shell">
 
@@ -19,58 +41,43 @@
         <strong>PP6 <em>Studio</em></strong>
         <small>配置同步工作台</small>
       </div>
-      <span class="side-ver">V6</span>
     </div>
 
     <div class="side-scroll">
-      <div class="side-label">工作区</div>
-      <nav class="modes" aria-label="工作区导航">
+      <div class="side-label">生成</div>
+      <nav class="modes" aria-label="生成">
         <button class="mode active" data-mode="import" title="新建业务配置 (1)：普通业务对象 + 表单/列表/数据集，出一个同步包">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 3v11m0 0 4-4m-4 4-4-4"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
-          </svg>
-          <span class="mode-label">新建业务配置</span><kbd>1</kbd>
+          <svg class="i"><use href="#i-gen"/></svg>
+          <span class="mode-label">新建业务配置</span>
         </button>
         <button class="mode" data-mode="workflow" title="新建流程配置 (2)：新建业务配置同一套操作；导出 zip + 固定 开始-审核-通过 XML">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="5" cy="6" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="12" cy="18" r="2.2"/>
-            <path d="M7.2 6h9.6"/><path d="M6.2 8 10.8 16"/><path d="M17.8 8 13.2 16"/>
-          </svg>
-          <span class="mode-label">新建流程配置</span><kbd>2</kbd>
+          <svg class="i"><use href="#i-flow"/></svg>
+          <span class="mode-label">新建流程配置</span>
         </button>
         <!-- 存量包修订：暂时隐藏入口。恢复时把 query.js 里 PP6_FEATURES.patch 置 true 即可，
              本行的 hidden 由 applyFeatureFlags() 负责去掉；面板与后端接口都还在。 -->
         <button class="mode" data-mode="patch" data-feature="patch" hidden
                 title="存量包修订 (3)：在已有 zip 上加字段 / 改字段名称">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="3" y="3" width="18" height="18" rx="3"/><path d="M12 8v8M8 12h8"/>
-          </svg>
-          <span class="mode-label">存量包修订</span><kbd>3</kbd>
-        </button>
-        <button class="mode" data-mode="query" title="数据查询 (4)：用一句话查库">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6"/><path d="M4.5 11.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6"/>
-          </svg>
-          <span class="mode-label">数据查询</span><kbd>4</kbd>
-        </button>
-        <button class="mode" data-mode="settings" title="系统设置 (5)：大模型、数据库连接与本地配置">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M4 7h8M17 7h3M4 17h3M12 17h8"/><circle cx="14.5" cy="7" r="2.5"/><circle cx="9.5" cy="17" r="2.5"/>
-          </svg>
-          <span class="mode-label">系统设置<span class="ai-dot" id="aiDot"></span><span class="ai-dot up" id="updateDot" hidden></span></span><kbd>5</kbd>
+          <svg class="i"><use href="#i-patch"/></svg>
+          <span class="mode-label">存量包修订</span>
         </button>
       </nav>
 
-      <div class="side-label side-label-2">快捷键</div>
-      <div class="side-keys">
-        <div id="keysModes"><kbd>1</kbd>–<kbd>5</kbd><span>切换工作区</span></div>
-        <div><kbd>⌘K</kbd><span>回到生成页</span></div>
-      </div>
+      <div class="side-label side-label-2">验证</div>
+      <nav class="modes" aria-label="验证">
+        <button class="mode" data-mode="query" title="数据查询 (4)：用一句话查库，只读执行">
+          <svg class="i"><use href="#i-db"/></svg>
+          <span class="mode-label">数据查询</span>
+        </button>
+      </nav>
     </div>
 
     <div class="side-foot">
+      <button class="mode mode-foot" data-mode="settings" title="系统设置 (5)：大模型、数据库连接与本地配置">
+        <svg class="i"><use href="#i-set"/></svg>
+        <span class="mode-label">系统设置<span class="ai-dot" id="aiDot"></span><span class="ai-dot up" id="updateDot" hidden></span></span>
+      </button>
       <div class="side-env"><span class="env-dot"></span><span>本地运行 · 数据不出本机</span></div>
-      <div class="side-foot-sub">PowerProject V6 配置同步工作台</div>
     </div>
   </aside>
 
@@ -81,32 +88,32 @@
       <div class="ctx">
         <div class="ctx-row">
           <h2 class="ctx-title" id="ctxTitle">新建业务配置</h2>
-          <span class="ctx-desc" id="ctxDesc">普通业务对象 + 表单/列表/数据集，出一个同步包；流程对象看「新建流程配置」</span>
+          <span class="ctx-desc" id="ctxDesc">说需求或导入规格表，生成业务对象、表单与列表</span>
         </div>
       </div>
       <div class="top-actions">
-        <span class="ai-pill" id="ctxAiPill" title="大模型配置状态">
+        <button class="ai-pill" id="ctxAiPill" type="button" title="大模型配置状态，点击打开设置">
+          <svg class="i sm"><use href="#i-spark"/></svg>
           <span class="ai-dot" id="ctxAiDot"></span><span id="ctxAiText">AI 未配置</span>
-        </span>
+        </button>
         <button class="btn ghost" id="btnInspect" data-feature="inspect" hidden>反解现有导出包</button>
         <input type="file" id="inspectInput" accept=".zip" hidden>
+        <button class="iconbtn" id="btnHelp" type="button" aria-label="快捷键" aria-expanded="false">?</button>
+        <div class="pop" id="helpPop" hidden>
+          <h4>快捷键</h4>
+          <div class="pop-row" id="keysModes"><kbd>1</kbd>–<kbd>5</kbd><span>切换工作区</span></div>
+          <div class="pop-row"><kbd>⌘ K</kbd><span>回到生成页</span></div>
+          <div class="pop-row"><kbd>Enter</kbd><span>发送，<kbd>Shift</kbd> + <kbd>Enter</kbd> 换行</span></div>
+          <div class="pop-row"><kbd>⌘ Enter</kbd><span>执行查询</span></div>
+        </div>
       </div>
     </header>
 
     <div class="workspace" id="workspace">
-    <details class="card" id="environmentPanel"><summary>环境档案</summary></details>
-    <div id="historyWarning" role="alert" hidden></div>
-    <details class="card" id="taskHistory">
-      <summary>实施任务记录</summary>
-      <p class="sub">成功出包后自动保存在本机 ~/.pp6kit/history；最近 100 条。可取回原输入继续修改，实际出包参数见记录文件，重新导入时请核对页面设置。</p>
-      <button class="btn ghost sm" id="refreshHistory">刷新记录</button>
-      <div id="historyItems" aria-live="polite"></div>
-    </details>
-
 
 <main id="mode-settings" hidden>
-  <div class="set-layout">
-    <aside class="set-nav">
+  <div class="set-wrap">
+    <aside class="set-nav set-tabs" aria-label="设置分区">
       <button class="set-tab active" data-set="llm">大模型</button>
       <button class="set-tab" data-set="db">数据库连接</button>
       <button class="set-tab" data-set="about">关于<span class="ai-dot up" id="tabUpdateDot" hidden></span></button>
@@ -122,6 +129,7 @@
           </div>
           <span class="set-status" id="setLlmStatus">未配置</span>
         </div>
+        <div class="divider"></div>
 
         <div class="set-body">
           <div class="q-saved" id="qLlmSaved" hidden>
@@ -130,36 +138,49 @@
             <button class="link-btn" id="qLlmForget">清除</button>
           </div>
 
-          <div class="q-form set-form">
-            <label>平台
-              <select id="qProvider">
-                <option value="">选择平台后自动填充</option>
-              </select>
-            </label>
-            <div class="q-hint" id="qProvHint" hidden></div>
-
-            <label>接口地址<input id="qBase" placeholder="https://api.deepseek.com/v1"></label>
-            <label>API Key<input id="qKey" type="password" placeholder="粘贴平台的 Key（sk-...）"></label>
-            <div class="q-hint" id="qKeyNote">Key 仅保存在本机 <code>~/.pp6kit/nlq.json</code>，不随安装包或仓库分发；更换电脑需重新填写。</div>
-            <label>模型
-              <select id="qModelPick" hidden></select>
-              <input id="qModel" placeholder="glm-4.7-flash">
-            </label>
-
-            <label>全局指令（可选）
-              <textarea id="qInstr" rows="3" placeholder="例：金额一律按万元显示；排除名称含「测试」的项目；日期条件用 create_time_"></textarea>
-            </label>
-            <div class="q-hint">每次生成都会附带此规则；与默认规则冲突时以此为准，留空则不注入。</div>
-
-            <div class="q-row">
-              <button class="btn primary" id="qSaveLlm">保存并测试</button>
+          <div class="q-form set-form v3-form">
+            <div class="frow">
+              <label for="qProvider">平台</label>
+              <div class="fctl">
+                <select id="qProvider">
+                  <option value="">选择平台后自动填充</option>
+                </select>
+              </div>
+              <div class="help" id="qProvHint" hidden></div>
             </div>
-            <div class="q-hint" id="qLlmStatus" hidden></div>
-          </div>
 
-          <div class="set-note">
-            <strong>未配置时仍可使用：</strong>按模板手工填写 Excel；数据查询可使用本地规则。
-            配置后可使用「一句话生成业务对象」与 AI 兜底查询。
+            <div class="frow">
+              <label for="qBase">接口地址</label>
+              <div class="fctl"><input id="qBase" placeholder="https://api.deepseek.com/v1"></div>
+              <div class="help"></div>
+            </div>
+
+            <div class="frow">
+              <label for="qKey">API Key</label>
+              <div class="fctl"><input id="qKey" type="password" placeholder="粘贴平台的 Key（sk-...）"></div>
+              <div class="help" id="qKeyNote">仅保存在本机 <code>~/.pp6kit/nlq.json</code>，不随安装包分发。</div>
+            </div>
+
+            <div class="frow">
+              <label for="qModel">模型</label>
+              <div class="fctl">
+                <select id="qModelPick" hidden></select>
+                <input id="qModel" placeholder="glm-4.7-flash">
+              </div>
+              <div class="help"></div>
+            </div>
+
+            <div class="frow">
+              <label for="qInstr">全局指令</label>
+              <div class="fctl"><textarea id="qInstr" rows="3" placeholder="例：金额一律按万元显示；排除名称含「测试」的项目；日期条件用 create_time_"></textarea></div>
+              <div class="help">每次生成都会附带此规则；与默认规则冲突时以此为准，留空则不注入。</div>
+            </div>
+
+            <div class="full btnrow">
+              <button class="btn primary" id="qSaveLlm">保存并测试</button>
+              <span class="hint">未配置时仍可手工填写 Excel，数据查询可用本地规则</span>
+            </div>
+            <div class="q-hint full" id="qLlmStatus" hidden></div>
           </div>
         </div>
       </div>
@@ -169,35 +190,49 @@
         <div class="card-head">
           <div>
             <h3>数据库连接</h3>
-            <div class="sub">数据查询需要；填写后点击「连接并读取结构」。</div>
+            <div class="sub">数据查询需要；连接后为只读会话，本工具不提供写入入口。</div>
           </div>
         </div>
+        <div class="divider"></div>
         <div class="set-body">
-          <div class="q-form set-form">
-            <label>主机<input id="qHost" placeholder="127.0.0.1"></label>
-            <label>端口<input id="qPort" placeholder="3306"></label>
-            <label>用户<input id="qUser" placeholder="root"></label>
-            <label>密码<input id="qPass" type="password" placeholder="留空则不修改"></label>
-            <label>数据库<input id="qDb" placeholder="powerproject6"></label>
-            <div class="q-row">
-              <button class="btn primary" id="qTest">连接并读取结构</button>
+          <div class="q-form set-form v3-form form-2">
+            <div class="frow frow-2">
+              <label for="qHost">主机</label>
+              <div class="fctl"><input id="qHost" placeholder="127.0.0.1"></div>
+              <label for="qPort">端口</label>
+              <div class="fctl"><input id="qPort" placeholder="3306"></div>
+            </div>
+            <div class="frow frow-2">
+              <label for="qUser">用户</label>
+              <div class="fctl"><input id="qUser" placeholder="root"></div>
+              <label for="qPass">密码</label>
+              <div class="fctl"><input id="qPass" type="password" placeholder="留空则不修改"></div>
+            </div>
+            <div class="frow frow-2">
+              <label for="qDb">数据库</label>
+              <div class="fctl"><input id="qDb" placeholder="powerproject6"></div>
             </div>
           </div>
           <div class="q-stats set-stats" id="qStats" hidden></div>
+        </div>
+        <div class="foot">
+          <span class="hint">连接后为只读会话</span><span class="grow"></span>
+          <button class="btn primary" id="qTest">连接并读取结构</button>
         </div>
       </div>
 
       <!-- 关于 -->
       <div class="card" data-set-panel="about" hidden>
         <div class="card-head"><div><h3>关于</h3><div class="sub">PP6 Studio · 配置同步工作台</div></div></div>
+        <div class="divider"></div>
         <div class="set-body">
-          <div class="set-kv">
-            <div><span>产品</span><b>PP6 Studio / PowerProject V6</b></div>
-            <div><span>版本</span><b id="aboutVersion">读取中</b></div>
-            <div><span>构建</span><b id="aboutBuild">—</b></div>
-            <div><span id="aboutModeLabel">四个工作区</span><b id="aboutModes">新建业务配置 · 新建流程配置 · 数据查询 · 系统设置</b></div>
-            <div><span>共用能力</span><b>大模型只配一次</b></div>
-            <div><span>配置位置</span><b><code>~/.pp6kit/nlq.json</code></b></div>
+          <div class="set-kv about">
+            <span>产品</span><b>PP6 Studio / PowerProject V6</b>
+            <span>版本</span><b class="num" id="aboutVersion">读取中</b>
+            <span>构建</span><b class="num" id="aboutBuild">—</b>
+            <span id="aboutModeLabel">四个工作区</span><b id="aboutModes">新建业务配置 · 新建流程配置 · 数据查询 · 系统设置</b>
+            <span>共用能力</span><b>大模型只配一次</b>
+            <span>配置位置</span><b><code>~/.pp6kit/nlq.json</code></b>
           </div>
 
           <!-- 升级：检查 → 说明 → 确认 → 下载替换重启，一条路走完 -->
@@ -245,187 +280,206 @@
 
 <main id="mode-import">
   <!-- 步骤条：只有三步，任何时候都能看到自己在哪 -->
-  <nav class="steps" id="steps">
-    <div class="step active" data-step="1"><b>1</b><span>描述需求</span></div>
-    <div class="step-line"></div>
-    <div class="step" data-step="2"><b>2</b><span>核对字段</span></div>
-    <div class="step-line"></div>
-    <div class="step" data-step="3"><b>3</b><span>下载导入包</span></div>
+  <nav class="steps" id="steps" aria-label="步骤">
+    <button class="step active" data-step="1" title="描述需求"><b>1</b><span>描述需求</span></button>
+    <span class="step-line"></span>
+    <button class="step" data-step="2" title="核对字段"><b>2</b><span>核对字段</span></button>
+    <span class="step-line"></span>
+    <button class="step" data-step="3" title="下载导入包"><b>3</b><span>下载导入包</span></button>
+    <span class="steps-spacer"></span>
   </nav>
 
   <!-- 新建流程配置 = 新建业务配置的同一套操作，仅导出时多给一份固定三步 XML -->
-  <div class="pl-pre" id="flowModeBar" hidden>
-    <b>新建流程配置</b>
-    <span class="sub">操作与新建业务配置一致；导入包包含流程对象，并附固定三步流程 XML（开始 › 审核 › 通过）。</span>
+  <div class="flow-note" id="flowModeBar" hidden>
+    <svg class="i"><use href="#i-flow"/></svg><b>流程包</b>
+    <span>导入包包含流程对象，另附固定三步流程</span>
+    <span class="flowchips"><i>开始</i><s>›</s><i>审核</i><s>›</s><i>通过</i></span>
   </div>
+
+  <!-- 出包时如果任务记录写盘失败，这条要跨步骤可见：放在 stepInput 外，
+       否则用户已经在第 3 步，看不到藏在第 1 步里的警告。 -->
+  <div id="historyWarning" role="alert" hidden></div>
 
   <!-- ========== 第 1 步：对话即入口，说完就开始生成 ========== -->
   <section id="stepInput">
     <!-- P0-4 反解摘要卡片：必须留在 #stepInput 内，inspectZip() 的 finally 会 goStep(1) -->
     <div id="pp6zipInspectCard" hidden></div>
 
-    <!-- 2026-11-21：入口不再「先选后展开」。首屏就是输入框，少一次点击；
-         文件是同级入口（下面那张紧凑卡片），AI 读文件与标准模板解析分开写清楚。
-         业务对象关联挪到右栏，和「会生成什么 / 导入顺序」一起当上下文，
-         不再压在输入框上面把首屏挤成一长条。 -->
-    <!-- 生成前必须定的开关：放在输入卡**上方**，一眼能看到，不能藏进右栏或折叠线以下。
-         对象级选择放在导入前，不再导入后弹窗问一遍；两档共享一份状态
-         （普通 / 流程两个菜单同一档），存 localStorage。
+    <!-- 第 1 步 · 业务对象关联项目
+         生成前必须定的开关放在输入卡上方，一眼能看到。对象级选择放在导入前，
+         不再导入后弹窗问一遍；两档共享一份状态（普通 / 流程同一档）。
          关联目标可以是「项目」或「其他业务对象」；选其它对象时手输名称，
          连库走精确核对，没库则上传该对象的 zip。 -->
-    <div class="pl-pre pl-pre-top" id="plPreImportBar">
-      <b>业务对象关联</b>
-      <div class="pl-pre-opts">
-        <label><input type="radio" name="plPreImport" value="off" checked> 不关联</label>
-        <label><input type="radio" name="plPreImport" value="on"> 关联</label>
-      </div>
-      <span class="pl-target" id="plTargetBox" hidden>
-        <select id="plTargetKind" title="关联到哪个业务对象">
-          <option value="project">项目</option>
-          <option value="other">其他业务对象</option>
-        </select>
-        <span class="pl-target-other" id="plTargetOther" hidden>
-          <input type="text" id="plTargetName" placeholder="业务对象名称，如 合同"
-                 autocomplete="off" spellcheck="false">
-          <button type="button" class="btn ghost sm" id="plTargetCheck">核对</button>
-        </span>
-        <span class="pl-target-ok" id="plTargetInfo" hidden></span>
-      </span>
-      <span class="sub" id="plPreHint">关联：生成对象挂到所选业务对象下，并对齐同名字段；不关联：各自独立生成。</span>
-    </div>
+    <div class="home">
+      <div class="home-main">
 
-    <div class="entry-grid">
-      <div class="entry-main" id="entryPanels">
-
-    <div id="entryAi">
-    <section class="ai-box ai-chat-launch" id="aiChatLaunch">
-      <div class="ai-chat-head">
-        <h3>描述要生成的业务对象</h3>
-        <button class="link" id="aiChatClear1">清空对话</button>
-      </div>
-      <div class="sub chat-launch-sub">
-        输入业务需求，自动生成业务对象、字段、表单与列表；可继续对话调整，确认后出包。
-      </div>
-
-      <div class="ai-chat-log" id="aiChatLog1"></div>
-
-      <div class="ai-chat-input">
-        <textarea id="aiChatText1" rows="3"
-          placeholder="例：采购申请单，包含申请单号、申请人、所属项目、物品、数量、单价、总金额、期望到货日期。"></textarea>
-        <div class="ai-chat-foot">
-          <span class="sub" id="aiChatHint1">Enter 发送，Shift+Enter 换行</span>
-          <div class="ai-btns">
-            <button class="btn ghost" id="btnPickSheet" title="从 Excel / PDF / Word 提取内容并识别字段">用文件生成</button>
-            <button class="btn primary" id="aiChatSend1">开始生成</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="ai-chat-quick">
-        <span class="sub">常用：</span>
-        <button class="chip-btn" data-q="把必填字段都标上">补必填</button>
-        <button class="chip-btn" data-q="字段太多，合并或删掉重复的">精简字段</button>
-        <button class="chip-btn" data-q="按业务归类重新分组">重新分组</button>
-        <button class="chip-btn" data-q="名称太口语化，改成正式的业务术语">规范命名</button>
-      </div>
-
-      <div class="dz-inline dz-inline-quiet" id="dzInline">
-        <div class="dz-inline-foot">
-          <span class="sub" id="aiFileTag">支持 .xlsx / .xlsm；.pdf / .docx 需为文字版（扫描件需 OCR）</span>
-          <span class="sub" id="aiHint">字段类型自动识别：金额为数字、审批人为用户、备注为大文本、关联字段为对象；固定取值生成选项。</span>
-        </div>
-        <input type="file" id="aiSheetInput" accept=".xlsx,.xlsm,.pdf,.docx" hidden>
-      </div>
-    </section>
-    </div><!-- /entryAi -->
-
-    <div id="entryExcel">
-    <section class="ai-box ai-box-lite">
-      <div class="ai-head">
-        <div>
-          <h3>使用 Excel 规格表</h3>
-          <div class="sub">标准模板直接解析，不调用 AI；其他表格与 PDF / Word 先提取文字，再识别字段。</div>
-        </div>
-      </div>
-      <div class="reimport" id="reimport">
-        <!-- 曾经是 <label> 包着 <input type=file>：点一下会同时触发 label 的原生激活
-             （WKWebView 自己的文件面板，受 App 沙箱限制常看到空目录）和 pywebview 的
-             NSOpenPanel（desktop_api 里的 pick_source）。两个面板抢同一个 modal →
-             「文件夹为空」和「同时弹两个窗口」。这里改成 button 与 input 平级，
-             结构上断掉 label 的原生激活，选文件只剩 JS 一条路。 -->
-        <button type="button" class="reimport-pick" id="btnReimportPick">选择文件</button>
-        <input type="file" id="fileInput" accept=".xlsx,.xlsm,.pdf,.docx" hidden>
-        <span class="sub" id="reimportHint">存在相近字段时先确认；PDF / Word 采用文字识别。</span>
-        <button class="link" id="btnBlankTpl"
-                title="下载空白模板（14 个页签，含表头与列说明）">下载空白模板</button>
-        <button class="link" id="btnDemo" title="载入一份示例 Excel 与生成结果">载入示例</button>
-      </div>
-    </section>
-    </div><!-- /entryExcel -->
-
-      </div><!-- /entry-main -->
-
-      <aside class="entry-rail" aria-label="生成前设置">
-        <div class="rail-card">
-          <h4>会生成什么</h4>
-          <ul class="rail-list">
-            <li><b>业务对象</b><span>字段、类型、选项、关联关系</span></li>
-            <li><b>表单</b><span>分组、两列布局、控件</span></li>
-            <li><b>列表 / 数据集</b><span>列、筛选、图表数据源</span></li>
-          </ul>
+        <div class="pl-pre pl-pre-top linkbar" id="plPreImportBar"
+             title="关联=这份 Excel 里每个对象都关联项目；不关联=一个都不关联；导入后不再弹选择框。">
+          <span class="lb-l">
+            <span class="lb-ic"><svg class="i"><use href="#i-link"/></svg></span>
+            <b>业务对象关联项目</b><span class="tag key">关键</span>
+          </span>
+          <span class="pl-pre-opts seg" role="group" aria-label="业务对象关联">
+            <label><input type="radio" name="plPreImport" value="off" checked> 不关联</label>
+            <label><input type="radio" name="plPreImport" value="on"> 关联</label>
+          </span>
+          <span class="pl-target" id="plTargetBox" hidden>
+            <select id="plTargetKind" title="关联到哪个业务对象">
+              <option value="project">项目</option>
+              <option value="other">其他业务对象</option>
+            </select>
+            <span class="pl-target-other" id="plTargetOther" hidden>
+              <input type="text" id="plTargetName" placeholder="业务对象名称，如 合同"
+                     autocomplete="off" spellcheck="false">
+              <button type="button" class="btn ghost sm" id="plTargetCheck">核对</button>
+            </span>
+            <span class="pl-target-ok" id="plTargetInfo" hidden></span>
+          </span>
+          <span class="sub"><span class="lb-hint" id="plPreHint">不关联：各对象独立生成，不挂到其他业务对象下。</span></span>
         </div>
 
-        <div class="rail-card rail-quiet">
-          <h4>导入顺序</h4>
-          <p>系统管理 › 发布管理 › 导入同步包</p>
-          <p class="rail-note">业务对象须先于表单、列表导入；也可整包导入。</p>
-        </div>
+        <div class="entry-grid" id="entryPanels">
+          <div id="entryAi">
+            <section class="card composer ai-box ai-chat-launch" id="aiChatLaunch">
+              <div class="ai-chat-head">
+                <h2>描述要生成的业务对象</h2>
+                <button class="link" id="aiChatClear1">清空对话</button>
+              </div>
+              <p class="sub">说出业务需求，生成业务对象、表单与列表；可继续对话调整，确认后出包。</p>
+
+              <div class="ai-chat-log" id="aiChatLog1"></div>
+
+              <div class="ai-chat-input">
+                <textarea id="aiChatText1" rows="3"
+                  placeholder="例：采购申请单，包含申请单号、申请人、所属项目、物品、数量、单价、总金额、期望到货日期。"></textarea>
+                <div class="ai-chat-foot">
+                  <div class="cf-l">
+                    <button class="btn ghost" id="btnPickSheet" title="从 Excel / PDF / Word 提取内容并识别字段">
+                      <svg class="i"><use href="#i-clip"/></svg>用文件生成
+                    </button>
+                    <span class="hint drag-hint">也可拖入 Excel / PDF / Word</span>
+                  </div>
+                  <div class="cf-r">
+                    <span class="hint" id="aiChatHint1">Enter 发送，Shift+Enter 换行</span>
+                    <button class="btn primary lg" id="aiChatSend1">
+                      <svg class="i"><use href="#i-spark"/></svg>开始生成
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="ai-chat-quick">
+                <span class="hint">常用：</span>
+                <button class="chip-btn" data-q="把必填字段都标上">补必填</button>
+                <button class="chip-btn" data-q="字段太多，合并或删掉重复的">精简字段</button>
+                <button class="chip-btn" data-q="按业务归类重新分组">重新分组</button>
+                <button class="chip-btn" data-q="名称太口语化，改成正式的业务术语">规范命名</button>
+              </div>
+
+              <div class="dz-inline dz-inline-quiet" id="dzInline">
+                <span class="hint" id="aiFileTag">支持 .xlsx / .xlsm；.pdf / .docx 需为文字版</span>
+                <span class="hint" id="aiHint">字段类型自动识别：金额为数字、审批人为用户、备注为大文本、关联字段为对象；固定取值生成选项。</span>
+                <input type="file" id="aiSheetInput" accept=".xlsx,.xlsm,.pdf,.docx" hidden>
+              </div>
+            </section>
+          </div><!-- /entryAi -->
+
+          <section class="card excelbar" id="entryExcel" aria-label="使用 Excel 规格表">
+            <div class="eb-l">
+              <span class="eb-ic"><svg class="i"><use href="#i-sheet"/></svg></span>
+              <div>
+                <b>使用 Excel 规格表</b>
+                <span class="hint">标准模板直接解析，不调用 AI</span>
+              </div>
+            </div>
+            <div class="reimport eb-a" id="reimport">
+              <!-- 曾经是 <label> 包着 <input type=file>：点一下会同时触发 label 的原生激活
+                   （WKWebView 自己的文件面板，受 App 沙箱限制常看到空目录）和 pywebview 的
+                   NSOpenPanel（desktop_api 里的 pick_source）。两个面板抢同一个 modal →
+                   「文件夹为空」和「同时弹两个窗口」。这里改成 button 与 input 平级，
+                   结构上断掉 label 的原生激活，选文件只剩 JS 一条路。 -->
+              <button type="button" class="btn" id="btnReimportPick">选择文件</button>
+              <input type="file" id="fileInput" accept=".xlsx,.xlsm,.pdf,.docx" hidden>
+              <span class="hint" id="reimportHint">存在相近字段时先确认</span>
+              <button class="link" id="btnBlankTpl"
+                      title="下载空白模板（14 个页签，含表头与列说明）">下载空白模板</button>
+              <button class="link" id="btnDemo" title="载入一份示例 Excel 与生成结果">载入示例</button>
+            </div>
+          </section>
+        </div><!-- /entry-grid -->
+      </div>
+
+      <aside class="home-rail" aria-label="生成前设置">
+        <section class="card rail-conn">
+          <div class="rail-h"><h3>连接</h3><button class="linkbtn" id="homeOpenSettings">打开设置</button></div>
+          <div class="kv"><span>数据库</span><b id="homeDbState"><i class="led" id="homeDbLed"></i>未连接</b></div>
+          <div class="kv"><span>大模型</span><b id="homeLlmState"><i class="led brand" id="homeLlmLed"></i>未配置</b></div>
+        </section>
+
+        <details class="card rail-hist" id="taskHistory" open>
+          <summary><span>实施任务记录</span><span class="linkbtn">全部</span></summary>
+          <p class="hint">成功出包后自动保存在本机 ~/.pp6kit/history；最近 100 条。取回后核对页面设置再导入。</p>
+          <button class="btn ghost sm" id="refreshHistory">刷新记录</button>
+          <div id="historyItems" aria-live="polite"></div>
+        </details>
+
+        <details class="card rail-env" id="environmentPanel"><summary>环境档案</summary></details>
       </aside>
-    </div><!-- /entry-grid -->
+    </div>
   </section>
 
   <!-- ========== 第 2 步：预览（AI 结果） ========== -->
   <section id="stepPreview" hidden>
-    <!-- 返回入口统一放在页头（与第 3 步 #result 的 .file-row 同款）：
-         第 2 步的返回原来在底部操作条、第 3 步在顶部，同一件事一上一下，
-         用户来回找（文案也统一成「← 返回上一步」）。 -->
-    <div class="file-row" id="previewFileRow">
-      <div class="file-name">
-        <span class="dot"></span>
-        <strong>AI 预览</strong>
-        <span class="muted">核对后进入出包</span>
+    <!-- 返回入口与第 3 步同款：都在页头 .file-row 里；操作按钮紧跟其后，不再一上一下 -->
+    <div class="rowhead">
+      <div class="file-row" id="previewFileRow">
+        <button class="link" id="btnBackInput">← 返回上一步</button>
+        <div class="file-name">
+          <span class="dot"></span>
+          <strong>AI 预览</strong>
+          <span class="muted">核对后进入出包</span>
+        </div>
       </div>
-      <button class="link" id="btnBackInput">← 返回上一步</button>
-    </div>
-    <div class="ai-result" id="aiResult"></div>
-    <div class="panel" id="aiRelPanel" hidden>
-      <div class="rel-toolbar"><span class="sub">新对象与已有对象的关联；勾选「建立」后生成父子或平行关系。</span></div>
-      <div id="aiRelBox"></div>
+      <div class="step-foot">
+        <div class="ai-btns">
+          <button class="btn ghost" id="btnExportXlsx2">导出 Excel 线下改</button>
+          <button class="btn primary" id="btnToPack"
+                  title="按当前预览生成导入包（回到结果页下载）">核对完成，去出包 →</button>
+        </div>
+      </div>
     </div>
 
-    <!-- 结果不满意时的持续对话；首屏已经能聊，这里保留是为了改的时候不用滚回去 -->
-    <section class="ai-chat" id="aiChat">
-      <div class="ai-chat-head">
-        <h3>补充修改要求</h3>
-        <button class="link" id="aiChatClear">清空对话</button>
+    <div class="review">
+      <div class="stack">
+        <div class="ai-result" id="aiResult"></div>
+        <div class="panel" id="aiRelPanel" hidden>
+          <div class="rel-toolbar"><span class="sub">新对象与已有对象的关联；勾选「建立」后生成父子或平行关系。</span></div>
+          <div id="aiRelBox"></div>
+        </div>
       </div>
-      <div class="ai-chat-log" id="aiChatLog"></div>
-      <div class="ai-chat-input">
-        <textarea id="aiChatText" rows="2"
-          placeholder="例：将「申请人电话」设为必填；新增「预计金额」，数字，两位小数"></textarea>
-      </div>
-      <div class="ai-chat-foot">
-        <span class="sub" id="aiChatHint">在当前结果上增量修改，已确认的字段保持不变。</span>
-        <button class="btn primary" id="aiChatSend">发送修改</button>
-      </div>
-    </section>
 
-    <div class="step-foot">
-      <div class="ai-btns">
-        <button class="btn ghost" id="btnExportXlsx2">导出 Excel 线下改</button>
-        <button class="btn primary" id="btnToPack"
-                title="按当前预览生成导入包（回到结果页下载）">核对完成，去出包 →</button>
-      </div>
+      <!-- 结果不满意时的持续对话；首屏已经能聊，这里保留是为了改的时候不用滚回去 -->
+      <section class="card chat" id="aiChat" aria-label="补充修改要求">
+        <div class="ai-chat-head">
+          <h3>补充修改要求</h3>
+          <button class="link" id="aiChatClear">清空对话</button>
+        </div>
+        <div class="chips" aria-label="常用修改">
+          <button class="chip-btn" data-q="把必填字段都标上">补必填</button>
+          <button class="chip-btn" data-q="字段太多，合并或删掉重复的">精简字段</button>
+          <button class="chip-btn" data-q="按业务归类重新分组">重新分组</button>
+          <button class="chip-btn" data-q="名称太口语化，改成正式的业务术语">规范命名</button>
+        </div>
+        <div class="ai-chat-log" id="aiChatLog"></div>
+        <div class="ai-chat-input">
+          <textarea id="aiChatText" rows="2"
+            placeholder="例：将「申请人电话」设为必填；新增「预计金额」，数字，两位小数"></textarea>
+        </div>
+        <div class="ai-chat-foot">
+          <span class="hint" id="aiChatHint">在当前结果上增量修改，已确认的字段保持不变。</span>
+          <button class="btn primary" id="aiChatSend">发送修改</button>
+        </div>
+      </section>
     </div>
   </section>
 
@@ -436,26 +490,23 @@
 
   <!-- ========== 第 3 步：出包（模板导入的预览也在这里） ========== -->
   <section id="result" hidden>
-    <div class="file-row">
-      <div class="file-name">
-        <span class="dot"></span>
-        <strong id="fileName"></strong>
-        <span class="muted" id="fileSize"></span>
-      </div>
-      <div class="file-row-actions">
+    <div class="rowhead">
+      <div class="file-row">
         <button class="link" id="btnReset">← 返回上一步</button>
-        <!-- 顶部主操作：核对完预览就能直接下载，不用滚到模块卡片底部找按钮。
-             与卡片里的操作条走同一个 buildZip()，两边文案/禁用态由 updateBar 同步。 -->
-        <button class="btn primary" id="btnPackTop" title="把勾选的模块打成一个导入包">下载导入包</button>
+        <div class="file-name">
+          <span class="dot"></span>
+          <strong id="fileName"></strong>
+          <span class="muted" id="fileSize"></span>
+        </div>
       </div>
+      <!-- 顶部主操作：核对完预览就能直接下载，不用滚到模块卡片底部找按钮。
+           与右栏的「下载导入包」走同一个 buildZip()，两边禁用态由 updateBar 同步。 -->
+      <button class="btn primary" id="btnPackTop" title="把勾选的模块打成一个导入包">
+        <svg class="i"><use href="#i-gen"/></svg>下载导入包
+      </button>
     </div>
 
-    <div id="preflightReport" class="card" aria-label="出包前检查报告"></div>
-    <div class="stats" id="stats"></div>
-    <div class="stats-note" id="statsNote" hidden></div>
-    <div class="banner" id="banner" hidden></div>
-    <!-- 出包成功后的收尾：以前只有一句 toast，闪完就没了，用户下完 zip 还得自己想
-         「下一步去哪」。这里把「哪个文件 / 传到哪个菜单 / 还能做什么」固定成一条。 -->
+    <!-- 出包成功后的收尾：文件名 + 导入菜单 + 还能做什么 -->
     <div class="next-step" id="nextStepBar" hidden>
       <div class="ns-main">
         <b>已保存 <span id="nsFile">导入包</span></b>
@@ -466,13 +517,16 @@
         <button class="btn ghost sm" id="nsAgain" title="保留当前结果，返回第 1 步">继续下一个</button>
       </div>
     </div>
+
+    <div class="stats" id="stats"></div>
+    <div class="stats-note" id="statsNote" hidden></div>
+    <div class="banner" id="banner" hidden></div>
     <!-- P0-5 交付报告：buildZip() 成功后回填实测，失败不清空 -->
     <div id="pp6zipBuildReport" hidden></div>
 
-    <!-- 「关联项目」入口条：开关本身在下面「业务对象」页签的卡片右上角，
+    <!-- 「关联项目」入口条：开关本身在「业务对象」页签的卡片右上角，
          结果页首屏是模块勾选，用户滚不到也注意不到（2026-11-14 反馈「我还是没看到」）。
          这里只做跳转，不碰任何出包逻辑。 -->
-    <div class="pl-step3" id="plStep3">核对模块与校验结果，无错误后下载导入包。</div>
     <div class="pl-entry" id="plEntry" hidden>
       <div class="pl-entry-main">
         <b>关联项目</b>
@@ -481,318 +535,365 @@
       <button class="btn ghost sm" id="plEntryGo">去设置</button>
     </div>
 
-    <div class="card mod-card">
-      <div class="card-head">
-        <div>
-          <h3>导出模块</h3>
-          <div class="sub">
-            仅包含<b>普通业务对象</b>及其表单、列表，默认全选并打成整包。新建流程配置下导入包包含流程对象，另附固定三步流程 XML。
+    <div class="r3">
+      <div class="stack">
+        <div class="card tabs-card" id="tabsCard">
+          <nav class="tabs" id="tabs" aria-label="核对内容">
+            <button class="tab active" data-panel="mods">导出模块</button>
+            <button class="tab" data-panel="objects">业务对象</button>
+            <button class="tab" data-panel="forms">表单预览</button>
+            <button class="tab" data-panel="lists">列表 / 数据集</button>
+            <button class="tab" data-panel="link">关联 <span class="badge" id="relBadge">0</span></button>
+            <button class="tab" data-panel="check">校验 <span class="badge" id="issueBadge">0</span></button>
+            <button class="tab" data-panel="package">同步包结构</button>
+          </nav>
+
+          <div class="panel" data-panel="mods">
+            <div class="mods" id="modList"></div>
+            <div class="mods-foot">
+              <span class="hint" id="barSummary"></span>
+              <span class="hint" id="barHint" hidden></span>
+              <span class="hint" id="packHint" hidden>导入：系统管理 › 发布管理 › 导入同步包</span>
+              <span class="grow"></span>
+              <button class="linkbtn" id="modAll">全选</button>
+              <button class="linkbtn" id="modNone">全不选</button>
+            </div>
           </div>
-        </div>
-        <div class="mod-actions">
-          <button class="link" id="modAll">全选</button>
-          <button class="link" id="modNone">全不选</button>
-        </div>
-      </div>
-      <div class="mod-list" id="modList"></div>
-      <div class="pack-bar">
-        <span class="sub" id="packHint">导入：系统管理 › 发布管理 › 导入同步包</span>
-        <div class="ai-btns">
-          <button class="btn ghost" id="btnFlowXml" hidden>下载流程 XML</button>
-          <button class="btn primary" id="btnPack">下载导入包</button>
-        </div>
-      </div>
-    </div>
 
-    <nav class="tabs" id="tabs">
-      <button class="tab active" data-panel="objects">业务对象</button>
-      <button class="tab" data-panel="relations">所属关系 <span class="badge" id="relBadge">0</span></button>
-      <button class="tab" data-panel="projlink"><span id="plTabTitle">项目对齐</span> <span class="badge" id="plBadge">0</span></button>
-      <button class="tab" data-panel="fields">字段体检 <span class="badge" id="fieldBadge">0</span></button>
-      <button class="tab" data-panel="forms">表单预览</button>
-      <button class="tab" data-panel="lists">列表 / 数据集</button>
-      <button class="tab" data-panel="issues">校验结果 <span class="badge" id="issueBadge">0</span></button>
-      <button class="tab" data-panel="package">同步包结构</button>
-    </nav>
+          <div class="panel" data-panel="objects" hidden></div>
 
-    <div class="panel" data-panel="objects"></div>
-    <div class="panel" data-panel="relations" hidden>
-      <div class="rel-toolbar">
-        <span class="sub">新对象与已有对象的关联；勾选「建立」后生成父子或平行关系。</span>
-        <button class="btn ghost" id="btnConfirmedExcel" hidden>下载已确认 Excel</button>
+          <div class="panel" data-panel="relations" hidden>
+            <div class="panel-body">
+              <div class="rel-toolbar">
+                <span class="sub">新对象与已有对象的关联；勾选「建立」后生成父子或平行关系。</span>
+                <button class="btn ghost sm" id="btnConfirmedExcel" hidden>下载已确认 Excel</button>
+              </div>
+              <div id="relBox"></div>
+            </div>
+          </div>
+
+          <div class="panel" data-panel="projlink" hidden>
+            <div class="panel-body">
+              <div class="panel-head">
+                <div>
+                  <h3><span id="plTabTitle">项目对齐</span> <span class="badge" id="plBadge">0</span></h3>
+                  <div class="sub">业务对象关联项目：已补「所属项目」链接字段；与项目对象同名的字段按项目定义覆盖，差异见下表。</div>
+                </div>
+                <button class="btn ghost sm" id="btnPlModal">查看字段差异</button>
+              </div>
+              <div id="plBox"></div>
+            </div>
+          </div>
+
+          <div class="panel" data-panel="check-extra" hidden>
+            <div id="preflightReport"></div>
+          </div>
+
+          <div class="panel" data-panel="issues" hidden></div>
+
+          <div class="panel" data-panel="fields" hidden>
+            <div class="panel-head"><h3>字段体检 <span class="badge" id="fieldBadge">0</span></h3>
+              <span class="hint">不影响出包，是否合并请自行判断</span></div>
+            <div id="fieldBox"></div>
+          </div>
+
+          <div class="panel" data-panel="forms" hidden></div>
+
+          <div class="panel" data-panel="lists" hidden></div>
+
+          <div class="panel" data-panel="package" hidden></div>
+        </div>
       </div>
-      <div id="relBox"></div>
+
+      <aside class="stack rail3" aria-label="校验与导入">
+        <section class="card" id="checkCard">
+          <div class="rail-h"><h3>校验结果</h3><span class="tag" id="railCheckTag">—</span></div>
+          <div class="issues" id="railIssues"></div>
+          <div class="gate" id="railGate"><svg class="i"><use href="#i-checkc"/></svg>—</div>
+          <div class="rail-foot">
+            <button class="linkbtn" id="railCheckAll">查看全部校验结果</button>
+          </div>
+          <div class="rail-actions">
+            <button class="btn ghost sm" id="btnFlowXml" hidden>下载流程 XML</button>
+            <button class="btn sm" id="btnPack">下载导入包</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="rail-h"><h3>导入顺序</h3></div>
+          <ol class="guide">
+            <li><i>1</i><b>下载导入包</b></li>
+            <li><i>2</i><b>系统管理 › 发布管理 › 导入同步包</b></li>
+            <li><i>3</i><span>用「数据查询」核对结果</span></li>
+          </ol>
+        </section>
+      </aside>
     </div>
-    <div class="panel" data-panel="projlink" hidden>
-      <div class="pl-toolbar">
-        <span class="sub">业务对象关联项目：已补「所属项目」链接字段；
-          与项目对象同名的字段按项目定义覆盖，差异见下表。</span>
-        <span class="pl-toolbar-btns">
-          <button class="btn ghost" id="btnPlModal">查看字段差异</button>
-        </span>
-      </div>
-      <div id="plBox"></div>
-    </div>
-    <div class="panel" data-panel="fields" hidden></div>
-    <div class="panel" data-panel="forms" hidden></div>
-    <div class="panel" data-panel="lists" hidden></div>
-    <div class="panel" data-panel="issues" hidden></div>
-    <div class="panel" data-panel="package" hidden></div>
   </section>
 </main>
 
 <!-- ========== 存量包修订：在原 zip 上打最小补丁 ========== -->
 <main id="mode-patch" hidden>
-  <div class="patch-wrap">
-
-    <!-- 对象级选择同样放在**导入前**：按包内 = 保留包里的现状，不强制点分析 -->
-    <div class="pl-pre" id="plPrePatchBar">
-      <b>存量包 · 业务对象关联项目</b>
+  <!-- 对象级选择同样放在**导入前**：按包内 = 保留包里的现状，不强制点分析 -->
+  <div class="pl-pre linkbar" id="plPrePatchBar">
+    <span class="lb-l">
+      <span class="lb-ic"><svg class="i"><use href="#i-link"/></svg></span>
+      <b>业务对象关联项目</b>
+    </span>
+    <span class="pl-pre-opts seg" role="group" aria-label="存量包业务对象关联">
       <label><input type="radio" name="plPrePatch" value="off"> 不关联</label>
       <label><input type="radio" name="plPrePatch" value="on"> 关联</label>
       <label><input type="radio" name="plPrePatch" value="keep" checked> 按包内</label>
-      <span class="sub">按包内：沿用包内现状；关联：每个对象都关联；不关联：均不关联。</span>
-    </div>
+    </span>
+    <span class="sub"><span class="lb-hint" id="plPrePatchHint">按包内：沿用包内现状；关联：每个对象都关联；不关联：均不关联。</span></span>
+  </div>
 
-    <section class="card">
-      <div class="card-head">
-        <div>
-          <h3>① 上传原来的导入包</h3>
-          <div class="sub">支持系统推送工作区导出的 zip、本工具生成的整包、仅含 bo/ 的单模块包。原包不被修改，结果为一份新包。</div>
-        </div>
-      </div>
-      <div class="patch-body">
-        <div class="patch-pick" id="patchDrop">
-          <input type="file" id="patchZipInput" accept=".zip" hidden>
-          <button class="btn primary" id="patchPickZip">选择 zip 文件</button>
-          <span class="sub">也可将 zip 拖入此区域</span>
-          <div class="patch-file" id="patchFileInfo" hidden></div>
-        </div>
-        <div class="patch-notes" id="patchNotes" hidden></div>
-        <!-- P0-2 包结构表：消费 /api/patch/inspect 已有的 entries/comment/copies，后端零改动 -->
-        <div id="pp6zipPatchStruct" hidden></div>
-        <div class="set-note">
-          <strong>与「反解现有导出包」的区别：</strong>反解会拆成 Excel 再重建，包内未建模的内容（对象角色、日志模板、字典样式、权限）会丢失。
-          本功能仅在 <code>bo/*.xml</code> 中新增字段或修改字段名称，其余条目<b>保持不变</b>；
-          <b>已有字段的类型、选项值、长度等定义不可修改</b>，也不会删除字段。
-        </div>
-      </div>
-    </section>
+  <div class="patch">
+    <aside class="card vsteps" aria-label="步骤">
+      <button type="button" class="vstep" data-vstep="1">
+        <span class="vb">1</span>
+        <span class="vt"><b>上传原包</b><span id="vstep1Sub">选择一个 zip 开始</span></span>
+      </button>
+      <button type="button" class="vstep lock" data-vstep="2">
+        <span class="vb">2</span>
+        <span class="vt"><b>选择对象</b><span id="vstep2Sub">上传后可选择</span></span>
+      </button>
+      <button type="button" class="vstep lock" data-vstep="3">
+        <span class="vb">3</span>
+        <span class="vt"><b>修改字段</b><span id="vstep3Sub">改名或新增</span></span>
+      </button>
+      <button type="button" class="vstep lock" data-vstep="4">
+        <span class="vb">4</span>
+        <span class="vt"><b>生成新包</b><span>预览改动后下载</span></span>
+      </button>
+    </aside>
 
-    <section class="card" id="patchObjectsCard" hidden>
-      <div class="card-head">
-        <div>
-          <h3>② 选择业务对象</h3>
-          <div class="sub" id="patchObjSummary"></div>
-        </div>
-        <div class="mod-actions">
-          <button class="link" id="patchObjAll">全选</button>
-          <button class="link" id="patchObjNone">全不选</button>
-        </div>
-      </div>
-      <div class="patch-body">
-        <div class="patch-obj-list" id="patchObjList"></div>
-        <label class="patch-check"><input type="checkbox" id="patchAllCopies">
-          同时处理同一对象的重复副本（仅包内重复推送时需要）</label>
-      </div>
-    </section>
-
-    <!-- ③ 已有字段：只允许改名称。放在新增字段表前面，是因为「导入已有对象」
-         的第一诉求往往是改显示名，而不是加字段。 -->
-    <section class="card" id="patchExistingCard" hidden>
-      <div class="card-head">
-        <div>
-          <h3>③ 已有字段（仅可改名）</h3>
-          <div class="sub">仅「名称」可编辑，编码、类型、选项值、长度、必填、索引、说明均为只读；<b>不会删除字段</b>。改名后进入第 ⑥ 步生成新包。</div>
-        </div>
-        <div class="patch-actions">
-          <button class="btn ghost" id="patchExistingReset">全部还原</button>
-        </div>
-      </div>
-      <div class="patch-body" id="patchExistingBox"></div>
-    </section>
-
-    <section class="card" id="patchFieldsCard" hidden>
-      <div class="card-head">
-        <div>
-          <h3>④ 新增字段</h3>
-          <div class="sub">仅填写包内不存在的字段编码；编码与已有字段重复时只应用「名称」（等同第 ③ 步改名），其他属性忽略并提示。可一行一个，也可从 Excel 粘贴。</div>
-        </div>
-        <div class="patch-actions">
-          <button class="btn ghost" id="patchAddRow">+ 加一行</button>
-          <button class="btn ghost" id="patchTpl">下载字段表模板</button>
-          <button class="btn ghost" id="patchPickXlsx">导入字段表 Excel</button>
-          <input type="file" id="patchXlsxInput" accept=".xlsx,.xlsm" hidden>
-        </div>
-      </div>
-      <div class="patch-body">
-        <div class="tbl-wrap">
-          <table class="patch-table" id="patchTable">
-            <thead><tr>
-              <th>字段编码 <em>*</em></th><th>字段名称</th><th>数据类型</th>
-              <th>选项值</th><th>关联对象/字典</th><th>长度</th><th>精度</th>
-              <th>默认值</th><th>必填</th><th>索引</th><th>说明</th><th></th>
-            </tr></thead>
-            <tbody id="patchRows"></tbody>
-          </table>
-        </div>
-        <div class="patch-paste">
-          <label for="patchPaste">从 Excel 粘贴（列顺序：编码、名称、类型、选项值、长度、精度、默认值、说明；Tab 或逗号分隔）</label>
-          <textarea id="patchPaste" rows="3" spellcheck="false"
-            placeholder="riskLevel	风险等级	选项	高,中,低					"></textarea>
-          <div class="patch-paste-foot">
-            <span class="sub">类型可使用中文名称或代码（如 varchar、dic）</span>
-            <button class="btn ghost" id="patchPasteAdd">解析并追加</button>
+    <div class="stack">
+      <!-- ① 上传 -->
+      <section class="card" id="patchUploadCard">
+        <div class="card-head">
+          <div>
+            <h3>上传原来的导入包</h3>
+            <div class="sub">支持系统推送工作区导出的 zip、本工具生成的整包、仅含 bo/ 的单模块包。原包不被修改，结果为一份新包。</div>
           </div>
         </div>
-      </div>
-    </section>
+        <div class="divider"></div>
+        <div class="patch-body">
+          <div class="patch-pick" id="patchDrop">
+            <input type="file" id="patchZipInput" accept=".zip" hidden>
+            <button class="btn primary" id="patchPickZip">选择 zip 文件</button>
+            <span class="hint">也可将 zip 拖入此区域</span>
+            <div class="patch-file" id="patchFileInfo" hidden></div>
+          </div>
+          <div class="patch-notes" id="patchNotes" hidden></div>
+          <!-- P0-2 包结构表：消费 /api/patch/inspect 已有的 entries/comment/copies，后端零改动 -->
+          <div id="pp6zipPatchStruct" hidden></div>
+          <div class="set-note">
+            <strong>与「反解现有导出包」的区别：</strong>反解会拆成 Excel 再重建，包内未建模的内容（对象角色、日志模板、字典样式、权限）会丢失。
+            本功能仅在 <code>bo/*.xml</code> 中新增字段或修改字段名称，其余条目<b>保持不变</b>；
+            <b>已有字段的类型、选项值、长度等定义不可修改</b>，也不会删除字段。
+          </div>
+        </div>
+      </section>
 
-    <section class="card" id="patchAlignCard" hidden>
-      <div class="card-head">
-        <div>
-          <h3>⑤ 项目对齐分析</h3>
-          <div class="sub">勾选「关联」的对象自动计算：新增链接字段、覆盖已有字段（仅类型、选项、长度、必填、索引；编码与物理列名不变）。适用于<b>系统中尚不存在的新对象</b>，与第 ③ 步手工改名是两条路径。</div>
+      <!-- ② 选择对象 -->
+      <section class="card" id="patchObjectsCard" hidden>
+        <div class="card-head">
+          <div>
+            <h3>选择业务对象</h3>
+            <div class="sub" id="patchObjSummary"></div>
+          </div>
+          <div class="mod-actions">
+            <button class="link" id="patchObjAll">全选</button>
+            <button class="link" id="patchObjNone">全不选</button>
+          </div>
         </div>
-        <div class="card-actions">
-          <button class="btn ghost" id="btnPatchAlign">重新分析</button>
+        <div class="divider"></div>
+        <div class="patch-body">
+          <div class="patch-obj-list" id="patchObjList"></div>
+          <label class="patch-check"><input type="checkbox" id="patchAllCopies">
+            同时处理同一对象的重复副本（仅包内重复推送时需要）</label>
         </div>
-      </div>
-      <div id="patchAlignBox" class="patch-body"></div>
-    </section>
+      </section>
 
-    <section class="card" id="patchBuildCard" hidden>
-      <div class="card-head">
-        <div>
-          <h3>⑥ 生成新包</h3>
-          <div class="sub">默认生成整包；勾选「每个对象单独出包」时逐个下载。</div>
+      <!-- ③④ 修改字段：改名与新增是同一件事的两种做法，合成一张卡的两个页签 -->
+      <section class="card" id="patchEditCard" hidden>
+        <div class="card-head">
+          <div>
+            <h3>修改字段</h3>
+            <div class="sub">只改名称或加字段，不删除、不改类型；编码与已有字段重复时只应用「名称」。</div>
+          </div>
+          <div class="btnrow">
+            <button class="btn" id="patchTpl">下载字段表模板</button>
+            <button class="btn" id="patchPickXlsx">导入字段表 Excel</button>
+            <input type="file" id="patchXlsxInput" accept=".xlsx,.xlsm" hidden>
+          </div>
         </div>
-      </div>
-      <div class="patch-body">
-        <div class="patch-opts">
-          <label>包内容
-            <select id="patchScope">
-              <option value="full">保留原包全部条目（推荐）</option>
-              <option value="bo-only">只留 bo/ 目录（最小增量包）</option>
-            </select>
-          </label>
-          <label class="patch-check"><input type="checkbox" id="patchSyncForm">
-            规格 Excel 中同步补齐表单控件</label>
-          <label class="patch-check"><input type="checkbox" id="patchSplit">
-            每个对象单独出包（下载多个 zip）</label>
+        <nav class="tabs" id="patchEditTabs" aria-label="修改方式">
+          <button class="tab active" data-tab="rename">已有字段改名 <span class="badge" id="patchRenameBadge">0</span></button>
+          <button class="tab" data-tab="add">新增字段</button>
+        </nav>
+
+        <div class="panel" id="patchExistingCard" data-ptab="rename" hidden>
+          <div class="patch-body">
+            <p class="hint">仅「名称」可编辑，编码、类型、选项值、长度、必填、索引、说明均为只读；不会删除字段。</p>
+            <div id="patchExistingBox"></div>
+            <div class="patch-under"><button class="linkbtn" id="patchExistingReset">全部还原</button></div>
+          </div>
         </div>
-        <div class="pack-bar patch-bar">
-          <span class="sub" id="patchHint">仅修改原包 bo/*.xml；导入：系统管理 › 发布管理 › 导入同步包</span>
-          <div class="ai-btns">
-            <button class="btn ghost" id="patchWorkbook">下载规格 Excel</button>
-            <button class="btn ghost" id="patchDryRun">预览改动</button>
+
+        <div class="panel" id="patchFieldsCard" data-ptab="add" hidden>
+          <div class="patch-body">
+            <div class="patch-actions-row">
+              <button class="btn ghost sm" id="patchAddRow">+ 加一行</button>
+              <span class="hint">可一行一个，也可从 Excel 粘贴</span>
+            </div>
+            <div class="tbl-wrap">
+              <table class="patch-table" id="patchTable">
+                <thead><tr>
+                  <th>字段编码 <em>*</em></th><th>字段名称</th><th>数据类型</th>
+                  <th>选项值</th><th>关联对象/字典</th><th>长度</th><th>精度</th>
+                  <th>默认值</th><th>必填</th><th>索引</th><th>说明</th><th></th>
+                </tr></thead>
+                <tbody id="patchRows"></tbody>
+              </table>
+            </div>
+            <div class="patch-paste">
+              <label for="patchPaste">从 Excel 粘贴（列顺序：编码、名称、类型、选项值、长度、精度、默认值、说明；Tab 或逗号分隔）</label>
+              <textarea id="patchPaste" rows="3" spellcheck="false"
+                placeholder="riskLevel	风险等级	选项	高,中,低					"></textarea>
+              <div class="patch-paste-foot">
+                <span class="hint">类型可使用中文名称或代码（如 varchar、dic）</span>
+                <button class="btn ghost sm" id="patchPasteAdd">解析并追加</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ⑤ 项目对齐分析：关联打开时才有内容，放在修改字段里一起核对 -->
+        <section class="patch-align" id="patchAlignCard" hidden>
+          <div class="panel-head">
+            <div>
+              <h3>项目对齐分析</h3>
+              <div class="sub">勾选「关联」的对象自动计算：新增链接字段、覆盖已有字段（仅类型、选项、长度、必填、索引；编码与物理列名不变）。</div>
+            </div>
+            <button class="btn ghost sm" id="btnPatchAlign">重新分析</button>
+          </div>
+          <div id="patchAlignBox" class="patch-body"></div>
+        </section>
+
+        <!-- ⑥ 生成新包：选项 + 预览 + 下载 -->
+        <div class="patch-build" id="patchBuildCard" hidden>
+          <div class="patch-opts">
+            <label>包内容
+              <select id="patchScope">
+                <option value="full">保留原包全部条目（推荐）</option>
+                <option value="bo-only">只留 bo/ 目录（最小增量包）</option>
+              </select>
+            </label>
+            <label class="patch-check"><input type="checkbox" id="patchSyncForm">
+              规格 Excel 中同步补齐表单控件</label>
+            <label class="patch-check"><input type="checkbox" id="patchSplit">
+              每个对象单独出包（下载多个 zip）</label>
+          </div>
+          <div class="foot">
+            <span class="hint" id="patchHint">只改原包 bo/*.xml，其余条目保持不变</span>
+            <span class="grow"></span>
+            <button class="btn" id="patchWorkbook">下载规格 Excel</button>
+            <button class="btn" id="patchDryRun">预览改动</button>
             <button class="btn primary" id="patchBuild">下载新导入包</button>
           </div>
+          <pre class="patch-report" id="patchReport" hidden></pre>
         </div>
-        <pre class="patch-report" id="patchReport" hidden></pre>
-      </div>
-    </section>
-
+      </section>
+    </div>
   </div>
 </main>
 
 <main id="mode-query" hidden>
-  <div class="q-layout">
-    <aside class="q-side">
-      <div class="card" id="qConnCard">
-        <div class="card-head"><div><h3>连接状态</h3><div class="sub">数据库和大模型都在「设置」里配</div></div></div>
-        <div class="set-body" style="padding:14px 18px">
-          <div class="q-stats set-stats" id="qConnStats" hidden></div>
-          <div class="q-hint" id="qConnHint">还没连接数据库</div>
-          <button class="btn ghost" id="qOpenSettings" style="margin-top:10px">打开设置</button>
-        </div>
-      </div>
-    </aside>
+  <div class="q-page">
+    <div class="connbar" id="qConnCard">
+      <span class="grp"><i class="led" id="qConnLed"></i><span class="hint" id="qConnHint">还没连接数据库</span></span>
+      <div class="q-stats set-stats" id="qConnStats" hidden></div>
+      <span class="sep"></span>
+      <span class="grp"><i class="led brand" id="qLlmLed"></i>大模型 <b id="qLlmState">未配置</b></span>
+      <span class="grow"></span>
+      <button class="linkbtn" id="qOpenSettings">打开设置</button>
+    </div>
 
-    <section class="q-main">
-      <div class="card">
-        <div class="card-head">
-          <div><h3>描述查询需求</h3>
-            <div class="sub">例：各项目状态的数量；已立项项目及其负责人。</div></div>
-        </div>
-        <div class="q-ask">
-          <textarea id="qQuestion" rows="3" placeholder="例如：列出执行中的项目，按创建时间倒序"></textarea>
-          <div class="q-askbtns">
-            <div class="q-mode" id="qMode" role="group" aria-label="生成方式">
-              <button type="button" data-mode="ask" class="on"
-                      title="规则优先：简单问题直接生成，规则无法覆盖时调用大模型">智能</button>
-              <button type="button" data-mode="agent"
-                      title="查证：先核对表结构与实际取值并试运行，再给出 SQL；结果更准确，模型调用次数更多">查证</button>
-            </div>
-            <button class="btn primary" id="qAsk">生成 SQL 并执行</button>
+    <section class="card qbox" aria-label="描述查询需求">
+      <textarea id="qQuestion" rows="3" placeholder="例如：列出执行中的项目，按创建时间倒序"></textarea>
+      <div class="composer-f">
+        <div class="cf-l">
+          <div class="q-mode seg" id="qMode" role="group" aria-label="生成方式">
+            <button type="button" data-mode="ask" class="on"
+                    title="规则优先：简单问题直接生成，规则无法覆盖时调用大模型">智能</button>
+            <button type="button" data-mode="agent"
+                    title="查证：先核对表结构与实际取值并试运行，再给出 SQL；结果更准确，模型调用次数更多">查证</button>
           </div>
+          <span class="hint" id="qModeHint">规则优先，简单问题直接出结果</span>
         </div>
-        <div class="q-tpl" id="qTemplates"></div>
-      </div>
-
-      <div class="card" id="qResultCard" hidden>
-        <div class="card-head">
-          <div><h3>结果</h3><div class="sub" id="qResultMeta"></div></div>
-          <div class="q-result-actions">
-            <button class="btn ghost" id="qVerify" hidden title="确认 SQL 正确并存入已验证库，同类问题优先复用">标记为已验证</button>
-            <button class="btn ghost" id="qRetryAi" hidden title="结果不符时由大模型重新理解问题">用 AI 重新生成</button>
-            <button class="btn ghost" id="qExport">导出 CSV</button>
-          </div>
-        </div>
-        <div class="q-origin" id="qOrigin" hidden></div>
-        <div class="tbl-wrap q-result" id="qResult"></div>
-      </div>
-      <div class="card" id="qSqlCard" hidden>
-        <div class="card-head">
-          <div><h3>SQL</h3><div class="sub" id="qSqlMeta"></div></div>
-          <div class="q-sql-actions">
-            <button class="btn ghost" id="qCopySql">复制 SQL</button>
-            <button class="btn ghost" id="qSaveExample">存为示例</button>
-            <button class="btn ghost" id="qRun">重新执行</button>
-          </div>
-        </div>
-        <textarea id="qSql" rows="7" spellcheck="false"></textarea>
-        <div class="q-fixbar" id="qFixBar" hidden>
-          <input id="qFixNote" type="text" maxlength="200"
-                 placeholder="为什么这么改？（可选，比如「我们只看未关闭的」）">
-          <button class="btn" id="qSaveCorrect">保存修正</button>
-        </div>
-        <div class="q-err" id="qErr" hidden></div>
-        <div class="q-hint" id="qRuleBox" hidden>
-          <div>规则引擎原来的答案（AI 认为不对，可对比）：</div>
-          <textarea id="qRuleSql" rows="3" spellcheck="false"
-                    style="width:100%;margin-top:4px;font-family:ui-monospace,monospace;font-size:11px"></textarea>
+        <div class="cf-r">
+          <span class="hint">⌘Enter</span>
+          <button class="btn primary lg" id="qAsk">
+            <svg class="i"><use href="#i-db"/></svg>生成 SQL 并执行
+          </button>
         </div>
       </div>
-
-      <!-- 还没查过任何东西时的空状态：右半屏不留白 -->
-      <div class="card q-empty" id="qEmpty">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"
-             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <ellipse cx="12" cy="6" rx="7.5" ry="3"/>
-          <path d="M4.5 6v6c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3V6"/>
-          <path d="M4.5 12v6c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-6"/>
-        </svg>
-        <h3>还没有查询</h3>
-        <p>在上方描述要查的内容，或选一条常用问法。只读执行，不改动库里数据。</p>
-      </div>
-
     </section>
+
+    <div class="card" id="qResultCard" hidden>
+      <div class="card-head">
+        <div><h3>结果</h3></div>
+        <div class="q-result-actions">
+          <button class="btn ghost sm" id="qVerify" hidden title="确认 SQL 正确并存入已验证库，同类问题优先复用">标记为已验证</button>
+          <button class="btn ghost sm" id="qRetryAi" hidden title="结果不符时由大模型重新理解问题">用 AI 重新生成</button>
+          <button class="btn ghost sm" id="qExport">导出 CSV</button>
+        </div>
+      </div>
+      <div class="q-meta-row"><span class="hint" id="qResultMeta"></span></div>
+      <div class="q-origin" id="qOrigin" hidden></div>
+      <div class="tbl-wrap q-result" id="qResult"></div>
+    </div>
+
+    <div class="card" id="qSqlCard" hidden>
+      <div class="card-head">
+        <div><h3>SQL</h3><div class="sub" id="qSqlMeta"></div></div>
+        <div class="q-sql-actions">
+          <button class="btn ghost sm" id="qCopySql">复制 SQL</button>
+          <button class="btn ghost sm" id="qSaveExample">存为示例</button>
+          <button class="btn ghost sm" id="qRun">重新执行</button>
+        </div>
+      </div>
+      <textarea id="qSql" rows="7" spellcheck="false"></textarea>
+      <div class="q-fixbar" id="qFixBar" hidden>
+        <input id="qFixNote" type="text" maxlength="200"
+               placeholder="为什么这么改？（可选，比如「我们只看未关闭的」）">
+        <button class="btn" id="qSaveCorrect">保存修正</button>
+      </div>
+      <div class="q-err" id="qErr" hidden></div>
+      <div class="q-hint" id="qRuleBox" hidden>
+        <div>规则引擎原来的答案（AI 认为不对，可对比）：</div>
+        <textarea id="qRuleSql" rows="3" spellcheck="false"
+                  style="width:100%;margin-top:4px;font-family:ui-monospace,monospace;font-size:11px"></textarea>
+      </div>
+    </div>
+
+    <!-- 还没查过任何东西时的空状态：常用问法是有用的起点，不是一张空白纸 -->
+    <div class="q-empty-wrap" id="qEmpty">
+      <div class="q-empty-head">
+        <h2>常用问法</h2>
+        <span class="hint">点一条直接执行</span>
+      </div>
+      <div class="ex-grid" id="qTemplates"></div>
+      <p class="hint">还没有查询？点一条常用问法，或在上方描述要查的内容。只读执行，不改动库里数据。</p>
+    </div>
   </div>
 </main>
-
-
 
     </div><!-- /workspace -->
 
     <div class="bottom-dock">
-      <footer class="actionbar" id="actionbar" hidden>
-        <div class="actionbar-left">
-          <strong id="barSummary"></strong>
-          <span class="muted" id="barHint"></span>
-        </div>
-        <button class="btn primary" id="btnBuild">下载导入包</button>
-      </footer>
       <footer class="statusbar">
         <div class="status-left">
           <span class="status-led"></span>
@@ -813,8 +914,8 @@
 
 <div class="toast" id="toast" hidden></div>
 
-<!-- 第 1 步（业务对象关联项目）已经不在这里了：它改成初始页上的 #plPreImportBar
-     三档控件，导入前就定好，导入后不再弹窗问一遍。 -->
+<!-- 第 1 步（业务对象关联项目）已改成初始页上的 #plPreImportBar
+     两档控件，导入前就定好，导入后不再弹窗问一遍。 -->
 
 <!-- 没连数据库时，「关联」需要一个字段池：让用户导入目标业务对象的 zip。
      上传后 service 端存成快照，后续 parse/build 都带 token 用它。

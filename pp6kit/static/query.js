@@ -58,11 +58,11 @@ applyFeatureFlags();
 /* ---------------- 模式切换 ---------------- */
 /* 上下文栏 / 状态栏跟着工作区走，避免「切了页面但标题还是上一个」 */
 const MODE_META = {
-  import:   { title: "新建业务配置", desc: "普通业务对象及其表单、列表、数据集，生成一个导入包（导入路径：发布管理 › 导入同步包）" },
-  patch:    { title: "存量包修订", desc: "在已有导入包上新增字段或修改字段名称；类型、选项等定义不可修改，也不删除字段，其余内容保持不变" },
-  query:    { title: "数据查询",   desc: "用自然语言查询数据库，生成 SQL 并查看结果" },
-  workflow: { title: "新建流程配置",   desc: "操作与新建业务配置一致；固定 开始 › 审核 › 通过，导出时另附流程 XML" },
-  settings: { title: "系统设置",   desc: "大模型、数据库连接与本地配置" },
+  import:   { title: "新建业务配置", desc: "说需求或导入规格表，生成业务对象、表单与列表" },
+  patch:    { title: "存量包修订", desc: "在已有导入包上加字段或改字段名称" },
+  query:    { title: "数据查询",   desc: "用一句话查库，只读执行" },
+  workflow: { title: "新建流程配置",   desc: "与新建业务配置同一套操作，另附固定三步流程" },
+  settings: { title: "系统设置",   desc: "大模型、数据库连接与升级" },
 };
 
 function switchMode(mode) {
@@ -312,6 +312,13 @@ async function loadConfig() {
       AI_BRIEF = `${ch.model || "已配 Key"}`;
       paintAiState();
     }
+    // 首屏右栏的数据库一行：这里只知道「配了哪个库」，不知道通不通；
+    // 真正连上之后由 renderConnStats() 改成「已连接」。
+    const homeDb = document.getElementById("homeDbState");
+    if (homeDb) {
+      homeDb.innerHTML = `<i class="led" id="homeDbLed"></i>`
+        + (db.database ? `已配置 ${qEsc(db.database)}` : "未连接");
+    }
   } catch (e) {
     /* 首次使用没有配置：状态灯保持灰，提示用户去设置 */
     paintAiState();
@@ -343,7 +350,21 @@ function paintAiState() {
     pill.title = AI_READY ? `已接入 ${AI_BRIEF}` : "在「系统设置」中配置 API Key 后可用";
   }
   if (pillDot) pillDot.classList.toggle("on", AI_READY);
-  if (pillText) pillText.textContent = AI_READY ? "AI 已配置" : "AI 未配置";
+  if (pillText) {
+    const brief = AI_READY && AI_BRIEF ? ` · ${AI_BRIEF}` : "";
+    pillText.textContent = AI_READY ? `AI 已配置${brief}` : "AI 未配置";
+  }
+
+  // 首屏右栏 / 查询页连接条：同一份状态投影，别让两处说不一样的话
+  const homeLlm = document.getElementById("homeLlmState");
+  if (homeLlm) {
+    homeLlm.innerHTML = `<i class="led ${AI_READY ? "brand" : ""}" id="homeLlmLed"></i>`
+      + (AI_READY ? (AI_BRIEF || "已配置") : "未配置");
+  }
+  const qLlm = document.getElementById("qLlmState");
+  if (qLlm) qLlm.textContent = AI_READY ? (AI_BRIEF || "已配置") : "未配置";
+  const qLlmLed = document.getElementById("qLlmLed");
+  if (qLlmLed) qLlmLed.classList.toggle("brand", AI_READY);
 
   // 给 app.js（导入页）用：没配就让「生成业务对象」先引导去设置
   window.PP6_AI_READY = AI_READY;
@@ -406,9 +427,17 @@ function renderConnStats(d) {
   if (hint) {
     const lib = d.library ? ` · 已验证 ${d.library.verified}/${d.library.total} 条` : "";
     const sem = d.semantic ? ` · 口径 ${d.semantic.length} 条` : "";
-    hint.textContent = `已连接 ${d.database} · ${d.tableCount} 张表${lib}${sem}`;
-    // 鼠标悬停能看到具体口径，排查「为什么它这么理解」时有用
-    hint.title = (d.semantic || []).map((x) => `- ${x.rule}`).join("\n");
+    // 连接条只留「连的是哪个库」；表/字段数交给旁边的 q-stats，别重复两遍
+    hint.textContent = `数据库 ${d.database}`;
+    // 鼠标悬停能看到具体口径与验证进度，排查「为什么它这么理解」时有用
+    hint.title = `已连接 ${d.database} · ${d.tableCount} 张表${lib}${sem}`
+      + (d.semantic || []).map((x) => `\n- ${x.rule}`).join("");
+  }
+  const led = document.getElementById("qConnLed");
+  if (led) led.classList.add("ok");
+  const homeDb = document.getElementById("homeDbState");
+  if (homeDb) {
+    homeDb.innerHTML = `<i class="led ok" id="homeDbLed"></i>已连接 ${qEsc(d.database)}`;
   }
 }
 
@@ -560,30 +589,32 @@ function renderOrigin(d) {
 /* 没连库时的问法示例：点一下只填进输入框，不执行——库还没连，执行必然报错，
    先让用户知道「这个框能问什么」比给一排空按钮有用。 */
 const Q_FALLBACK = [
-  "每个项目状态有多少个项目",
-  "列出执行中的项目，按创建时间倒序",
-  "本月新增的任务按负责人统计",
-  "风险等级为「高」的项目有哪些",
+  { title: "项目清单", question: "列出执行中的项目，按创建时间倒序" },
+  { title: "按状态统计", question: "每个项目状态有多少个项目" },
+  { title: "任务统计", question: "本月新增的任务按负责人统计" },
+  { title: "风险清单", question: "风险等级为「高」的项目有哪些" },
 ];
 
 function renderTemplates() {
   const box = Q.get("qTemplates");
   if (!box) return;
   if (!Q.templates.length) {
-    box.innerHTML = `<span class="q-tpl-note">示例问法：</span>`
-      + Q_FALLBACK.map((q) => `<button data-fill="1">${qEsc(q)}</button>`).join("");
+    box.innerHTML = Q_FALLBACK
+      .map((q) => `<button class="ex" data-fill="1"><b>${qEsc(q.title)}</b><span>${qEsc(q.question)}</span></button>`)
+      .join("");
     box.querySelectorAll("button[data-fill]").forEach((btn) => {
       btn.onclick = () => {
         const input = Q.get("qQuestion");
         if (!input) return;
-        input.value = btn.textContent;
+        input.value = btn.querySelector("span").textContent;
         input.focus();
       };
     });
     return;
   }
   box.innerHTML = Q.templates
-    .map((t, i) => `<button data-i="${i}">${qEsc(t.title)}</button>`).join("");
+    .map((t, i) => `<button class="ex" data-i="${i}"><b>${qEsc(t.title)}</b><span>${qEsc(t.question)}</span></button>`)
+    .join("");
   box.querySelectorAll("button").forEach((btn) => {
     btn.onclick = () => {
       const t = Q.templates[Number(btn.dataset.i)];
@@ -974,6 +1005,7 @@ Q.get("qExport").onclick = () => {
 
 /* 启动就拉一次配置：顶栏的 AI 状态灯和导入页提示都依赖它，
    不能等用户切到查询页才加载——否则第一眼看到的永远是「未配置」。 */
+renderTemplates();      // 先用本地兜底问法把空状态填满，连库后会被真实模板替换
 loadConfig();
 
 /* 首屏把光标放进输入框：打开就能打字，省掉「先点一下」这一步。

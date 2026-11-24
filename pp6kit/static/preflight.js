@@ -27,8 +27,6 @@ function renderPreflight(d, picked) {
     <details ${errors.length ? 'open' : ''}><summary>校验问题（${issues.length}）</summary>
       ${list(issues.map(i => `${i.level === 'error' ? '错误' : i.level === 'warn' ? '警告' : '提示'} · ${i.where}：${i.message}`))}</details>
     <details><summary>自动处理与解析提示（${notes.length}）</summary>${list(notes)}</details>
-    <details><summary>字段体检（${(d.fieldChecks || []).length}）</summary>
-      <p class="sub">在下方「字段体检」页签核对重复字段、类型冲突与候选值差异。</p></details>
-    <details open><summary>需要人工核对</summary>${list(manual)}</details>`;
+    <details><summary>需要人工核对</summary>${list(manual)}</details>`;
 }
 

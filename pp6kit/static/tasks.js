@@ -6,11 +6,19 @@ async function refreshHistory() {
     if (!res.ok) throw new Error("读取失败");
     const data = await res.json();
     box.innerHTML = (data.items || []).map(row => `
-      <div class="issue"><div><input type="checkbox" data-compare="${esc(row.id)}" aria-label="选择对比记录"><button class="btn" data-history="${esc(row.id)}" data-file="restore">恢复编辑</button><strong>${esc(row.packageName)}</strong>
-        <p class="sub">${esc(row.createdAt)} · 工具 ${esc(row.toolVersion)}</p>
-        ${[['input.xlsx', '取回原输入'], ['output.zip', '下载历史包'], ['record.json', '参数与报告']]
-          .map(([file, label]) => `<button class="btn ghost sm" data-history="${esc(row.id)}" data-file="${file}">${label}</button>`).join(' ')}
-      </div></div>`).join('') || '<p class="sub">暂无出包记录</p>';
+      <div class="hist-item">
+        <input type="checkbox" data-compare="${esc(row.id)}" aria-label="选择对比记录">
+        <div class="hist-main">
+          <button class="hist-open" data-history="${esc(row.id)}" data-file="restore" title="取回原输入继续修改">
+            <b>${esc(row.packageName)}</b>
+            <span>${esc(row.createdAt)} · 工具 ${esc(row.toolVersion)}</span>
+          </button>
+          <div class="hist-acts">
+            ${[['input.xlsx', '取回原输入'], ['output.zip', '下载历史包'], ['record.json', '参数与报告']]
+              .map(([file, label]) => `<button data-history="${esc(row.id)}" data-file="${file}">${label}</button>`).join('')}
+          </div>
+        </div>
+      </div>`).join('') || '<p class="sub">暂无出包记录</p>';
   } catch (_) { box.textContent = "任务记录读取失败，请刷新重试。"; }
 }
 $("#refreshHistory")?.addEventListener("click", refreshHistory);
@@ -46,3 +54,7 @@ compareButton.onclick=async()=>{
     comparison.textContent='产物文件差异（不代表目标数据库变化）\n'+JSON.stringify(data,null,2);
   }catch(e){comparison.textContent=e.message;}
 };
+
+/* 首屏右栏默认展开「实施任务记录」：details 的 toggle 不会为初始 open 触发，
+   不主动拉一次就只剩一句说明。失败由 refreshHistory 自己兜住，不会抛到全局。 */
+if (document.querySelector("#taskHistory")?.open) refreshHistory();

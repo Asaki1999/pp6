@@ -155,6 +155,48 @@ function pHint() {
       + `（${dup.slice(0, 4).map(pEsc).join("、")}${dup.length > 4 ? "…" : ""}）：`
       + `只应用「名称」，类型/选项等改动会被忽略</span>`;
   }
+  pPaintVSteps();
+}
+
+/* ---------------- ③④ 修改字段：改名 / 新增合在一张卡的两个页签 ----------------
+ * patch.js 只负责数据与渲染，页签的显隐在这里收口：
+ *   - 改名面板：有包且选中了对象才可用（否则给一句提示，不整块消失）
+ *   - 新增面板：有包就可填
+ * 这样 pRenderExisting() 不再直接写 hidden，避免把另一个页签顶出来。 */
+function pApplyEditTabs() {
+  const box = pId("patchEditTabs");
+  if (!box) return;
+  const active = box.querySelector(".tab.active") || box.querySelector(".tab");
+  const name = active ? active.dataset.tab : "rename";
+  const ex = pId("patchExistingCard");
+  const add = pId("patchFieldsCard");
+  // 没勾对象时也保留「改名」面板：里面有一句「请先勾选业务对象」，
+  // 直接藏掉会只剩一个空卡片，用户不知道少了什么。
+  if (ex) ex.hidden = name !== "rename";
+  if (add) add.hidden = name !== "add";
+}
+
+/* 左侧纵向步骤：只反映「走到哪」，点击滚动到对应卡片；锁住的步骤不响应 */
+function pPaintVSteps() {
+  const snap = P.snap;
+  const total = ((snap && snap.objects) || []).length;
+  const picked = P.selected.size;
+  const renames = pRenamePairs().length;
+  const newFields = (P.fields || []).filter((f) => String(f.code || "").trim()).length;
+  const set = (n, kind, sub) => {
+    const el = document.querySelector(`.vstep[data-vstep="${n}"]`);
+    if (!el) return;
+    el.classList.remove("done", "now", "lock");
+    if (kind) el.classList.add(kind);
+    const hint = pId(`vstep${n}Sub`);
+    if (hint && sub) hint.textContent = sub;
+  };
+  set(1, snap ? "done" : "now",
+      snap ? `${P.fileName || "原包"} · ${total} 个对象` : "选择一个 zip 开始");
+  set(2, !snap ? "lock" : picked ? "done" : "now", `${picked} / ${total} 个对象`);
+  set(3, !snap ? "lock" : picked ? "now" : "lock",
+      `${renames} 个改名 · ${newFields} 个新字段`);
+  set(4, !snap ? "lock" : "", "预览改动后下载");
 }
 
 /* ---------------- ① 上传原包 ---------------- */
@@ -194,8 +236,9 @@ async function pUploadZip(file) {
     box.hidden = notes.length === 0;
     box.innerHTML = notes.map((n) => `<div>· ${pEsc(n)}</div>`).join("");
 
-    ["patchObjectsCard", "patchExistingCard", "patchFieldsCard", "patchBuildCard"].forEach(
+    ["patchObjectsCard", "patchEditCard", "patchBuildCard"].forEach(
       (id) => { pId(id).hidden = false; });
+    pApplyEditTabs();
     pRenderObjects();
     pRenderExisting();
     pRenderFields();
@@ -269,6 +312,7 @@ function pRenderObjects() {
       pHint();
     };
   });
+  pPaintVSteps();
 }
 
 /* ---------------- ③ 已有字段：只允许改名称 ----------------
@@ -286,9 +330,13 @@ function pRenderExisting() {
   const box = pId("patchExistingBox");
   if (!card || !box) return;
   const files = ((P.snap && P.snap.objects) || []).filter((o) => P.selected.has(o.file));
-  card.hidden = !P.snap || files.length === 0;
+  // 空只影响「改名」页签的内容，不把整张卡藏掉（另一个页签还要用）
+  card.dataset.empty = (!P.snap || files.length === 0) ? "1" : "";
   if (!files.length) {
     box.innerHTML = '<div class="sub">请先在上一步勾选至少一个业务对象。</div>';
+    const badge = pId("patchRenameBadge");
+    if (badge) badge.textContent = "0";
+    pApplyEditTabs();
     return;
   }
   box.innerHTML = files.map((o) => {
@@ -324,9 +372,17 @@ function pRenderExisting() {
       if (!val.trim()) delete P.renames[file][code];
       else P.renames[file][code] = val;
       el.closest("tr").classList.toggle("on", !!val.trim());
+      const changed = files.reduce((n, o) => n + Object.keys(P.renames[o.file] || {}).length, 0);
+      const badge = pId("patchRenameBadge");
+      if (badge) badge.textContent = String(changed);
       pHint();
     });
   });
+  const changed = files.reduce((n, o) => n + Object.keys(P.renames[o.file] || {}).length, 0);
+  const badge = pId("patchRenameBadge");
+  if (badge) badge.textContent = String(changed);
+  pApplyEditTabs();
+  pPaintVSteps();
 }
 
 /* ---------------- ④ 字段表格（只放新字段） ---------------- */
@@ -386,6 +442,7 @@ function pRenderFields() {
       pRenderFields(); pHint();
     };
   });
+  pPaintVSteps();
 }
 
 function pCollectFields() {
@@ -678,15 +735,17 @@ function pRenderPackageStruct() {
   ].map((n) => `<div>· ${pEsc(n)}</div>`).join("");
 
   box.hidden = false;
+  // 包结构是核对用的旁证，不是改字段的主路径：默认收起，别把「选择对象」挤到折叠线下。
   box.innerHTML = `
-    <div class="card">
-      <div class="card-head"><div><h3>包结构（${entries.length} 条 · 原包 ${pEsc(P.fileName || "")}）</h3>
-        <div class="sub">来自 /api/patch/inspect 已有数据，后端零改动；按顶层目录分组，可折叠</div></div></div>
-      ${groupHtml || '<div class="empty">包内没有可列出的条目。</div>'}
-      <div class="set-note"><strong>comment 原文</strong>：<code>${pEsc(P.snap.comment || "")}</code></div>
-      ${copyChips}
-      <div class="set-note">${staticNotes}</div>
-    </div>`;
+    <details class="zip-struct">
+      <summary><b>包结构</b><span class="hint">${entries.length} 条 · ${pEsc(P.fileName || "")}</span></summary>
+      <div class="card">
+        ${groupHtml || '<div class="empty">包内没有可列出的条目。</div>'}
+        ${P.snap.comment ? `<div class="set-note"><strong>comment 原文</strong>：<code>${pEsc(P.snap.comment)}</code></div>` : ""}
+        ${copyChips}
+        <div class="set-note">${staticNotes}</div>
+      </div>
+    </details>`;
 }
 
 function pEmptyState() {
@@ -790,6 +849,35 @@ function pBind() {
   // 对齐分析：勾了「关联项目」后自动跑（pRenderObjects 里触发），这里给个手动重算入口
   const reAlign = pId("btnPatchAlign");
   if (reAlign) reAlign.onclick = () => pAlign();
+
+  // 修改字段的两个页签：改名 / 新增
+  const editTabs = pId("patchEditTabs");
+  if (editTabs) {
+    editTabs.querySelectorAll(".tab").forEach((tab) => {
+      tab.onclick = () => {
+        editTabs.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
+        pApplyEditTabs();
+      };
+    });
+  }
+
+  // 左侧纵向步骤：点到哪滚到哪，锁住的步骤不响应
+  document.querySelectorAll(".vstep[data-vstep]").forEach((btn) => {
+    btn.onclick = () => {
+      if (btn.classList.contains("lock")) return;
+      const map = {
+        1: "patchUploadCard", 2: "patchObjectsCard",
+        3: "patchEditCard", 4: "patchBuildCard",
+      };
+      const target = pId(map[btn.dataset.vstep]);
+      if (!target || target.hidden) return;
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+  });
 }
 
 pBind();
+
+/* 首屏：左栏先把「上传原包」标成当前步，后面三步锁住；
+   上传成功后再由 pUploadZip → pPaintVSteps 更新。 */
+pPaintVSteps();

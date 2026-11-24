@@ -1,6 +1,14 @@
 window.PP6QueryExplanation = function (data) {
   let panel = document.getElementById('queryExplanation');
-  if (!panel) {panel=document.createElement('details');panel.id='queryExplanation';document.getElementById('qResultMeta').after(panel);}
+  if (!panel) {
+    panel = document.createElement('details');
+    panel.id = 'queryExplanation';
+    const meta = document.getElementById('qResultMeta');
+    // 插在「结果」标题行之后，不钻进标题行的 flex 里；旧模板没有 .q-meta-row 时退回原位
+    const row = meta && meta.closest ? meta.closest('.q-meta-row') : null;
+    const host = row || meta;
+    if (host && host.parentNode) host.after(panel);
+  }
   const info = data && data.explanation;
   panel.hidden = !info;
   if (!info) {panel.innerHTML='';return;}

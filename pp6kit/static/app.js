@@ -488,7 +488,17 @@ function syncPlPreInputs() {
   $$('input[name="plPrePatch"]').forEach((el) => {
     el.checked = el.value === state.plPrePatch;
   });
+  paintSegLabels();
   syncPlTargetUI();
+}
+
+/* 两档控件在视觉上是分段控件：radio 本体隐藏，选中态靠 label.on。
+   不依赖 :has()（旧 WKWebView 没有），JS 与 CSS 各留一条路。 */
+function paintSegLabels() {
+  $$(".seg label").forEach((label) => {
+    const input = label.querySelector("input");
+    label.classList.toggle("on", !!(input && input.checked));
+  });
 }
 
 /* 第 1 步的「关联目标」控件同步：只在选了「关联」时展开；选其他对象时
@@ -526,11 +536,12 @@ function syncPlTargetUI() {
 
   const hint = $("#plPreHint");
   if (hint) {
+    // 常态提示 ≤30 字：一句说清这一档的后果，不重复标题
     hint.textContent = state.plPre !== "on"
-      ? "关联：生成对象挂到所选业务对象下，并对齐同名字段；不关联：各自独立生成。"
+      ? "各对象独立生成，不挂到其他业务对象下"
       : (state.plTargetKind === "project"
-        ? "关联：全部对象关联项目；字段定义优先取数据库，未连接时使用随包项目字段。"
-        : `关联：全部对象关联「${plTargetLabel()}」；先输入名称并核对，未连接数据库时上传该对象 zip。`);
+        ? "全部对象关联项目，同名字段按项目定义对齐"
+        : `全部对象关联「${plTargetLabel()}」，同名字段按目标定义对齐`);
   }
   syncAiNextLabel();
 }
@@ -809,13 +820,11 @@ function renderAll() {
     banner.hidden = false;
     bindBannerFix();
   } else if (warnCount) {
-    banner.className = "banner warn";
-    banner.innerHTML = `<span><strong>${warnCount} 个警告</strong>：不影响生成，建议核对。</span>`;
-    banner.hidden = false;
+    // 警告与「校验通过」已经在右栏校验卡里常驻（下载按钮旁边），
+    // 页头再铺一条只会把模块列表往下挤；横幅只留给「有错误、不能出包」。
+    banner.hidden = true;
   } else {
-    banner.className = "banner ok";
-    banner.innerHTML = `<span><strong>校验通过</strong>：结构完整，可以生成导入包。</span>`;
-    banner.hidden = false;
+    banner.hidden = true;
   }
 
   const badge = $("#issueBadge");
@@ -869,15 +878,22 @@ function updateBar() {
   const mods = (d.modules || []).filter((m) => m.count > 0 && m.code !== "workflow");
   const picked = mods.filter((m) => state.picked.has(m.code));
   renderPreflight(d, picked);
+  renderCheckRail();
   const btn = $("#btnPack") || $("#btnBuild");
   if (btn) btn.disabled = d.errorCount > 0 || !picked.length;
-  $("#barSummary").textContent =
-    `${d.objects.length} 个对象 · ${d.forms.length} 个表单 · ${d.lists.length} 个列表 · ${d.datasets.length} 个数据集`;
-  $("#barHint").textContent = d.errorCount
-    ? "存在错误，已禁用生成"
-    : picked.length
-      ? `已选 ${picked.length} 个模块（${picked.map((m) => m.label).join(" / ")}）；也可单独导出某一模块。`
-      : "未选择模块";
+  const summary = $("#barSummary");
+  if (summary) {
+    summary.textContent =
+      `${d.objects.length} 个对象 · ${d.forms.length} 个表单 · ${d.lists.length} 个列表 · ${d.datasets.length} 个数据集`;
+  }
+  const hint = $("#barHint");
+  if (hint) {
+    hint.textContent = d.errorCount
+      ? "存在错误，已禁用生成"
+      : picked.length
+        ? `已选 ${picked.length} 个模块（${picked.map((m) => m.label).join(" / ")}）；也可单独导出某一模块。`
+        : "未选择模块";
+  }
   btn.textContent = "下载导入包";
   // 页头那个下载按钮跟着勾选状态走：禁用态与提示文案保持一致
   const topBtn = $("#btnPackTop");
@@ -918,6 +934,12 @@ function renderRelations() {
   if (box && window.Relations) {
     window.Relations.reset();
     window.Relations.render(box, vm, { scope: "parse" });
+    // 没有可建立的关联时 Relations 不产出内容：别留一块白，给一句结论
+    if (!box.innerHTML.trim()) {
+      box.hidden = false;
+      box.innerHTML = `<div class="empty"><b>没有需要建立的关联</b>
+        <span class="hint">对象之间没有可识别的父子或平行关系；需要时在业务对象里补「关联对象」字段。</span></div>`;
+    }
   }
   if (btn) btn.hidden = !relCount;
 }
@@ -936,6 +958,11 @@ function renderProjectLink() {
   if (!window.ProjLink) return;
   window.ProjLink.reset();
   window.ProjLink.render(box, vm);      // render 内部会顺手 updateBadge()
+  if (box && !box.innerHTML.trim()) {
+    box.hidden = false;
+    box.innerHTML = `<div class="empty"><b>暂无对齐结果</b>
+      <span class="hint">在「关联项目」里勾选对象后，会自动分析同名字段并列出差异。</span></div>`;
+  }
   const count = window.ProjLink.pendingCount(vm);
   const direct = window.ProjLink.directDiffCount
     ? window.ProjLink.directDiffCount(vm) : 0;
@@ -1521,25 +1548,23 @@ function renderModules() {
   const mods = (state.data.modules || []).filter((m) => m.code !== "workflow");
   if (!mods.length) { box.innerHTML = ""; return; }
   mods.forEach((m) => { MOD_LABEL[m.code] = m.label; });
-  box.innerHTML = mods.map((m) => {
-    const empty = !m.count;
+  const rowHtml = (m) => {
     const need = (m.needs || []).filter((n) => !state.imported.has(n));
     // 只提示不拦截：对象可能早就在系统里导过了，禁掉反而挡住正常操作
-    const hint = !empty && need.length > 0;
+    const hint = need.length > 0;
     const done = state.imported.has(m.code);
     const picked = state.picked.has(m.code);
     const flowHint = m.code === "workflow";
     const badges = [
-      empty ? '<span class="chip">无内容</span>' : "",
       done ? '<span class="chip accent">已导出过</span>' : "",
       hint ? `<span class="chip warn">需先导入${need.map((n) => MOD_LABEL[n] || n).join("、")}</span>` : "",
     ].join("");
     return `
-      <div class="mod-row ${empty ? "is-empty" : ""}">
+      <div class="mod-row">
         <label class="mod-pick">
-          <input type="checkbox" data-mod="${m.code}" ${picked ? "checked" : ""} ${empty ? "disabled" : ""}>
+          <input type="checkbox" data-mod="${m.code}" ${picked ? "checked" : ""}>
         </label>
-        <div class="mod-main" data-toggle="${m.code}" title="${empty ? "" : "点这一行也能勾选 / 取消"}">
+        <div class="mod-main" data-toggle="${m.code}" title="点这一行也能勾选 / 取消">
           <div class="mod-name">
             ${esc(m.label)}
             <span class="chip">${m.count} 项</span>
@@ -1551,11 +1576,18 @@ function renderModules() {
             : m.note ? `<div class="mod-note">${esc(m.note)}</div>` : ""}
         </div>
         <div class="mod-btns">
-          ${empty || flowHint ? "" : `<button class="btn ghost sm" data-act="one" data-mod="${m.code}"
+          ${flowHint ? "" : `<button class="btn ghost sm" data-act="one" data-mod="${m.code}"
                   title="只把这一个模块打成导入包（不进整包）">单独出包</button>`}
         </div>
       </div>`;
-  }).join("");
+  };
+  // 有内容的模块逐行列出；空模块压成一条「无内容」，别让 0 项的行占满整屏
+  const filled = mods.filter((m) => m.count > 0);
+  const empty = mods.filter((m) => !m.count);
+  box.innerHTML = filled.map(rowHtml).join("")
+    + (empty.length
+      ? `<div class="mod-empty"><b>无内容</b><span>${empty.map((m) => esc(m.label)).join(" · ")}</span></div>`
+      : "");
 
   $$("#modList input[data-mod]").forEach((cb) => {
     cb.onchange = () => {
@@ -1793,12 +1825,19 @@ function renderIssues() {
   const panel = $('.panel[data-panel="issues"]');
   const issues = state.data.issues;
   if (!issues.length) {
-    panel.innerHTML = `<div class="card"><div class="empty">没有任何问题，可以直接生成。</div></div>`;
+    panel.innerHTML = `<div class="card">
+      <div class="panel-head"><h3>校验结果</h3><span class="hint">本地校验</span></div>
+      <div class="empty">没有任何问题，可以直接生成。</div></div>`;
     return;
   }
   const order = { error: 0, warn: 1 };
   const sorted = [...issues].sort((a, b) => (order[a.level] ?? 2) - (order[b.level] ?? 2));
-  panel.innerHTML = `<div class="card">${sorted.map((i) => `
+  const errs = issues.filter((i) => i.level === "error").length;
+  const warns = issues.filter((i) => i.level === "warn").length;
+  panel.innerHTML = `<div class="card">
+    <div class="panel-head"><h3>校验结果</h3>
+      <span class="hint">${errs} 个错误 · ${warns} 个警告</span></div>
+    ${sorted.map((i) => `
     <div class="issue ${esc(i.level)}">
       <div class="lv">${i.level === "error" ? "错误" : "警告"}</div>
       <div>
@@ -1818,7 +1857,9 @@ const FIELD_KIND = {
 };
 
 function renderFieldCheck() {
-  const panel = $('.panel[data-panel="fields"]');
+  // v3：页签里的「字段体检」有一行常驻表头（含角标），内容单独渲染进 #fieldBox；
+  // 旧模板没有这个容器时仍退回整块 panel，行为不变。
+  const panel = $("#fieldBox") || $('.panel[data-panel="fields"]');
   const list = state.data.fieldChecks || [];
   if (!list.length) {
     panel.innerHTML = `<div class="card"><div class="empty">
@@ -3806,6 +3847,16 @@ function bindAiChat() {
       aiChatSendFrom("aiChatText1", "aiChatLog1", { fresh: true });
     };
   });
+
+  // 预览页的快捷 chip：在当前结果上增量改，不重新生成
+  $$("#aiChat .chip-btn").forEach((b) => {
+    b.onclick = () => {
+      const q = b.dataset.q || b.textContent;
+      const ta = $("#aiChatText");
+      if (ta) ta.value = q;
+      aiChatSendFrom("aiChatText", "aiChatLog");
+    };
+  });
 }
 
 async function apiPostBlob(path, payload, extraHeaders) {
@@ -3832,9 +3883,88 @@ const PP6ZIP_IMPORT_PATH = "系统管理 › 发布管理 › 导入同步包";
  * 两件事以前都没有：出错只在横幅里写字，用户得自己数页签去找；
  * 成功只有一句 toast，闪完就没了。这里把它们做成可点的下一步。 */
 
-/** 跳到「校验结果」并把第一条 error 滚进视野、闪一下 */
+/* 结果页签：v3 把 8 个页签并成 7 个 —— 「关联」含所属关系 + 项目对齐，
+   「校验」含校验结果 + 字段体检 + 出包前报告。一个页签可以带多块面板，
+   显隐由这张映射表决定，避免每个 panel 各写一份 if。 */
+const RESULT_TAB_PANELS = {
+  link: ["relations", "projlink"],
+  check: ["check-extra", "issues", "fields"],
+};
+
+function showResultTab(name) {
+  if (!name) return;
+  $$("#tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.panel === name));
+  const group = RESULT_TAB_PANELS[name];
+  $$("#tabsCard .panel").forEach((p) => {
+    p.hidden = group ? group.indexOf(p.dataset.panel) < 0 : p.dataset.panel !== name;
+  });
+}
+
+/* 右栏校验闸：把 state.data.issues 里用户要处理的那几条摊在下载按钮旁边。
+   设计原则「检查结果前置」——不是等用户点进校验页签才看见问题。 */
+function renderCheckRail() {
+  const d = state.data;
+  if (!d) return;
+  const issues = (d.issues || []).filter((i) => i.level === "error" || i.level === "warn");
+  const errors = issues.filter((i) => i.level === "error");
+  const warns = issues.filter((i) => i.level === "warn");
+
+  const tag = $("#railCheckTag");
+  if (tag) {
+    tag.className = "tag" + (errors.length ? " error" : warns.length ? " warn" : " ok");
+    tag.textContent = errors.length ? `${errors.length} 个错误`
+      : warns.length ? `${warns.length} 个警告` : "全部通过";
+  }
+
+  const box = $("#railIssues");
+  if (box) {
+    const rows = issues.slice(0, 4).map((i) => {
+      const icon = i.level === "error" ? "i-alert" : "i-alert";
+      return `<button type="button" class="issue ${esc(i.level)}" data-rail-issue="${esc(i.where || "")}">
+        <svg class="i sm"><use href="#${icon}"/></svg>
+        <span>${esc(i.message)}<span class="where">${esc(i.where || "校验")}</span></span>
+      </button>`;
+    }).join("");
+    const info = issues.length === 0
+      ? `<button type="button" class="issue info" data-rail-issue="">
+           <svg class="i sm"><use href="#i-checkc"/></svg>
+           <span>结构完整，没有需要修正的项<span class="where">本地校验</span></span>
+         </button>`
+      : "";
+    const more = issues.length > 4
+      ? `<button type="button" class="issue info" data-rail-more="1"><svg class="i sm"><use href="#i-info"/></svg><span>还有 ${issues.length - 4} 条，去校验页签看全部</span></button>`
+      : "";
+    box.innerHTML = rows + info + more;
+    box.querySelectorAll("[data-rail-issue]").forEach((btn) => {
+      btn.onclick = () => {
+        const where = btn.dataset.railIssue || "";
+        if (/表单|控件/.test(where)) { showResultTab("forms"); return; }
+        if (/列表|数据集/.test(where)) { showResultTab("lists"); return; }
+        if (/关联|项目/.test(where)) { showResultTab("link"); return; }
+        gotoIssues();
+      };
+    });
+    const moreBtn = box.querySelector("[data-rail-more]");
+    if (moreBtn) moreBtn.onclick = () => showResultTab("check");
+  }
+
+  const gate = $("#railGate");
+  if (gate) {
+    const picked = (d.modules || []).filter(
+      (m) => m.count > 0 && m.code !== "workflow" && state.picked.has(m.code)).length;
+    const kind = errors.length ? "error" : (!picked || warns.length) ? "warn" : "ok";
+    const text = errors.length
+      ? `${errors.length} 个错误，修正后才能下载`
+      : !picked ? "还没有选择导出模块"
+      : warns.length ? "没有错误，可以下载导入包" : "校验通过，可以下载导入包";
+    gate.className = "gate " + kind;
+    gate.innerHTML = `<svg class="i"><use href="#${errors.length ? "i-alert" : "i-checkc"}"/></svg>${text}`;
+  }
+}
+
+/** 跳到「校验」并把第一条 error 滚进视野、闪一下 */
 function gotoIssues() {
-  const tab = $('#tabs .tab[data-panel="issues"]');
+  const tab = $('#tabs .tab[data-panel="check"]');
   if (tab) tab.click();
   const panel = $('.panel[data-panel="issues"]');
   if (!panel) return;
@@ -4273,26 +4403,29 @@ function renderBuildReport(report, name) {
   const time = report.time || (new Date().toLocaleString("zh-CN") + "（本地生成时间）");
   const tips = PP6ZIP_TIPS.map((t) => `<li>${esc(t)}</li>`).join("");
   box.hidden = false;
+  // 报告是验收用的旁证：默认收起成一行，别把模块勾选和页签挤到折叠线下。
+  // 结论（包名 / 状态 / 导入路径）已经在「已保存」条和交付横幅里说过了。
   box.innerHTML = `
-    <div class="card">
-      <div class="card-head"><div>
-        <h3>交付报告 <span class="chip accent">${esc(report.status || "待导入")}</span></h3>
-        <div class="sub">实测包结构 · 来自本次下载；本地留痕，不连线上系统</div></div></div>
-      <div class="tbl-wrap"><table><tbody>
-        <tr><th>包名</th><td><code>${esc(pkgName)}</code></td></tr>
-        <tr><th>目录清单</th><td>bo/ ${n("bo")} 条 · form/ ${n("form")} 条 · data_template/ ${n("data_template")} 条 · dataset/ ${n("dataset")} 条
-            <span class="muted">（口径待复核；dataset/ 为数据菜单手建数据集形态，本工具不产出）</span></td></tr>
-        <tr><th>条目数</th><td>${Number(report.entryCount || 0)}${report.truncated && !report.summaryOnly
-          ? ` <span class="chip warn">仅显示前 ${(report.entries || []).length} 条，共 ${report.entriesTotal || report.entryCount} 条</span>` : ""}${report.summaryOnly
-          ? ' <span class="chip warn">清单过大，仅显示统计摘要</span>' : ""}</td></tr>
-        <tr><th>comment 原文</th><td><code>${esc(report.comment || "")}</code>${report.commentTruncated
-          ? ' <span class="muted">（原文过长，已截断；CONFIG_SYNC_NOTE: 前缀完整保留）</span>' : ""}</td></tr>
-        <tr><th>状态</th><td><span class="chip accent">${esc(report.status || "待导入")}</span></td></tr>
-        <tr><th>生成时间</th><td>${esc(time)}</td></tr>
-        <tr><th>导入路径</th><td>${esc(report.importPath || PP6ZIP_IMPORT_PATH)}</td></tr>
-      </tbody></table></div>
-      <div class="set-note"><strong>验收提示</strong><ul>${tips}</ul></div>
-    </div>`;
+    <details class="deliver-report">
+      <summary><b>交付报告</b><span class="chip accent">${esc(report.status || "待导入")}</span>
+        <span class="hint">包结构 · 生成时间 · 导入路径</span></summary>
+      <div class="card">
+        <div class="tbl-wrap"><table><tbody>
+          <tr><th>包名</th><td><code>${esc(pkgName)}</code></td></tr>
+          <tr><th>目录清单</th><td>bo/ ${n("bo")} 条 · form/ ${n("form")} 条 · data_template/ ${n("data_template")} 条 · dataset/ ${n("dataset")} 条
+              <span class="muted">（口径待复核；dataset/ 为数据菜单手建数据集形态，本工具不产出）</span></td></tr>
+          <tr><th>条目数</th><td>${Number(report.entryCount || 0)}${report.truncated && !report.summaryOnly
+            ? ` <span class="chip warn">仅显示前 ${(report.entries || []).length} 条，共 ${report.entriesTotal || report.entryCount} 条</span>` : ""}${report.summaryOnly
+            ? ' <span class="chip warn">清单过大，仅显示统计摘要</span>' : ""}</td></tr>
+          <tr><th>comment 原文</th><td><code>${esc(report.comment || "")}</code>${report.commentTruncated
+            ? ' <span class="muted">（原文过长，已截断；CONFIG_SYNC_NOTE: 前缀完整保留）</span>' : ""}</td></tr>
+          <tr><th>状态</th><td><span class="chip accent">${esc(report.status || "待导入")}</span></td></tr>
+          <tr><th>生成时间</th><td>${esc(time)}</td></tr>
+          <tr><th>导入路径</th><td>${esc(report.importPath || PP6ZIP_IMPORT_PATH)}</td></tr>
+        </tbody></table></div>
+        <div class="set-note"><strong>验收提示</strong><ul>${tips}</ul></div>
+      </div>
+    </details>`;
 }
 
 /* ------------------------------------------------ 事件绑定 */
@@ -4391,11 +4524,10 @@ function bind() {
   });
 
   $$("#tabs .tab").forEach((tab) => {
-    tab.onclick = () => {
-      $$("#tabs .tab").forEach((t) => t.classList.toggle("active", t === tab));
-      $$(".panel").forEach((p) => { p.hidden = p.dataset.panel !== tab.dataset.panel; });
-    };
+    tab.onclick = () => showResultTab(tab.dataset.panel);
   });
+  const railAll = $("#railCheckAll");
+  if (railAll) railAll.onclick = () => showResultTab("check");
 
   // 第 3 步「返回上一步」：有 AI 预览就回预览，否则回输入
   $("#btnReset").onclick = () => {
@@ -4528,6 +4660,33 @@ function bind() {
     inspectZip(e.target.files[0]);
     e.target.value = "";
   };
+
+  /* v3 顶栏：快捷键浮层；AI 状态胶囊点一下直接进设置。
+     浮层只在点击外部 / Esc 时收起，点浮层内部不关。 */
+  const help = $("#btnHelp");
+  const helpPop = $("#helpPop");
+  if (help && helpPop) {
+    const setHelp = (open) => {
+      helpPop.hidden = !open;
+      help.setAttribute("aria-expanded", String(open));
+    };
+    help.onclick = (e) => { e.stopPropagation(); setHelp(helpPop.hidden); };
+    document.addEventListener("click", (e) => {
+      if (helpPop.hidden) return;
+      if (e.target.closest("#helpPop") || e.target.closest("#btnHelp")) return;
+      setHelp(false);
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !helpPop.hidden) setHelp(false);
+    });
+  }
+  const openSettings = () => {
+    if (typeof window.switchMode === "function") window.switchMode("settings");
+  };
+  const aiPill = $("#ctxAiPill");
+  if (aiPill) aiPill.onclick = openSettings;
+  const homeSet = $("#homeOpenSettings");
+  if (homeSet) homeSet.onclick = openSettings;
 }
 
   detectDesktop();

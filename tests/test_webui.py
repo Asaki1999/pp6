@@ -1353,3 +1353,51 @@ def _():
 
     # ⑥ 字号放大让黑点看得清
     assert '.set-form input[type="password"]' in css
+
+
+@case("WEB48", "webui", "界面 v3：页签合并为「关联 / 校验」，结果页右栏常驻校验闸",
+      "P1", ["8 个页签里「所属关系 / 项目对齐」语义重复、「校验结果 / 字段体检」要来回切",
+             "校验问题是下载前的闸，必须在首屏可见，而不是沉在页面底部",
+             "侧栏一层导航：分组即含义，设置沉底；不要再回到编号 + 快捷键说明"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "pp6kit" / "static" / "app.js").read_text(encoding="utf-8")
+    css = (root / "pp6kit" / "static" / "style.css").read_text(encoding="utf-8")
+
+    # ① 结果页 7 个页签：关联 / 校验各带一组面板
+    start = html.index('id="tabs"')
+    tabs = html[start:html.index("</nav>", start)]
+    assert tabs.count('class="tab') == 7, "结果页签不是 7 个（导出模块 + 6 个核对页签）"
+    for panel in ("mods", "objects", "forms", "lists", "link", "check", "package"):
+        assert f'data-panel="{panel}"' in tabs, f"缺少页签 {panel}"
+    for merged in ("relations", "projlink", "issues", "fields"):
+        assert f'data-panel="{merged}"' not in tabs, f"{merged} 应该并进关联/校验，不再单独占页签"
+
+    # ② 合并由一张映射表收口，一个页签可带多块面板
+    assert "const RESULT_TAB_PANELS" in js
+    assert '"relations", "projlink"' in js, "关联页签没有合并所属关系与项目对齐"
+    assert '"check-extra", "issues", "fields"' in js, "校验页签没有合并校验结果与字段体检"
+
+    # ③ 右栏校验闸：问题 + 结论常驻在下载按钮旁边
+    for mark in ('id="checkCard"', 'id="railIssues"', 'id="railGate"', 'id="railCheckTag"'):
+        assert mark in html, f"右栏校验卡缺 {mark}"
+    assert "function renderCheckRail(" in js and "function showResultTab(" in js
+    assert "railGate" in js and "可以下载导入包" in js
+
+    # ④ 侧栏：一层导航 + 分组 + 设置沉底，不用编号和快捷键区
+    assert ">生成<" in html and ">验证<" in html, "侧栏没有 生成 / 验证 分组"
+    assert html.index(">生成<") < html.index(">验证<") < html.index('data-mode="settings"')
+    assert 'class="side-keys"' not in html, "侧栏还留着快捷键说明区"
+    assert 'id="keysModes"' in html, "快捷键说明应进顶栏浮层"
+
+    # ⑤ 存量包：改名 / 新增合在一张卡的两个页签
+    assert 'id="patchEditTabs"' in html
+    assert 'data-tab="rename"' in html and 'data-tab="add"' in html
+    assert "function pApplyEditTabs(" in (root / "pp6kit" / "static" / "patch.js").read_text(encoding="utf-8")
+
+    # ⑥ 样式层可回退：body.v3 + 末尾的 v3 段落
+    assert '<body class="v3">' in html
+    assert "界面 v3 · 落地层" in css and "body.v3" in css
