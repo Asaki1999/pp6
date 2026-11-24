@@ -2565,16 +2565,18 @@ def _():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
-    good = projlink.snapshot_from_zip((root / "PP6" / "业务对象" / "项目.zip").read_bytes(),
-                                      source="package_upload")
+    good_zip = root / "PP6" / "业务对象" / "项目.zip"
+    bad_zip = root / "PP6" / "流程" / "config-sync-20261113150255.zip"
+    if not (good_zip.is_file() and bad_zip.is_file()):
+        skip("缺少原生样本 PP6/业务对象/项目.zip 或 PP6/流程/config-sync-20261113150255.zip")
+
+    good = projlink.snapshot_from_zip(good_zip.read_bytes(), source="package_upload")
     assert good.fields, good.warnings
     assert good.project.get("code") == "project"
     assert good.project.get("tbl") == "pp_project"
     assert len(good.fields) >= 30
 
-    bad = projlink.snapshot_from_zip(
-        (root / "PP6" / "流程" / "config-sync-20261113150255.zip").read_bytes(),
-        source="package_upload")
+    bad = projlink.snapshot_from_zip(bad_zip.read_bytes(), source="package_upload")
     assert not bad.fields, "立项包（project_create）被当成项目字段池了"
     assert bad.source == "unavailable"
     assert any("pp_project" in w for w in bad.warnings), bad.warnings

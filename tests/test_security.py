@@ -10,11 +10,12 @@ import io
 import threading
 import zipfile
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 from pp6kit import patch, webui
 from pp6kit import spec as S
-from tests._harness import case, field, texts, unzip, xlsx, xml_ok
+from tests._harness import case, field, skip, texts, unzip, xlsx, xml_ok
 
 
 def build(sheets: dict) -> bytes:
@@ -177,6 +178,8 @@ def _():
 @case("SEC11", "security", "改包时传空字段列表不产生空包", "P1",
       ["空改动应报错而不是给个原包副本"])
 def _():
+    if not (Path("PP6/业务对象/项目.zip").is_file()):
+        skip("缺少原生样本 PP6/业务对象/项目.zip")
     raw = patch.inspect_package and open("PP6/业务对象/项目.zip", "rb").read()
     obj = patch.inspect_package(raw)["objects"][0]
     try:
@@ -192,6 +195,8 @@ def _():
 @case("SEC12", "security", "zip 里混入非 XML 条目不影响出包", "P2",
       ["有些导出包带 .DS_Store / 说明.txt"])
 def _():
+    if not (Path("PP6/业务对象/项目.zip").is_file()):
+        skip("缺少原生样本 PP6/业务对象/项目.zip")
     src = open("PP6/业务对象/项目.zip", "rb").read()
     buf = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(src)) as zin, zipfile.ZipFile(buf, "w") as zout:

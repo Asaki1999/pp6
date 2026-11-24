@@ -961,8 +961,12 @@ def _():
 
     # ④ 真实样本：说明里的「随…联动」和「父：子」分组要能抽出来
     root = Path(__file__).resolve().parents[1]
-    summary = ai_sheet.summarize(
-        (root / "PP6" / "项目基本信息表单-尹姣定.xlsx").read_bytes())
+    from tests._harness import skip
+
+    real = root / "PP6" / "项目基本信息表单-尹姣定.xlsx"
+    if not real.is_file():
+        skip("缺少原生样本 PP6/项目基本信息表单-尹姣定.xlsx（①②③ 已跑完，只跳过真实样本段）")
+    summary = ai_sheet.summarize(real.read_bytes())
     fields = {f["label"]: f for f in summary["sheets"][0]["fields"]}
     pc = fields["品种分类"]
     assert pc["parentLabel"] == "品种类别", pc.get("parentLabel")
