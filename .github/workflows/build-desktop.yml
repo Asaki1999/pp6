@@ -41,7 +41,23 @@ jobs:
 
       # 跳过不算失败（CI 上没有原生样本），有失败就阻断下面的 build。
       - name: 回归测试
-        run: python tools/regress.py
+        shell: bash
+        run: |
+          set -o pipefail
+          python tools/regress.py 2>&1 | tee regress.log
+
+      # 失败时把末尾日志写进 job summary：公开仓库的 Actions 日志要登录才能看，
+      # 摘要不用；排查 CI-only 失败（本地绿、Ubuntu 红）时少一次「加日志再推」。
+      - name: 回归失败摘要
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "## 回归失败明细"
+            echo '```'
+            tail -n 160 regress.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   build:
     needs: regress
