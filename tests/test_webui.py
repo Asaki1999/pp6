@@ -1401,3 +1401,58 @@ def _():
     # ⑥ 样式层可回退：body.v3 + 末尾的 v3 段落
     assert '<body class="v3">' in html
     assert "界面 v3 · 落地层" in css and "body.v3" in css
+
+
+@case("WEB49", "webui", "主按钮用品牌蓝同族色；右栏任务记录与环境卡结构整洁",
+      "P1", ["主按钮不发闷、白字对比度达 AA", "刷新在标题行、对比区在卡片底栏",
+             "环境卡：切换常驻，编辑与高级各自折叠"])
+def _():
+    import re
+    from pathlib import Path
+
+    static = Path(__file__).resolve().parents[1] / "pp6kit" / "static"
+    html = (static / "index.html").read_text(encoding="utf-8")
+    css = (static / "style.css").read_text(encoding="utf-8")
+    tasks = (static / "tasks.js").read_text(encoding="utf-8")
+    env = (static / "environment.js").read_text(encoding="utf-8")
+
+    # ① 主按钮：白字对比度 ≥ 4.5（AA），且不能离品牌色太远。
+    #    2026-11-24 用户反馈「按钮颜色有点淡」：当时为了达 AA 用了 #0d5fd6，
+    #    它偏暗偏灰，和旁边的 #1677ff 放在一起显得发闷；#126efa 两头都满足。
+    def _rgb(h):
+        return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
+
+    def _lum(h):
+        c = [v / 255 for v in _rgb(h)]
+        c = [v / 12.92 if v <= .03928 else ((v + .055) / 1.055) ** 2.4 for v in c]
+        return .2126 * c[0] + .7152 * c[1] + .0722 * c[2]
+
+    m = re.search(r"body\.v3 \.btn\.primary \{ background: (#[0-9a-f]{6})", css)
+    assert m, "v3 层没有 .btn.primary 的底色规则"
+    primary = m.group(1)
+    contrast = 1.05 / (_lum(primary) + .05)
+    assert contrast >= 4.5, f"主按钮 {primary} 上白字对比度 {contrast:.2f}，不到 AA"
+    dist = sum((a - b) ** 2 for a, b in zip(_rgb(primary), _rgb("#1677ff"))) ** .5
+    assert dist <= 20, f"主按钮 {primary} 离品牌色 #1677ff 太远（色差 {dist:.0f}），会显得发闷"
+    assert "#0d5fd6" not in css, "主按钮又回到了发闷的 #0d5fd6"
+
+    # ② 任务记录：刷新在标题行且阻止折叠；对比按钮与结果框在卡片底栏。
+    at = html.index('id="taskHistory"')
+    summary = html[at:html.index("</summary>", at)]
+    assert 'id="refreshHistory"' in summary, "刷新按钮不在任务记录的标题行里"
+    assert "e.preventDefault()" in tasks, "刷新按钮在 <summary> 里，不阻止默认行为会折叠卡片"
+    assert 'class="hist-foot"' in html and 'id="historyCompare"' in html
+    assert 'id="historyCompareOut"' in html
+    assert ".append(" not in tasks, "任务记录又在往卡片上 append 没有内边距的元素"
+    assert "hist-empty" in tasks and ".hist-empty" in css, "空状态没有自己的样式类（会贴着卡片边缘）"
+    assert "histWhen(" in tasks, "记录时间没有格式化（会显示成 2026-11-24T11:56:54+08:00）"
+    assert "~/.pp6kit/history" not in html, "任务记录卡又放回了长说明"
+
+    # ③ 环境卡：切换常驻，编辑与高级各自折叠；表单字段与按钮一个不少
+    assert 'class="env-fold env-edit"' in env and 'class="env-fold env-adv"' in env
+    assert env.index('id="environmentSelect"') < env.index('id="environmentForm"'), "切换下拉应排在编辑表单之前"
+    assert "环境档案不改变数据库连接" in env and "实施档案不切换数据库连接" not in env, "环境卡的长说明回来了"
+    for field in ("name", "platformVersion", "notes", "mappings", "rebind"):
+        assert f'name="{field}"' in env, f"环境表单丢了字段 {field}"
+    for button in ("environmentNew", "environmentDelete"):
+        assert f'id="{button}"' in env, f"环境卡丢了按钮 {button}"

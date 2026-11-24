@@ -3904,7 +3904,7 @@ body.v3 {
   --muted: #6b7689;
   --faint: #8b95a7;
   --accent: #1677ff;
-  --accent-2: #0d5fd6;
+  --accent-2: #126efa;
   --accent-soft: #edf4ff;
   --ok: #009f4d;
   --ok-soft: #e9f7ee;
@@ -3956,8 +3956,8 @@ body.v3 .btn {
 }
 body.v3 .btn:hover { border-color: #b4bfd1; background: var(--surface-2); }
 body.v3 .btn:active { transform: translateY(1px); }
-body.v3 .btn.primary { background: #0d5fd6; border-color: #0d5fd6; color: #fff; }
-body.v3 .btn.primary:hover { background: #0b54bf; border-color: #0b54bf; }
+body.v3 .btn.primary { background: #126efa; border-color: #126efa; color: #fff; }
+body.v3 .btn.primary:hover { background: #0a5ee0; border-color: #0a5ee0; }
 body.v3 .btn.primary:disabled { background: #9db9e6; border-color: #9db9e6; color: #fff; }
 body.v3 .btn.ghost { border-color: transparent; background: transparent; color: var(--text-2); }
 body.v3 .btn.ghost:hover { background: var(--surface-3); color: var(--text); }
@@ -4141,7 +4141,7 @@ body.v3 .step b {
 }
 body.v3 .step:hover { color: var(--text-2); }
 body.v3 .step.active { color: var(--text); font-weight: 600; }
-body.v3 .step.active b { background: #0d5fd6; border-color: #0d5fd6; color: #fff; box-shadow: 0 0 0 4px #edf4ff; }
+body.v3 .step.active b { background: #126efa; border-color: #126efa; color: #fff; box-shadow: 0 0 0 4px #edf4ff; }
 body.v3 .step.done { color: var(--text-2); }
 body.v3 .step.done b { background: #edf4ff; border-color: transparent; color: #0958d9; }
 body.v3 .step.skipped b { border-style: dashed; background: var(--surface); color: var(--muted); }
@@ -4226,7 +4226,7 @@ body.v3 .ai-chat-log {
 }
 body.v3 .ai-chat-log:empty { display: none; }
 body.v3 .msg { max-width: 94%; padding: 10px 12px; border-radius: 12px; font-size: 13px; line-height: 1.6; }
-body.v3 .msg.user { align-self: flex-end; background: #0d5fd6; color: #fff; border-bottom-right-radius: 4px; }
+body.v3 .msg.user { align-self: flex-end; background: #126efa; color: #fff; border-bottom-right-radius: 4px; }
 body.v3 .msg.ai { align-self: flex-start; background: var(--surface-2); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
 body.v3 .dz-inline {
   display: flex; flex-direction: column; gap: 3px; margin-top: 12px; padding: 10px 0 0;
@@ -4638,7 +4638,7 @@ body.v3 .vstep .vt b { display: block; font-weight: 600; line-height: 24px; font
 body.v3 .vstep .vt span { display: block; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
 body.v3 .vstep.done .vb { background: #edf4ff; border-color: transparent; color: #0958d9; }
 body.v3 .vstep.now { background: #edf4ff; }
-body.v3 .vstep.now .vb { background: #0d5fd6; border-color: #0d5fd6; color: #fff; }
+body.v3 .vstep.now .vb { background: #126efa; border-color: #126efa; color: #fff; }
 body.v3 .vstep.lock { cursor: default; opacity: .66; }
 body.v3 .patch .stack { gap: 16px; }
 body.v3 .patch-body { padding: 16px 20px 20px; }
@@ -5017,3 +5017,74 @@ body.v3 .rail-actions { justify-content: flex-end; }
 body.v3 .rail-actions .btn { flex: 0 0 auto; min-width: 128px; }
 body.v3 #historyWarning { margin: 0 0 16px; }
 body.v3 .panel[data-panel="fields"] .empty, body.v3 .panel[data-panel="issues"] .empty { padding: 22px 20px; }
+
+/* ============================================================
+   右栏整理 · 2026-11-24 用户反馈「这一块有点丑」
+   只动实施任务记录与环境两张卡；删掉本段即回到整理前的样子。
+   ============================================================ */
+
+/* ---------- 实施任务记录 ---------- */
+body.v3 .rail-hist summary { padding: 12px 10px 10px 16px; }
+body.v3 .rh-refresh {
+  display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 6px;
+  background: none; color: var(--muted); cursor: pointer;
+  transition: background .15s, color .15s;
+}
+body.v3 .rh-refresh:hover { background: var(--accent-soft); color: #0958d9; }
+body.v3 #historyItems { margin: 0; max-height: 312px; overflow: auto; }
+body.v3 .hist-item { padding: 10px 12px 10px 16px; gap: 10px; }
+body.v3 .hist-item > input { margin-top: 4px; }
+body.v3 .hist-item:hover { background: var(--surface-2); }
+body.v3 .hist-open b { font-size: 13px; }
+body.v3 .hist-open .hist-meta { display: block; margin-top: 1px; font-size: 12px; color: var(--muted); }
+body.v3 .hist-acts { gap: 4px 12px; margin-top: 3px; }
+body.v3 .hist-acts button { font-size: 12px; }
+body.v3 .hist-empty { padding: 10px 16px 16px; }
+body.v3 .hist-empty b { display: block; font-size: 13px; font-weight: 600; color: var(--text-2); }
+body.v3 .hist-empty span { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); }
+/* 对比区固定在卡片底部，结果框没有内容时不占位 */
+body.v3 .hist-foot { padding: 10px 16px 14px; border-top: 1px solid var(--border); }
+body.v3 .hist-foot > .btn { width: 100%; height: 30px; font-size: 12px; }
+body.v3 .hist-compare { margin-top: 8px; white-space: pre-wrap; font-size: 12px; line-height: 1.6; color: var(--text-2); }
+body.v3 .hist-compare.hint { color: var(--muted); }
+body.v3 .hist-compare:not(.hint) {
+  max-height: 180px; overflow: auto; padding: 8px 10px; border-radius: 8px;
+  background: var(--surface-2); border: 1px solid var(--border); font-family: var(--mono); font-size: 11.5px;
+}
+
+/* ---------- 当前环境 ---------- */
+body.v3 .rail-env summary { padding: 12px 16px 8px; }
+body.v3 .rail-env .env-name {
+  max-width: 150px; padding: 1px 9px; border-radius: 10px; overflow: hidden;
+  background: var(--accent-soft); color: #0958d9; font-size: 12px; font-weight: 600;
+  white-space: nowrap; text-overflow: ellipsis;
+}
+body.v3 .rail-env > .env-lead { margin: 0 16px 10px !important; font-size: 12px; color: var(--muted); }
+/* 旧层给 select 的 width:100% 加上左右外边距会溢出卡片右边缘：这里按扣除内边距后的宽度算 */
+body.v3 .rail-env > select { display: block; width: calc(100% - 32px); margin: 0 16px 12px; height: 32px; font-size: 13px; }
+body.v3 .rail-env form label { display: block; margin: 0 0 8px; font-size: 12px; color: var(--text-2); }
+body.v3 .rail-env form input, body.v3 .rail-env form textarea { margin-top: 4px; font-size: 12.5px; }
+body.v3 .rail-env form textarea { min-height: 52px; }
+/* 「高级」折叠区：里面的 summary 不能继承卡片标题的样式 */
+body.v3 .rail-env .env-fold > summary {
+  display: block; padding: 0; font-size: 12px; font-weight: 500; color: #0958d9; cursor: pointer; list-style: none;
+}
+body.v3 .rail-env .env-fold > summary::-webkit-details-marker { display: none; }
+body.v3 .rail-env .env-fold > summary::before { content: "▸ "; }
+body.v3 .rail-env .env-fold[open] > summary::before { content: "▾ "; }
+body.v3 .rail-env .env-fold > textarea { margin: 6px 0 8px; font-family: var(--mono); font-size: 11.5px; }
+/* 折叠区：外层「编辑当前环境」是卡片直接子元素，要保留 16px 侧边距；
+   里层「高级」在表单内，不吃侧边距。两条必须分开写——合成一条会把外层的侧边距清成 0。 */
+body.v3 .rail-env .env-edit { margin: 4px 16px 10px; }
+body.v3 .rail-env .env-adv { margin: 2px 0 10px; }
+body.v3 .rail-env .env-edit > summary { font-weight: 600; }
+body.v3 .rail-env .env-edit[open] > summary { margin-bottom: 10px; }
+body.v3 .hist-foot[hidden] { display: none; }
+body.v3 .rail-env label.env-check { display: flex; align-items: center; margin: 0; color: var(--muted); }
+body.v3 .rail-env label.env-check input { width: 14px; height: 14px; margin: 0 6px 0 0; }
+body.v3 .rail-env .env-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 2px; }
+body.v3 .rail-env .env-actions .btn { height: 28px; padding: 0 10px; font-size: 12px; }
+body.v3 .rail-env .env-actions .btn.danger { color: var(--danger); }
+body.v3 .rail-env > .hint { margin: 0 16px 10px !important; color: var(--muted); }
+body.v3 .rail-env #environmentError { margin: 0 16px 12px !important; color: var(--danger); font-size: 12px; }
+body.v3 .rail-env #environmentError:empty { display: none; }

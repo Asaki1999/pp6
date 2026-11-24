@@ -417,10 +417,20 @@
         </section>
 
         <details class="card rail-hist" id="taskHistory" open>
-          <summary><span>实施任务记录</span><span class="linkbtn">全部</span></summary>
-          <p class="hint">成功出包后自动保存在本机 ~/.pp6kit/history；最近 100 条。取回后核对页面设置再导入。</p>
-          <button class="btn ghost sm" id="refreshHistory">刷新记录</button>
+          <!-- 2026-11-24 用户反馈「这一块有点丑」：长说明、孤零零的刷新按钮、贴边的空状态、
+               被 append 到卡片上没有内边距的对比框都去掉了。说明只留一句在空状态里；
+               刷新收进标题行；对比按钮与结果固定在卡片底部。 -->
+          <summary>
+            <span>实施任务记录</span>
+            <button type="button" class="rh-refresh" id="refreshHistory" title="刷新记录" aria-label="刷新记录">
+              <svg class="i sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.3"/><path d="M20 5v6h-6"/></svg>
+            </button>
+          </summary>
           <div id="historyItems" aria-live="polite"></div>
+          <div class="hist-foot">
+            <button type="button" class="btn" id="historyCompare">对比选中的两条记录</button>
+            <div class="hist-compare" id="historyCompareOut" role="status" hidden></div>
+          </div>
         </details>
 
         <details class="card rail-env" id="environmentPanel"><summary>环境档案</summary></details>
