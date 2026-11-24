@@ -3444,6 +3444,18 @@ function bindAiEdit() {
   });
 }
 
+/* 输入卡「用文件生成」按钮：读文件时只改标题节点。
+ * 按钮是「图标 + 两行文字」的嵌套结构，textContent 会把图标和副标题一起冲掉，
+ * 恢复时又会变成一句「选择文件」——这也是之前用过一次就不像个按钮的原因。 */
+const setTileBusy = (on, text) => {
+  const btn = $("#btnPickSheet");
+  if (!btn) return;
+  btn.disabled = on;
+  btn.setAttribute("aria-busy", String(on));
+  const title = btn.querySelector(".ft-title");
+  if (title) title.textContent = on ? text : "用文件生成";
+};
+
 /* 第 1 步的文件入口：Excel 走「读表 → AI 映射」；PDF/Word 只抽文字，
  * 填进输入框让用户确认/删改后再生成。两条路都不直接出包。 */
 async function handleAiSource(file) {
@@ -3456,9 +3468,7 @@ async function handleAiSource(file) {
 }
 
 async function extractDocText(file) {
-  const btn = $("#btnPickSheet") || $("#aiFromSheet");
-  const old = btn ? btn.textContent : "";
-  if (btn) { btn.disabled = true; btn.textContent = "读文档中…"; }
+  setTileBusy(true, "读文档中…");
   try {
     const res = await fetch("/api/extract", {
       method: "POST",
@@ -3485,19 +3495,18 @@ async function extractDocText(file) {
   } catch (err) {
     toast("读取文档失败：" + err.message, 8000);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = old || "选择文件"; }
+    setTileBusy(false);
   }
 }
 
 /* 把项目经理自己整理的 Excel 交给 AI，映射成标准对象再预览 */
 async function analyzeSheet(file, sheet) {
-  const btn = $("#btnPickSheet") || $("#aiFromSheet");
   const box = $("#aiResult");
   const d1 = $("#aiChatText1");
   const hint = d1 ? d1.value.trim() : "";   // 首屏聊天框里写了就当作补充说明
   state.aiFile = file;                        // 换一张表单时不用再选一次文件
   goStep(2);
-  if (btn) { btn.disabled = true; btn.textContent = "读表中…"; }
+  setTileBusy(true, "读表中…");
   box.hidden = false;
   box.classList.remove("is-error");
   const which = sheet ? `「${esc(sheet)}」` : `「${esc(file.name)}」`;
@@ -3526,7 +3535,7 @@ async function analyzeSheet(file, sheet) {
     const retry = $("#aiSheetRetry");
     if (retry) retry.onclick = () => analyzeSheet(file, sheet);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "选择文件"; }
+    setTileBusy(false);
   }
 }
 
@@ -4496,7 +4505,7 @@ function bind() {
   });
 
   // ---- 第 1 步：一个输入口（描述 + 拖文件都行）
-  const dz = $("#dzInline");
+  const dz = $("#aiChatLaunch");
   $("#btnPickSheet").onclick = async () => {
     if (state.desktop) {
       // 桌面壳里 <input type=file> 不可靠，走系统文件对话框（Excel / PDF / Word）
@@ -4522,15 +4531,34 @@ function bind() {
     e.target.value = "";
     if (file) await handleAiSource(file);
   };
-  // 拖到输入区 = 走 AI 读表 / 读文档（不是模板导入）
-  ["dragenter", "dragover"].forEach((ev) =>
-    dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("drag"); }));
-  ["dragleave", "drop"].forEach((ev) =>
-    dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("drag"); }));
-  dz.addEventListener("drop", (e) => {
-    const file = e.dataTransfer.files[0];
-    if (file) handleAiSource(file);
-  });
+  // 拖到输入卡任意位置 = 走 AI 读表 / 读文档（不是模板导入）。
+  // 用计数器而不是 toggle：指针经过卡片子元素会成对触发 enter/leave，
+  // 单看事件会在拖动过程中闪一下就没。
+  const veil = $("#aiChatLaunch .drop-veil");
+  let dzDepth = 0;
+  const hasFiles = (e) => e.dataTransfer
+    && Array.from(e.dataTransfer.types || []).includes("Files");
+  if (dz && veil) {
+    dz.addEventListener("dragenter", (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      if (++dzDepth === 1) veil.hidden = false;
+    });
+    dz.addEventListener("dragover", (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+    });
+    dz.addEventListener("dragleave", () => {
+      if (dzDepth > 0 && --dzDepth === 0) veil.hidden = true;
+    });
+    dz.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dzDepth = 0;
+      veil.hidden = true;
+      const file = e.dataTransfer.files[0];
+      if (file) handleAiSource(file);
+    });
+  }
 
   // ---- 第 1 步（下半）：已经有一份标准 Excel，直接进预览
   // 入口是 button，不是 label 包 input：结构上不存在「label 原生激活」这条岔路。

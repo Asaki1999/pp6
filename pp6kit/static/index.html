@@ -358,10 +358,11 @@
                   placeholder="例：采购申请单，包含申请单号、申请人、所属项目、物品、数量、单价、总金额、期望到货日期。"></textarea>
                 <div class="ai-chat-foot">
                   <div class="cf-l">
-                    <button class="btn ghost" id="btnPickSheet" title="从 Excel / PDF / Word 提取内容并识别字段">
-                      <svg class="i"><use href="#i-clip"/></svg>用文件生成
+                    <button type="button" class="btn file-tile" id="btnPickSheet"
+                            title="支持 Excel（.xlsx / .xlsm）、文字版 PDF、Word（.docx）；也可把文件直接拖进这个输入框">
+                      <span class="ft-ic"><svg class="i"><use href="#i-sheet"/></svg></span>
+                      <span class="ft-tx"><b class="ft-title">用文件生成</b><span class="ft-sub">Excel / PDF / Word，自动识别字段</span></span>
                     </button>
-                    <span class="hint drag-hint">也可拖入 Excel / PDF / Word</span>
                   </div>
                   <div class="cf-r">
                     <span class="hint" id="aiChatHint1">Enter 发送，Shift+Enter 换行</span>
@@ -384,6 +385,13 @@
                 <span class="hint" id="aiFileTag">支持 .xlsx / .xlsm；.pdf / .docx 需为文字版</span>
                 <span class="hint" id="aiHint">字段类型自动识别：金额为数字、审批人为用户、备注为大文本、关联字段为对象；固定取值生成选项。</span>
                 <input type="file" id="aiSheetInput" accept=".xlsx,.xlsm,.pdf,.docx" hidden>
+              </div>
+
+              <!-- 整张卡都是接收区；拖动时盖一层，松手才读文件 -->
+              <div class="drop-veil" hidden>
+                <svg class="i"><use href="#i-sheet"/></svg>
+                <b>松开，用这份文件生成</b>
+                <span>Excel / PDF / Word；PDF、Word 需为文字版</span>
               </div>
             </section>
           </div><!-- /entryAi -->

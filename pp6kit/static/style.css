@@ -5088,3 +5088,90 @@ body.v3 .rail-env .env-actions .btn.danger { color: var(--danger); }
 body.v3 .rail-env > .hint { margin: 0 16px 10px !important; color: var(--muted); }
 body.v3 .rail-env #environmentError { margin: 0 16px 12px !important; color: var(--danger); font-size: 12px; }
 body.v3 .rail-env #environmentError:empty { display: none; }
+
+/* ============================================================
+   v4 设计补丁 · 输入卡的「用文件生成」入口
+   ------------------------------------------------------------
+   用法：原样追加到 pp6kit/static/style.css 末尾（后写者赢），配合
+   v4-file-entry.js 里的 DOM 调整。只作用于 body.v3 下的 #aiChatLaunch。
+   删掉本段并把按钮改回 <button class="btn ghost"> 即回退。
+
+   为什么改（2026-11-24 用户反馈「做得太隐晦」）：
+   · 原按钮是透明底、无边框的 .btn.ghost，13.5px 灰字 rgb(85,97,122)，
+     与它右边的提示「也可拖入 Excel / PDF / Word」同色同号，整行读成一串灰字；
+   · 「也可拖入」所指的接收区其实只是卡片底部 30px 高的小字条 #dzInline，
+     把文件拖到输入框正文上没有任何反应；
+   · 文件格式说明离按钮隔了两行，卡片底部堆了三段灰色说明。
+   ============================================================ */
+
+/* ---------- 1. 入口本体：图标 + 两行文字的实心描边按钮 ---------- */
+body.v3 #aiChatLaunch { position: relative; }
+
+body.v3 .file-tile {
+  justify-content: flex-start; gap: 10px;
+  height: 44px; padding: 3px 14px 3px 6px;
+  border: 1px solid #cdd5e1; border-radius: 10px;
+  background: #fff; color: #1b2437; text-align: left; white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .05);
+}
+body.v3 .file-tile:hover {
+  border-color: #8fb8ff; background: #f7faff;
+  box-shadow: 0 0 0 3px #edf4ff;
+}
+body.v3 .file-tile:active { transform: translateY(1px); background: #eef5ff; box-shadow: none; }
+body.v3 .file-tile:focus-visible { outline: 2px solid #126efa; outline-offset: 2px; }
+body.v3 .file-tile[disabled] { cursor: progress; }
+
+/* 图标底：32px 圆角方块，浅蓝底 + 品牌蓝描线图标 */
+body.v3 .ft-ic {
+  display: grid; place-items: center; flex: none;
+  width: 32px; height: 32px; border-radius: 8px;
+  background: #edf4ff; color: #126efa;
+}
+body.v3 .ft-ic .i { width: 18px; height: 18px; }
+
+body.v3 .ft-tx { display: flex; flex-direction: column; }
+body.v3 .ft-title { font-size: 14px; font-weight: 600; line-height: 20px; color: #1b2437; }
+body.v3 .ft-sub { font-size: 12px; font-weight: 400; line-height: 16px; color: #5f6b81; }
+
+/* 读取中：图标换成转圈，标题由脚本改成「读表中…」或「读文档中…」 */
+body.v3 .file-tile[aria-busy="true"] { border-color: #b9d4ff; background: #f7faff; }
+body.v3 .file-tile[aria-busy="true"] .ft-ic { background: #fff; }
+body.v3 .file-tile[aria-busy="true"] .ft-ic .i { display: none; }
+body.v3 .file-tile[aria-busy="true"] .ft-ic::after {
+  content: ""; width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid #c9ddff; border-top-color: #126efa;
+  animation: ft-spin .8s linear infinite;
+}
+@keyframes ft-spin { to { transform: rotate(360deg); } }
+
+/* ---------- 2. 去掉与按钮重复的说明 ---------- */
+/* 「也可拖入…」改为拖动时才出现（见 3），不再常驻占位 */
+body.v3 .ai-chat-foot .drag-hint { display: none; }
+/* 「支持 .xlsx…」已并入按钮副标题与悬停提示；#aiFileTag / #aiHint 脚本从不写入。
+   元素保留（#aiSheetInput 还在里面），只是不再显示。 */
+body.v3 #dzInline { display: none; }
+
+/* ---------- 3. 拖入反馈：整张输入卡都是接收区 ---------- */
+body.v3 .drop-veil {
+  position: absolute; inset: -1px; z-index: 6;
+  display: grid; place-content: center; justify-items: center; gap: 4px;
+  border: 2px dashed #126efa; border-radius: 12px;
+  background: rgba(247, 250, 255, .96);
+  pointer-events: none;
+}
+body.v3 .drop-veil[hidden] { display: none; }
+body.v3 .drop-veil .i { width: 28px; height: 28px; margin-bottom: 4px; color: #126efa; stroke-width: 1.5; }
+body.v3 .drop-veil b { font-size: 16px; font-weight: 600; color: #1b2437; }
+body.v3 .drop-veil span { font-size: 13px; color: #5f6b81; }
+
+/* ---------- 4. 窄屏：底栏竖排时按钮靠左、主按钮靠右 ---------- */
+@media (max-width: 900px) {
+  body.v3 #aiChatLaunch .ai-chat-foot { gap: 10px; }
+  body.v3 #aiChatLaunch .ai-chat-foot .cf-r { justify-content: flex-end; }
+}
+
+/* ---------- 5. 可选：再强调一档（浅蓝底），加在 body 上即生效 ---------- */
+body.v4-strong .file-tile { background: #f5f9ff; border-color: #b9d4ff; }
+body.v4-strong .ft-ic { background: #dbe9ff; }
+body.v4-strong .file-tile:hover { border-color: #126efa; background: #eef5ff; box-shadow: none; }

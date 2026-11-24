@@ -1480,3 +1480,39 @@ def _():
     assert "def _browser_url(" in app
     assert "v={quote(str(tag))}" in app, "浏览器地址没有带上构建指纹"
     assert app.count("_browser_url(") >= 3, "启动与复用两条路径都要带指纹"
+
+
+@case("WEB51", "webui", "输入卡的「用文件生成」是能认出来的按钮；整张卡都能拖入", "P1",
+      ["按钮 44px 高、描边白底、图标 + 两行文字（不再是灰字说明）",
+       "「也可拖入」常驻提示与 #dzInline 隐藏，#aiSheetInput 仍在文档里",
+       "拖拽绑在 #aiChatLaunch 上（整卡接收），用计数器防止子元素抖动",
+       "读取中只改 .ft-title，不冲掉图标与副标题"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+    css = (root / "pp6kit" / "static" / "style.css").read_text(encoding="utf-8")
+    js = (root / "pp6kit" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'class="btn file-tile" id="btnPickSheet"' in html
+    assert 'class="ft-title"' in html and 'class="ft-sub"' in html
+    assert 'class="drop-veil"' in html
+    assert 'id="dzInline"' in html and 'id="aiSheetInput"' in html
+    assert 'class="hint drag-hint"' not in html, "「也可拖入」常驻提示没去掉"
+
+    start = css.index("body.v3 .file-tile {")
+    assert "height: 44px" in css[start:start + 240], "按钮高度不是 44"
+    assert "body.v3 #dzInline { display: none; }" in css
+    assert "body.v3 .ai-chat-foot .drag-hint { display: none; }" in css
+    assert "body.v3 .drop-veil" in css
+
+    assert "const setTileBusy = (on, text) =>" in js
+    assert 'btn.querySelector(".ft-title")' in js
+    for gone in ('btn.textContent = "读文档中…"', 'btn.textContent = "读表中…"',
+                 'btn.textContent = old || "选择文件"', 'btn.textContent = "选择文件"'):
+        assert gone not in js, f"旧的 textContent 改写还在：{gone}"
+
+    assert 'const dz = $("#aiChatLaunch");' in js
+    assert 'const veil = $("#aiChatLaunch .drop-veil");' in js
+    assert "if (++dzDepth === 1) veil.hidden = false;" in js
