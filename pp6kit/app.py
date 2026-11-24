@@ -20,9 +20,10 @@ import webbrowser
 import zipfile
 from pathlib import Path
 
-from . import applog
+from . import applog, instance
 
 APP_NAME = "PP6 Studio"
+DEFAULT_PORT = instance.DEFAULT_PORT
 
 # 窗口迟迟不加载完就把同一地址丢给浏览器，至少能用
 LOAD_GRACE_SECONDS = 20
@@ -30,7 +31,8 @@ LOAD_GRACE_SECONDS = 20
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="pp6kit-app")
-    ap.add_argument("--port", type=int, default=8770)
+    ap.add_argument("--port", type=int, default=None,
+                    help="固定端口（默认 8770，被占则顺延；显式指定时不启用单实例接管）")
     ap.add_argument("--headless", action="store_true", help="只起服务不开窗口（自检用）")
     ap.add_argument("--window", action="store_true",
                     help="用系统 WebView 窗口打开（Windows 需显式指定）")
@@ -66,11 +68,47 @@ def main(argv: list[str] | None = None) -> int:
         applog.fatal("加载服务模块失败（依赖缺失或打包不完整）")
         return 2
 
+    # 单实例：默认桌面启动才管。--headless / 显式 --port 是自检、CI 与多开调试，
+    # 必须能和用户手上那份并存，所以整段跳过。
+    port = DEFAULT_PORT if args.port is None else args.port
+    single = mode != "headless" and args.port is None and os.environ.get("PP6_SELFTEST") != "1"
+    claim = None
+    if single:
+        claim = instance.claim(instance.build_key())
+        if claim.status == "reused":
+            # 同一份程序已经在跑：不再起第二个服务，把用户送回那个页面
+            log.info("已有同版本实例在运行：%s（%s），不再重复启动",
+                     claim.url, claim.detail)
+            print(f"{APP_NAME} 已在运行: {claim.url}", flush=True)
+            if mode == "browser":
+                try:
+                    webbrowser.open(claim.url)
+                except Exception:
+                    log.warning("打开已有实例的页面失败", exc_info=True)
+            return 0
+        if claim.status == "blocked":
+            log.error("无法接管已在运行的实例：%s", claim.detail)
+            applog.alert(
+                "已有一个 PP6 在运行",
+                "检测到旧实例还在运行，但它没有响应退出请求。\n\n"
+                f"{claim.detail}\n\n"
+                "请先在任务管理器里结束 PP6ImportBuilder.exe，再重新打开。\n"
+                f"日志：{applog.log_path()}")
+            return 4
+        if claim.status == "took-over":
+            log.info("已让旧实例（%s）退出，接管端口 %d", claim.detail, claim.port)
+        if claim.port:
+            # 沿用旧端口：浏览器里已经开着的标签刷新一下就是新版界面
+            port = claim.port
+
     try:
-        httpd, url = start_background(args.port)
+        httpd, url = start_background(port)
     except Exception:
-        applog.fatal("HTTP 服务启动失败，端口 %d" % args.port)
+        applog.fatal("HTTP 服务启动失败，端口 %d" % port)
         return 3
+    if single and claim is not None and claim.ok:
+        instance.register(httpd.server_address[1], httpd.instance_token)
+        log.info("实例已登记：pid %d / 端口 %d", os.getpid(), httpd.server_address[1])
     log.info("本地服务就绪 -> %s（启动后 %.2f 秒）", url, applog.elapsed())
 
     if mode == "headless":
@@ -132,6 +170,9 @@ def main(argv: list[str] | None = None) -> int:
             js_api=api,
         )
         api.bind(window)
+        # 另一个实例请求接管时，先关窗口让 webview.start() 返回，
+        # 再由本函数的 finally 关服务；直接 os._exit 会丢日志。
+        httpd.on_quit = window.destroy
         log.info("窗口对象已创建（启动后 %.2f 秒）", applog.elapsed())
     except Exception:
         log.warning("无法创建窗口，改用浏览器打开", exc_info=True)

@@ -328,7 +328,8 @@ def _serving(port: int, host: str = "127.0.0.1"):
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
-        yield SimpleNamespace(port=used, token=httpd.lan_token)
+        yield SimpleNamespace(port=used, token=httpd.lan_token,
+                             instance_token=httpd.instance_token)
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -412,4 +413,16 @@ def _():
     with _serving(18993) as s:
         assert s.token == ""
         status, _, _ = _origin_req(s.port, "GET", "/api/template")
+        assert status == 200, status
+
+
+@case("SEC20", "security", "退出接口只认本机 + 实例令牌", "P0",
+      ["没有令牌 / 令牌不对 → 403", "服务照常响应，不被顺手关掉",
+       "成功路径会让进程退出，放到 DSK03 用假实例验证"])
+def _():
+    with _serving(18996) as s:
+        for headers in ({}, {"X-PP6-Token": ""}, {"X-PP6-Token": "guess-me"}):
+            status, _, _ = _origin_req(s.port, "POST", "/api/quit", headers)
+            assert status == 403, (headers, status)
+        status, _, _ = _origin_req(s.port, "GET", "/api/version")
         assert status == 200, status

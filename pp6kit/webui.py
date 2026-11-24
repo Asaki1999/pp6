@@ -10,11 +10,13 @@ import copy
 import io
 import hmac
 import json
+import os
 import re
 import secrets
 import shutil
 import socket
 import threading
+import time
 import traceback
 import webbrowser
 import zipfile
@@ -3090,6 +3092,41 @@ class Handler(BaseHTTPRequestHandler):
                                   ensure_ascii=False).encode("utf-8"),
                    "application/json; charset=utf-8")
 
+    def _quit_local(self) -> None:
+        """让这个进程退出：新版接管的握手口，也是「退出应用」的入口。
+
+        会让进程直接消失，所以只认两样东西：回环来源 + 启动时写进
+        instance.json 的令牌。同网段（--lan）和浏览器里的其它页面都碰不到。
+        """
+        if self.client_address[0] not in ("127.0.0.1", "::1"):
+            self._json({"ok": False, "error": "只允许在本机操作"}, 403)
+            return
+        expected = getattr(self.server, "instance_token", "")
+        given = self.headers.get("X-PP6-Token") or ""
+        if not expected or not hmac.compare_digest(given.encode(), expected.encode()):
+            self._json({"ok": False, "error": "缺少实例令牌"}, 403)
+            return
+
+        hook = getattr(self.server, "on_quit", None)
+        self._json({"ok": True, "pid": os.getpid()})
+
+        def _bye() -> None:
+            try:
+                if hook:
+                    hook()          # 窗口模式：destroy() 结束事件循环
+            except Exception:
+                traceback.print_exc()
+            time.sleep(0.2)
+            try:
+                from . import applog, instance
+                instance.clear_registry()   # os._exit 不跑 atexit，自己把登记表擦掉
+                applog.get("pp6kit.app").info("收到退出请求（来自另一个实例或前端），进程退出")
+            except Exception:
+                pass
+            os._exit(0)             # 浏览器模式没人收尾，直接退
+
+        threading.Timer(0.25, _bye).start()
+
     def _json(self, payload: dict, status: int = 200,
               extra: dict | None = None) -> None:
         self._send(status, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -3234,6 +3271,9 @@ class Handler(BaseHTTPRequestHandler):
             self._deny(reason)
             return
         try:
+            if self.path == "/api/quit":
+                self._quit_local()
+                return
             if self.path == "/api/update/stream":
                 # 下载/替换要几十秒，用 SSE 把进度推给前端；替换成功时
                 # updater 会在响应写完后自行退出进程（脚本等着接手）。
@@ -3525,6 +3565,10 @@ def make_server(port: int = 8770, host: str = "127.0.0.1") -> tuple[ThreadingHTT
         except OSError:
             continue
         httpd.lan_token = lan_token
+        # 退出接口的令牌：只有读到 ~/.pp6kit/instance.json 的本机进程拿得到。
+        # 每次启动都换，旧进程的令牌对新进程无效。
+        httpd.instance_token = secrets.token_urlsafe(16)
+        httpd.on_quit = None
         return httpd, candidate
     raise RuntimeError(f"端口 {port}-{port + 19} 都被占用，请用 --port 指定其它端口")
 
