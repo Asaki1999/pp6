@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import re
 
 from pp6kit import spec as S
@@ -15,6 +16,48 @@ from tests._harness import (all_tags, attrs, attr_of, case, field, pick,
 
 def build(sheets: dict) -> bytes:
     return webui.build_zip(xlsx(sheets))[0]
+
+
+@contextlib.contextmanager
+def _target_db(infos: dict):
+    """模拟「已连目标库 + 查到了这些字段」。
+
+    只 mock db_object_infos 不够：builder 还看 _db_ready()，本机有 ~/.pp6kit 配置时
+    为真、CI 上为假，锁类型那一步会被整段跳过（BO41/BO43 只在 CI 红）。
+    """
+    from pp6kit import objects
+
+    old_infos, old_ready = objects.db_object_infos, objects._db_ready
+    objects.db_object_infos = lambda codes: infos
+    objects._db_ready = lambda: {"database": "unit-test"}
+    try:
+        yield
+    finally:
+        objects.db_object_infos, objects._db_ready = old_infos, old_ready
+
+
+@contextlib.contextmanager
+def _system_datasets(keys: list[str]):
+    """压住系统清单里的 dataSet key，避免结论跟着本机 ~/.pp6kit/templates.json 跑。
+
+    值来源是复用系统那份、还是新建随包一份，直接决定控件是 selectObject 还是
+    linkdata（见 tests/test_links.py LNK17 的长注释）。BO48 要的是前者只留
+    classification，这样项目类型降级、所属项目建随包值来源。
+    """
+    from pp6kit import objects
+
+    old = objects.extra
+
+    def fake(force: bool = False) -> dict:
+        data = dict(old(force))
+        data["datasets"] = list(keys)
+        return data
+
+    objects.extra = fake
+    try:
+        yield
+    finally:
+        objects.extra = old
 
 
 def bo_xml(rows: list[dict], bo: dict | None = None) -> str:
@@ -1032,13 +1075,8 @@ def _():
                      "字段名称": "说明", "数据类型": "字符串", "长度": 200}],
     }))
     bo = proj.bos[0]
-    orig = objects.db_object_infos
-    objects.db_object_infos = lambda codes: {
-        "contract": {"id": "644", "fields": {"note": {"type_new": "clob", "length": None}}}}
-    try:
+    with _target_db({"contract": {"id": "644", "fields": {"note": {"type_new": "clob", "length": None}}}}):
         notes = builder.align_existing_object_fields(proj)
-    finally:
-        objects.db_object_infos = orig
     assert bo.field_by_code("note").type_new == "clob"
     assert any("不支持改类型" in n for n in notes), notes
 
@@ -1050,12 +1088,8 @@ def _():
                      "字段名称": "说明", "数据类型": "字符串", "长度": 200}],
     }))
     bo2 = proj2.bos[0]
-    objects.db_object_infos = lambda codes: {
-        "contract": {"id": "777", "fields": {"note": {"type_new": "clob", "length": None}}}}
-    try:
+    with _target_db({"contract": {"id": "777", "fields": {"note": {"type_new": "clob", "length": None}}}}):
         builder.align_existing_object_fields(proj2, adopt=True)
-    finally:
-        objects.db_object_infos = orig
     assert bo2.exist_id == "777"
     assert bo2.field_by_code("note").type_new == "clob"
 
@@ -1108,15 +1142,10 @@ def _():
                          "序号": 1, "列名": "阶段", "列类型": "字符串（varchar）"}],
     }))
     bo = proj.bos[0]
-    orig = objects.db_object_infos
     # 库里那条字段是上次误导成的大文本（clob）
-    objects.db_object_infos = lambda codes: {
-        "project_create": {"id": "644",
-                           "fields": {"planExcel": {"type_new": "clob", "length": None}}}}
-    try:
+    with _target_db({"project_create": {"id": "644",
+                                       "fields": {"planExcel": {"type_new": "clob", "length": None}}}}):
         notes = builder.align_existing_object_fields(proj)
-    finally:
-        objects.db_object_infos = orig
 
     f = bo.field_by_code("planExcel")
     assert f.type_new == "table", f"表格被库里的 clob 锁回去了：{f.type_new}"
@@ -1131,12 +1160,8 @@ def _():
         S.S_FIELD: [{"对象编码": "contract", "序号": 1, "字段编码": "note",
                      "字段名称": "说明", "数据类型": "字符串"}],
     }))
-    objects.db_object_infos = lambda codes: {
-        "contract": {"id": "645", "fields": {"note": {"type_new": "clob", "length": None}}}}
-    try:
+    with _target_db({"contract": {"id": "645", "fields": {"note": {"type_new": "clob", "length": None}}}}):
         builder.align_existing_object_fields(proj2)
-    finally:
-        objects.db_object_infos = orig
     assert proj2.bos[0].field_by_code("note").type_new == "clob"
 
 
@@ -1365,7 +1390,8 @@ def _list_cols(value_sources=None) -> tuple[list[dict], str]:
        "模板 attrs.display_field 开启（接口合并）",
        "字典列带 dictionary key，数字列不带 displayName"])
 def _():
-    cols, xml = _list_cols()
+    with _system_datasets(["classification"]):
+        cols, xml = _list_cols()
     by = {c["name"]: c for c in cols}
 
     cls = by["classification_id_"]

@@ -102,6 +102,29 @@ def using(snap: projlink.Snapshot | None = None):
         projlink.load_snapshot = old
 
 
+@contextlib.contextmanager
+def _system_datasets(keys: list[str]):
+    """压住系统清单里的 dataSet key，避免值来源复用/新建跟着本机缓存走。
+
+    本机有 ~/.pp6kit/templates.json 时会复用系统那份（PL30 期望 linkdata 仍是
+    project_phase）；CI 没有时 blueprint 会新建随包 project_phase_value，断言就飘。
+    """
+    from pp6kit import objects
+
+    old = objects.extra
+
+    def fake(force: bool = False) -> dict:
+        data = dict(old(force))
+        data["datasets"] = list(keys)
+        return data
+
+    objects.extra = fake
+    try:
+        yield
+    finally:
+        objects.extra = old
+
+
 def bo_row(name: str = "合同", code: str = "contract", **kw) -> dict:
     row = {"对象名称": name, "对象编码": code, "物理表名": f"pp_{code}",
            "对象类型": "object", "记录变更日志": "是", "流程驱动": "否"}
@@ -1040,7 +1063,7 @@ def _():
                      S.S_FORMFIELD: [{"表单key": "create_contract",
                                       "字段编码": "xiangMuJiBie",
                                       "显示标签": "项目级别", "控件类型": "text"}]})
-    with using():
+    with _system_datasets(["project_grade"]), using():
         body = build(data)
     bo_text = pick(body, "bo/")
     row = attr_row(bo_text, "gradeId")
@@ -1105,7 +1128,7 @@ def _():
                      S.S_FORMFIELD: [{"表单key": "create_contract",
                                       "字段编码": "jieDuan",
                                       "显示标签": "项目阶段", "控件类型": "text"}]})
-    with using(snap):
+    with _system_datasets(["project_phase"]), using(snap):
         body = build(data)
     # 字段本身对齐成项目侧定义（含 tree 选项）
     row = attr_row(pick(body, "bo/"), "phaseIds")
