@@ -1516,3 +1516,25 @@ def _():
     assert 'const dz = $("#aiChatLaunch");' in js
     assert 'const veil = $("#aiChatLaunch .drop-veil");' in js
     assert "if (++dzDepth === 1) veil.hidden = false;" in js
+
+
+@case("WEB52", "webui", "环境档案兼容旧的 GBK 文件（中文 Windows 升级不丢配置）", "P1",
+      ["新文件写 UTF-8", "旧文件是 GBK 时退回本地编码读，不能直接崩",
+       "升级后读出来内容一致"])
+def _():
+    import json
+    from unittest.mock import patch
+
+    from pp6kit import environments
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = __import__("pathlib").Path(tmp) / "environments.json"
+        payload = {"activeId": "e1", "items": [
+            {"id": "e1", "name": "华东实施", "platformVersion": "V6.2",
+             "notes": "", "mappings": {}, "boundSnippetsSha256": ""}]}
+        # 旧版本在中文 Windows 上就是这样写的（GBK）
+        target.write_bytes(json.dumps(payload, ensure_ascii=False).encode("gbk"))
+        with patch.object(environments, "path", return_value=target):
+            got = environments.read()
+        assert got["items"][0]["name"] == "华东实施", got
+        assert got["activeId"] == "e1", got

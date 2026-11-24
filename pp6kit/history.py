@@ -58,7 +58,9 @@ def recent() -> list[dict]:
         if not re.fullmatch(r'[0-9a-f]{32}', path.parent.name):
             continue
         try:
-            row = json.loads(path.read_text())
+            # 记录是 UTF-8 写的；中文 Windows 的默认编码是 cp936，不写 encoding
+            # 会 UnicodeDecodeError（ValueError 子类）被下面吞掉 → 任务记录永远为空
+            row = json.loads(path.read_text(encoding='utf-8'))
             items.append({k: row[k] for k in ('id', 'createdAt', 'packageName', 'toolVersion')})
         except (OSError, ValueError, KeyError):
             continue

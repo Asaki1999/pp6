@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import locale
 import threading
 import uuid
 from pathlib import Path
@@ -16,9 +17,24 @@ def path():
 def fingerprint():
     return hashlib.sha256(snippets_path().read_bytes()).hexdigest()
 
+def _load(path_obj):
+    """读环境档案：新文件是 UTF-8；升级前中文 Windows 可能写成了 GBK。
+
+    只按 UTF-8 读会把老文件读崩（用户升级后环境档案直接打不开），
+    所以先 UTF-8，失败再退回系统本地编码，最后兜一次 GBK。
+    """
+    raw = path_obj.read_bytes()
+    for encoding in ('utf-8', locale.getpreferredencoding(False), 'gbk'):
+        try:
+            return json.loads(raw.decode(encoding))
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return json.loads(raw.decode('utf-8', 'replace'))
+
+
 def read():
     if path().exists():
-        return json.loads(path().read_text())
+        return _load(path())
     return {'activeId': 'default', 'items': [{'id': 'default', 'name': '默认环境', 'platformVersion': '', 'notes': '', 'mappings': {}, 'boundSnippetsSha256': fingerprint()}]}
 
 def snapshot(key=None):
@@ -74,7 +90,8 @@ def update(action, payload):
         target = path()
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix('.tmp')
-        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                            encoding='utf-8')
         temporary.chmod(0o600)
         temporary.replace(target)
         return data
