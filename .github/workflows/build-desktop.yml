@@ -59,6 +59,21 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # 摘要网页端要展开才看得到；注解（annotation）在 check-run API 里也能读，
+      # 正好给「没有 gh、只有公开 API」的排查场景用。
+      - name: 回归失败注解
+        if: failure()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path("regress.log").read_text(encoding="utf-8", errors="replace")
+          tail = text.split("失败明细：")[-1] if "失败明细：" in text else text[-2000:]
+          for line in [x.strip() for x in tail.splitlines() if x.strip()][:12]:
+              safe = line.replace("%", "%25").replace("\n", "%0A")
+              print(f"::error title=回归失败::{safe}")
+          PY
+
   build:
     needs: regress
     strategy:
