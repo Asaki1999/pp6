@@ -65,7 +65,7 @@ const CTRL_LABEL = {
  * 原来的第三档「按 Excel」被用户砍掉了：要么全关联、要么全不关联，
  * 想看单个对象，用对象卡片上的「关联项目」开关。`1_业务对象` 的「关联项目」
  * 列仍然有效（命令行 / 接口直接传 Excel 时照旧认它），只是应用内以两档为准。
- * 普通模式 / 流程模式共享同一档，**不落盘**（默认恒为「不关联」，见 state.plPre）；
+ * 新建业务配置 / 新建流程配置共享同一档，**不落盘**（默认恒为「不关联」，见 state.plPre）；
  * 存量包修订页那条仍记 localStorage：pp6.plPrePatch。
  *
  * 协议没变：仍然是 POST /api/parse + X-Project-Link，服务端照旧重新分析、不信任前端。
@@ -129,7 +129,8 @@ const state = {
   // 选文件重入锁：连点 / 事件叠加（label 原生激活 + JS 各弹一个面板）会同时开
   // 两个系统对话框，用户看到「两个窗口」或一个空目录。见 beginPick()。
   picking: false,
-  flowMode: false,             // 流程模式 = 普通模式同一套 UI，导出时附带固定三步 XML
+  restoredObjectScope: null,
+  flowMode: false,             // 新建流程配置 = 新建业务配置同一套 UI，导出时附带固定三步 XML
   entryMode: "",               // 第 1 步先选入口："ai" / "excel"；空=还在选择页
   picked: new Set(), imported: new Set(), aiData: null, aiFile: null,
 
@@ -146,7 +147,7 @@ const state = {
   plDeferred: false,
   // 第 1 步「业务对象关联项目」的两档（初始页控件，导入前就定）：
   // "off" 不关联（默认） / "on" 全部关联。
-  // 普通模式与流程模式共享同一档。
+  // 新建业务配置与新建流程配置共享同一档。
   // 2026-11-20 用户口径：**默认必须是不关联**。以前这里读 localStorage 记住
   // 上次选择，结果「上次点了关联 → 下次打开默认就是关联」，用户看到的就是
   // 默认值被改掉了。现在固定以「不关联」开局，不再记忆这一档
@@ -300,6 +301,7 @@ async function handleFile(file, { fromAi = false, quiet = false } = {}) {
       : "项目字段池还没准备好，文件未解析：请先在第 1 步选「使用随包快照」或导入项目 zip", 9000);
     return;
   }
+  state.restoredObjectScope = null;
   state.file = file;
   setLoading(true);
   try {
@@ -379,7 +381,7 @@ async function handleFile(file, { fromAi = false, quiet = false } = {}) {
     renderAll();
     // 直接从 AI 预览下来的 Excel → 进第 3 步；手动传的也进第 3 步，
     // 因为「结果」区里就是模块勾选 + 下载，这是流程的终点。
-    // quiet：人在「流程模式」页上传，结果区照样准备好，但不要把工作区滚回顶部
+    // quiet：人在「新建流程配置」页上传，结果区照样准备好，但不要把工作区滚回顶部
     goStep(3, { scroll: !quiet });
     if (quiet) {
       const all = state.data.objects || [];
@@ -477,7 +479,7 @@ function syncAiNextLabel() {
     : "按当前预览生成导入包（回到结果页下载）";
 }
 
-/* 两个菜单的两档单选同步：普通模式 / 流程模式共享同一档（state.plPre），
+/* 两个菜单的两档单选同步：新建业务配置 / 新建流程配置共享同一档（state.plPre），
  * 存量包修订是独立的三档（state.plPrePatch）。 */
 function syncPlPreInputs() {
   $$('input[name="plPreImport"], input[name="plPreWorkflow"]').forEach((el) => {
@@ -768,7 +770,7 @@ function renderAll() {
     ? stats.map(([k, n]) => `<span class="stat-i"><b>${n}</b>${k}</span>`).join('<span class="sep">·</span>')
     : '<span class="stat-i empty">这份 Excel 里还没有任何内容</span>';
 
-  // 流程对象在普通模式只出普通对象，在流程模式随 zip 一起出，数字对不上时得说清楚为什么，
+  // 流程对象在新建业务配置只出普通对象，在新建流程配置随 zip 一起出，数字对不上时得说清楚为什么，
   // 否则用户会以为包里少导了一个对象
   const note = $("#statsNote");
   if (note) {
@@ -777,7 +779,7 @@ function renderAll() {
     note.textContent = flowCount
       ? (state.flowMode
         ? `其中 ${flowCount} 个流程对象随导入包一并导出，并附固定三步流程 XML。`
-        : `其中 ${flowCount} 个为流程对象：普通模式仅导出普通对象，切换流程模式后一并导出。`)
+        : `其中 ${flowCount} 个为流程对象：新建业务配置仅导出普通对象，切换新建流程配置后一并导出。`)
       : "";
   }
 
@@ -838,7 +840,7 @@ function renderAll() {
   renderLists();
   renderIssues();
   state.imported = new Set();
-  // 流程模块不再作为可导出模块出现：流程对象走「流程模式」的对象包，
+  // 流程模块不再作为可导出模块出现：流程对象走「新建流程配置」的对象包，
   // 固定三步，不生成流程 XML。
   state.picked = new Set(
     (d.modules || []).filter((m) => m.count > 0 && m.code !== "workflow")
@@ -866,6 +868,7 @@ function updateBar() {
   }
   const mods = (d.modules || []).filter((m) => m.count > 0 && m.code !== "workflow");
   const picked = mods.filter((m) => state.picked.has(m.code));
+  renderPreflight(d, picked);
   const btn = $("#btnPack") || $("#btnBuild");
   if (btn) btn.disabled = d.errorCount > 0 || !picked.length;
   $("#barSummary").textContent =
@@ -890,8 +893,9 @@ function updateBar() {
   }
 }
 
-/* 流程模式：复用普通工作区，仅切换导出时是否附带固定三步 XML。 */
+/* 新建流程配置：复用普通工作区，仅切换导出时是否附带固定三步 XML。 */
 window.PP6SetFlowMode = (on) => {
+  if (state.flowMode !== !!on) state.restoredObjectScope = null;
   state.flowMode = !!on;
   const bar = $("#flowModeBar");
   if (bar) bar.hidden = !state.flowMode;
@@ -1244,7 +1248,7 @@ function bindProjectSnapshotModal() {
 
 /* 统一的「关联项目」决策头：界面开关（linked）+ 确认弹窗里勾的字段（align）。
  *
- * 同步包 / 流程模式 zip / 确认版 Excel 入口，以及「拨开关后重新解析」，都用它。
+ * 同步包 / 新建流程配置 zip / 确认版 Excel 入口，以及「拨开关后重新解析」，都用它。
  * 各自拼一份迟早会出现「预览有 projectId、包里没有」——那种差异只有用户导入后
  * 才会发现（页面全绿，系统里就是没有「所属项目」）。同理，勾了「按项目覆盖」却
  * 只在预览里生效、包里没生效，是更糟的一种：用户以为改了，导入后定义还是旧的。
@@ -1478,7 +1482,7 @@ async function downloadConfirmedExcel() {
   }
 }
 
-/* 流程模式导出：zip 走 /api/build（X-Object-Scope=all），流程 XML 单独走
+/* 新建流程配置导出：zip 走 /api/build（X-Object-Scope=all），流程 XML 单独走
    /api/workflow；固定 开始 → 审核 → 通过，不在这里画流程图。 */
 async function downloadWorkflow(btn) {
   if (!state.file) { toast("请先上传 Excel 或生成业务对象"); return; }
@@ -1513,7 +1517,7 @@ async function downloadWorkflow(btn) {
    现在只留一个动作，语义是「只把这一个模块打成包」。 */
 function renderModules() {
   const box = $("#modList");
-  // 流程不再作为独立导出模块：对象包在「流程模式」里出，不生成流程 XML
+  // 流程不再作为独立导出模块：对象包在「新建流程配置」里出，不生成流程 XML
   const mods = (state.data.modules || []).filter((m) => m.code !== "workflow");
   if (!mods.length) { box.innerHTML = ""; return; }
   mods.forEach((m) => { MOD_LABEL[m.code] = m.label; });
@@ -1600,8 +1604,8 @@ function renderObjects() {
     <div class="card">
       <div class="card-head">
         <div>
-          <h3>${esc(bo.name)} <span class="chip accent">${esc(bo.code)}</span>${bo.flowDriven ? ' <span class="chip">流程模式</span>' : ""}${bo.projectLink ? ` <span class="chip accent">关联${esc(tName)}</span>` : ""}</h3>
-          <div class="sub">表名 ${esc(bo.tbl)} · ${bo.fields.length} 个字段${bo.withLog ? " · 记录变更日志" : ""}${bo.flowDriven ? " · 流程对象：流程模式导出时随 zip 一起出" : ""}${bo.projectLink ? ` · 已补「${esc(linkLabel)}」链接字段，并已对齐与${esc(tName)}同名的字段` : ""}</div>
+          <h3>${esc(bo.name)} <span class="chip accent">${esc(bo.code)}</span>${bo.flowDriven ? ' <span class="chip">新建流程配置</span>' : ""}${bo.projectLink ? ` <span class="chip accent">关联${esc(tName)}</span>` : ""}</h3>
+          <div class="sub">表名 ${esc(bo.tbl)} · ${bo.fields.length} 个字段${bo.withLog ? " · 记录变更日志" : ""}${bo.flowDriven ? " · 流程对象：新建流程配置导出时随 zip 一起出" : ""}${bo.projectLink ? ` · 已补「${esc(linkLabel)}」链接字段，并已对齐与${esc(tName)}同名的字段` : ""}</div>
         </div>
         <div class="obj-side">
           <label class="pl-switch" title="${esc(linkTip)}">
@@ -1974,12 +1978,14 @@ async function buildZip(codes, trigger) {
   try {
     const buf = await state.file.arrayBuffer();
     const headers = { "X-Modules": JSON.stringify(list) };
-    // 流程模式：对象按流程模式出（全部对象），zip 里不含 XML；
+    if (window.PP6Environment?.id) headers["X-Environment-Id"] = PP6Environment.id;
+    // 新建流程配置：对象按新建流程配置出（全部对象），zip 里不含 XML；
     // XML 由结果页单独的「下载流程 XML」按钮给，两个文件一起交付。
     if (state.flowMode) {
       headers["X-Object-Scope"] = "all";
       headers["X-Workflow-All"] = "1";
     }
+    if (state.restoredObjectScope !== null) headers["X-Object-Scope"] = state.restoredObjectScope;
     const relHeader = window.Relations ? window.Relations.decisionsHeader("parse") : null;
     if (relHeader) headers["X-Relations"] = relHeader;
     const plHeader = projLinkHeader();
@@ -1994,6 +2000,9 @@ async function buildZip(codes, trigger) {
       throw new Error(err.error || "生成失败");
     }
     const blob = await res.blob();
+    if (res.headers.get("X-History-Status") === "failed")
+      { const warning = document.querySelector("#historyWarning"); warning.hidden=false; warning.textContent="导入包已生成，但任务记录保存失败；请保存输入与输出文件。"; }
+    else if (res.headers.get("X-History-Id")) refreshHistory();
     const name = decodeURIComponent(res.headers.get("X-Filename") || "pp6-import.zip");
     const report = decodeHeaderJson(res.headers.get("X-Build-Report"));
     if (report) {
@@ -3508,7 +3517,7 @@ async function applyAiBo(d, { thenBuild = false, workflow = false } = {}) {
     if (thenBuild) {
       // 用这份 Excel 走原有的解析 → 出包链路（预览里的改动才不会丢）
       const file = new File([blob], name, { type: blob.type });
-      // 流程页的 AI 生成走 quiet：不要跳回普通模式第 3 步/抢滚动，
+      // 流程页的 AI 生成走 quiet：不要跳回新建业务配置第 3 步/抢滚动，
       // 解析完由 renderAll() 刷新流程页的计数与对象包按钮。
       await handleFile(file, workflow ? { quiet: true } : { fromAi: true });
     } else if (await saveBlob(blob, name)) {
@@ -3561,7 +3570,7 @@ function goStep(n, { scroll = true } = {}) {
     s2.classList.toggle("skipped", skipped);
     s2.title = skipped ? "这份 Excel 直接解析，不需要核对字段" : "";
   }
-  if (!scroll) return;   // 在「流程模式」页上传时不抢滚动位置
+  if (!scroll) return;   // 在「新建流程配置」页上传时不抢滚动位置
   // 页面滚动已交给 .workspace，window.scrollTo 作为兼容兜底保留
   const ws = $("#workspace");
   if (ws) ws.scrollTo({ top: 0, behavior: "smooth" });
@@ -4460,7 +4469,7 @@ function bind() {
   }
 
   // 第 1 步「业务对象关联项目」：初始页两档控件（导入前就定），
-  // 普通模式 / 流程模式共享同一档，存量包页「按包内」独立一档
+  // 新建业务配置 / 新建流程配置共享同一档，存量包页「按包内」独立一档
   bindPlPre();
   bindPlTarget();
   bindProjectSnapshotModal();
@@ -4524,3 +4533,31 @@ function bind() {
   detectDesktop();
   bind();
   renderEntry();
+
+window.addEventListener('pp6-environment-change', () => { if (state.data) updateBar(); });
+window.PP6TaskBridge = {restore: async (record, file) => {
+  const headers = record.params || {};
+  const response = await fetch('/api/parse', {method:'POST', body:await file.arrayBuffer(), headers});
+  const data = await response.json();
+  if (!response.ok || !data.ok) throw new Error(data.error || '历史输入解析失败');
+  const link = JSON.parse(headers['X-Project-Link'] || '{}');
+  if (link.snapshot) throw new Error('历史使用上传快照，请重新选择目标快照后取回输入编辑；未覆盖当前任务。');
+  if (record.environment) {
+    const env = record.environment;
+    const restored = await fetch('/api/environments/save', {method:'POST', body:JSON.stringify({name:env.name+'（历史恢复）',platformVersion:env.platformVersion||'',notes:env.notes||'',mappings:env.mappings||{},boundSnippetsSha256:env.boundSnippetsSha256})});
+    if (!restored.ok) throw new Error('历史环境恢复失败，当前任务未替换');
+    await refreshEnvironment();
+  }
+  state.file=file;state.data=data;
+  switchMode(headers['X-Workflow-All']==='1' ? 'workflow' : 'import');
+  state.restoredObjectScope=headers['X-Object-Scope'] ?? null;
+  state.plLinked={};state.plAlign={};state.plSnapshotToken='';
+  Object.entries(link.objects||{}).forEach(([code,value])=>{if ('linked' in value) state.plLinked[code]=value.linked;state.plAlign[code]=value.align||{};});
+  state.plTargetKind=link.target?'other':'project';state.plTarget=link.target||null;
+  state.buildReport=null;state.packageMode='predict';
+  renderAll();
+  state.picked = new Set(headers['X-Modules'] ? JSON.parse(headers['X-Modules']) : (data.modules||[]).filter(m=>m.count&&m.code!=='workflow').map(m=>m.code));
+  if (window.Relations?.restore) Relations.restore('parse', JSON.parse(headers['X-Relations']||'{}').decisions||{});
+  renderModules();updateBar();goStep(3);
+  toast('已恢复输入与出包设置；环境请核对历史记录，旧记录缺失参数采用协议默认值。',9000);
+}};

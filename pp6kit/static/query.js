@@ -49,8 +49,8 @@ function applyFeatureFlags() {
   const modes = document.getElementById("aboutModes");
   if (modes) {
     modes.textContent = on
-      ? "普通模式 · 流程模式 · 存量包修订 · 数据查询 · 系统设置"
-      : "普通模式 · 流程模式 · 数据查询 · 系统设置";
+      ? "新建业务配置 · 新建流程配置 · 存量包修订 · 数据查询 · 系统设置"
+      : "新建业务配置 · 新建流程配置 · 数据查询 · 系统设置";
   }
 }
 applyFeatureFlags();
@@ -58,18 +58,18 @@ applyFeatureFlags();
 /* ---------------- 模式切换 ---------------- */
 /* 上下文栏 / 状态栏跟着工作区走，避免「切了页面但标题还是上一个」 */
 const MODE_META = {
-  import:   { title: "普通模式", desc: "普通业务对象及其表单、列表、数据集，生成一个导入包（导入路径：发布管理 › 导入同步包）" },
+  import:   { title: "新建业务配置", desc: "普通业务对象及其表单、列表、数据集，生成一个导入包（导入路径：发布管理 › 导入同步包）" },
   patch:    { title: "存量包修订", desc: "在已有导入包上新增字段或修改字段名称；类型、选项等定义不可修改，也不删除字段，其余内容保持不变" },
   query:    { title: "数据查询",   desc: "用自然语言查询数据库，生成 SQL 并查看结果" },
-  workflow: { title: "流程模式",   desc: "操作与普通模式一致；固定 开始 › 审核 › 通过，导出时另附流程 XML" },
+  workflow: { title: "新建流程配置",   desc: "操作与新建业务配置一致；固定 开始 › 审核 › 通过，导出时另附流程 XML" },
   settings: { title: "系统设置",   desc: "大模型、数据库连接与本地配置" },
 };
 
 function switchMode(mode) {
-  // 存量包修订被隐藏时，任何来源（快捷键 / 旧链接 / 残留按钮）都回落到普通模式
+  // 存量包修订被隐藏时，任何来源（快捷键 / 旧链接 / 残留按钮）都回落到新建业务配置
   if (mode === "patch" && !PATCH_ON()) mode = "import";
   document.querySelectorAll(".mode").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
-  // 流程模式复用普通模式的工作区：导入/AI/预览/编辑完全同一套，
+  // 新建流程配置复用新建业务配置的工作区：导入/AI/预览/编辑完全同一套，
   // 只有导出时是否附带固定三步 XML 不同。
   document.getElementById("mode-import").hidden = !(mode === "import" || mode === "workflow");
   document.getElementById("mode-patch").hidden = mode !== "patch";
@@ -614,6 +614,7 @@ function showSql(sql, question, generated) {
 
 function renderResult(d, ms) {
   clearEmpty();
+  window.PP6QueryExplanation(d);
   if (d.clarify) return renderClarify(d);
   Q.get("qResultCard").hidden = false;
   // 规则/记忆答的都可以一键让 AI 重答；已经是 AI 的就不用了
@@ -632,7 +633,7 @@ function renderResult(d, ms) {
   if (!d.rows.length) {
     // 0 行时给出诊断（表空？条件太严？取值写错？），别只丢一句"没有数据"
     const hint = d.hint
-      ? `<div class="empty"><b>没有查到数据</b><div class="empty-hint">${qEsc(d.hint)}</div></div>`
+      ? `<div class="empty"><b>查询成功，无匹配结果</b><div class="empty-hint">${qEsc(d.hint)}</div></div>`
       : '<div class="empty">查询成功，无匹配数据。</div>';
     Q.get("qResult").innerHTML = hint;
     Q.last = d;
@@ -650,6 +651,7 @@ function renderResult(d, ms) {
 
 /* 缺时间范围时只问一句，点选项补进问题里再查；不打断别的查询 */
 function renderClarify(d) {
+  window.PP6QueryExplanation(null);
   const c = d.clarify || {};
   Q.get("qResultCard").hidden = false;
   Q.get("qResultMeta").textContent = "需要确认";
@@ -686,8 +688,9 @@ async function runSql(sql) {
     // 结果在 SQL 卡片下面，长 SQL 会把它挤出视野；直接带用户过去
     Q.get("qResultCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
   } catch (e) {
+    window.PP6QueryExplanation(null);
     Q.get("qErr").hidden = false;
-    Q.get("qErr").textContent = e.message;
+    Q.get("qErr").textContent = "执行失败：" + e.message;
     Q.get("qResultCard").hidden = true;
   }
 }
@@ -799,6 +802,7 @@ async function ask(engine, clarified) {
     // 流式吐了一半再失败也算：半截 SQL 比没有更危险。
     Q.get("qSql").value = "";
     Q.get("qRuleBox").hidden = true;
+    window.PP6QueryExplanation(null);
     Q.get("qErr").hidden = false;
     Q.get("qErr").textContent = e.message +
       (String(e.message).includes("API Key")

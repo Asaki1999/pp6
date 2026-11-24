@@ -14,6 +14,11 @@ fi
 echo "==> 清理旧产物"
 rm -rf build/work dist
 
+echo "==> 写入构建版本（关于页与检查更新都读它）"
+VER="${PP6_VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
+COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+.venv/bin/python tools/stamp_version.py --version "$VER" --commit "$COMMIT" --channel local
+
 echo "==> 开始打包（约 1-2 分钟）"
 .venv/bin/pyinstaller build/pp6.spec --noconfirm --distpath dist --workpath build/work
 

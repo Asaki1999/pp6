@@ -10,6 +10,17 @@ from pathlib import Path
 
 ROOT = Path(os.getcwd())
 
+# 版本来自 tools/stamp_version.py 生成的指纹（构建脚本会先写）。
+# 没有指纹（例如直接跑 pyinstaller）就退回 0.0.0，至少不会伪装成 1.0.0。
+_STAMP = ROOT / "pp6kit" / "_buildinfo.py"
+STAMP: dict = {}
+if _STAMP.exists():
+    exec(compile(_STAMP.read_text(encoding="utf-8"), str(_STAMP), "exec"), STAMP)
+APP_VERSION = str(STAMP.get("VERSION") or "0.0.0")
+_BUILT = str(STAMP.get("BUILT_AT") or "")
+# CFBundleVersion 只接受数字与点：用构建日期，缺省 1
+BUNDLE_VERSION = "".join(ch for ch in _BUILT[:10] if ch.isdigit()) or "1"
+
 datas = [
     (str(ROOT / "pp6kit" / "static"), "pp6kit/static"),
     (str(ROOT / "assets" / "snippets.json"), "assets"),
@@ -39,7 +50,16 @@ hiddenimports = [
     "webview.platforms.winforms",
     "openpyxl",
     "openpyxl.cell._writer",
+    "certifi",
 ]
+
+# 更新检查走 HTTPS：certifi 的 cacert.pem 必须随包，否则冻结态容易
+# CERTIFICATE_VERIFY_FAILED（系统证书路径各家机器不一样）
+try:
+    import certifi as _certifi
+    datas.append((_certifi.where(), "certifi"))
+except Exception:
+    pass
 
 excludes = [
     "tkinter", "matplotlib", "numpy", "pandas", "PIL", "PyQt5", "PyQt6",
@@ -90,8 +110,8 @@ if sys.platform == "darwin":
         info_plist={
             "CFBundleName": "PP6 Studio",
             "CFBundleDisplayName": "PP6 Studio",
-            "CFBundleShortVersionString": "1.0.0",
-            "CFBundleVersion": "1.0.0",
+            "CFBundleShortVersionString": APP_VERSION,
+            "CFBundleVersion": BUNDLE_VERSION,
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "11.0",
         },

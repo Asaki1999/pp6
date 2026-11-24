@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 import io
+import threading
 import zipfile
+from contextlib import contextmanager
+from types import SimpleNamespace
 
 from pp6kit import patch, webui
 from pp6kit import spec as S
@@ -294,3 +297,114 @@ def _():
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60,
         )
         assert r.returncode == 0, f"{enc}: {r.returncode} {r.stderr.decode('utf-8', 'replace')[:300]}"
+
+
+# ---------------------------------------------------------------- 本机服务来源闸
+# 2026-11-24 补：服务以前只读 X-* 头、不看来源。用户浏览器里的任意网页都能向
+# 127.0.0.1:8770 发请求（读不到响应，但能触发出包/查库/升级），DNS 重绑定还能读。
+
+def _origin_req(port: int, method: str, path: str, headers: dict | None = None,
+                body: bytes | None = None) -> tuple[int, dict, bytes]:
+    import http.client
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        conn.request(method, path, body=body, headers=headers or {})
+        resp = conn.getresponse()
+        return resp.status, {k.lower(): v for k, v in resp.getheaders()}, resp.read()
+    finally:
+        conn.close()
+
+
+@contextmanager
+def _serving(port: int, host: str = "127.0.0.1"):
+    """起一个真实服务，交出 .port / .token；用完关掉，不留后台监听。"""
+    httpd, used = webui.make_server(port, host)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield SimpleNamespace(port=used, token=httpd.lan_token)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+@case("SEC16", "security", "回环模式拒绝非本机 Host（DNS 重绑定）", "P0",
+      ["Host 是别人的域名 → 403", "127.0.0.1 / localhost 正常放行"])
+def _():
+    with _serving(18991) as s:
+        for host in ("127.0.0.1", "localhost", "LOCALHOST"):
+            status, _, _ = _origin_req(s.port, "GET", "/api/version", {"Host": f"{host}:{s.port}"})
+            assert status == 200, (host, status)
+    with _serving(18991) as s:
+        for host in ("evil.example.com", "pp6.attacker.io", "192.168.1.5"):
+            status, _, _ = _origin_req(s.port, "GET", "/api/version", {"Host": f"{host}:{s.port}"})
+            assert status == 403, (host, status)
+
+
+@case("SEC17", "security", "跨站 Origin 与 cross-site 请求一律拒绝", "P0",
+      ["别的网站的网页发的请求到不了接口", "界面自己发的同源请求不受影响",
+       "POST /api/update/stream 同样被挡"])
+def _():
+    with _serving(18991) as s:
+        same = f"http://127.0.0.1:{s.port}"
+        for origin in ("https://evil.example.com", "http://127.0.0.1:1", "null", "http://[::1]:99"):
+            for method, path in (("GET", "/api/version"), ("POST", "/api/update/stream"),
+                                 ("POST", "/api/build")):
+                status, _, _ = _origin_req(
+                    s.port, method, path, {"Origin": origin}, b"" if method == "POST" else None)
+                assert status == 403, (origin, method, path, status)
+        # Sec-Fetch-Site 是浏览器强制带的，页面自己改不了；它说跨站就拒，哪怕 Origin 伪装成同源
+        status, _, _ = _origin_req(
+            s.port, "POST", "/api/build",
+            {"Origin": same, "Sec-Fetch-Site": "cross-site"}, b"")
+        assert status == 403, status
+        # 同源 + same-origin：不因来源闸被拒
+        for site in ("same-origin", "none", ""):
+            headers = {"Origin": same}
+            if site:
+                headers["Sec-Fetch-Site"] = site
+            status, _, _ = _origin_req(s.port, "GET", "/api/version", headers)
+            assert status == 200, (site, status)
+        status, _, _ = _origin_req(s.port, "GET", "/", {"Origin": same})
+        assert status == 200, status
+
+
+@case("SEC18", "security", "--lan 模式须凭口令链接进入，之后靠 Cookie", "P0",
+      ["没有口令 → 403", "带口令的首页请求下发 Cookie", "带 Cookie 的请求放行",
+       "口令只在首页链接里认，接口不收"])
+def _():
+    with _serving(18992, "0.0.0.0") as s:
+        token = s.token
+        lan = f"192.168.1.5:{s.port}"
+        status, _, _ = _origin_req(s.port, "GET", "/api/version", {"Host": lan})
+        assert status == 403, status
+        status, _, _ = _origin_req(s.port, "GET", f"/?token=wrong", {"Host": lan})
+        assert status == 403, status
+        status, headers, _ = _origin_req(s.port, "GET", f"/?token={token}", {"Host": lan})
+        assert status == 200, status
+        cookie = headers.get("set-cookie", "")
+        assert f"pp6_lan={token}" in cookie and "HttpOnly" in cookie, cookie
+        # 链接里的口令不能直接打接口：必须先换成 Cookie
+        status, _, _ = _origin_req(s.port, "GET", f"/api/version?token={token}", {"Host": lan})
+        assert status == 403, status
+        status, _, _ = _origin_req(
+            s.port, "GET", "/api/version", {"Host": lan, "Cookie": f"pp6_lan={token}"})
+        assert status == 200, status
+        status, _, _ = _origin_req(
+            s.port, "GET", "/api/version", {"Host": lan, "Cookie": "pp6_lan=forged"})
+        assert status == 403, status
+        # --lan 下口令人人都要有，本机地址也不例外
+        status, _, _ = _origin_req(s.port, "GET", "/api/version", {"Host": f"127.0.0.1:{s.port}"})
+        assert status == 403, status
+
+
+@case("SEC19", "security", "口令每次启动都换，无 Origin 的命令行请求不受影响", "P1",
+      ["两次 --lan 启动口令不同", "回环模式不发口令", "curl / 打包自检这类请求照常"])
+def _():
+    with _serving(18993, "0.0.0.0") as a, _serving(18994, "0.0.0.0") as b:
+        assert len(a.token) >= 16 and a.token != b.token
+    with _serving(18993) as s:
+        assert s.token == ""
+        status, _, _ = _origin_req(s.port, "GET", "/api/template")
+        assert status == 200, status

@@ -13,6 +13,7 @@ window.Relations = (function () {
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
   ));
   const CONF_LABEL = { high: "高", medium: "中", low: "低" };
+  const _restored = {};
   const _cancel = new Set();      // 用户显式取消的 Excel 关系（bo_code）
 
   function render(box, vm, opts = {}) {
@@ -97,6 +98,7 @@ window.Relations = (function () {
     box.querySelectorAll('input[type="radio"][data-parent]').forEach((r) => {
       r.addEventListener("change", () => {
         const card = r.closest("[data-rel-card]");
+        if (card) _cancel.delete(card.dataset.relCard);
         const wrap = card && card.querySelector("[data-rel-type]");
         if (wrap) wrap.hidden = false;
       });
@@ -113,7 +115,7 @@ window.Relations = (function () {
 
   /* 收集用户决策 → X-Relations 的 decisions 对象。只含用户动过的对象。 */
   function collect(scope) {
-    const decisions = {};
+    const decisions = {...(_restored[scope] || {})};
     const sel = scope
       ? `[data-rel-card][data-rel-scope="${scope}"]`
       : "[data-rel-card]";
@@ -143,7 +145,28 @@ window.Relations = (function () {
 
   function reset() {
     _cancel.clear();
+    Object.keys(_restored).forEach(key => delete _restored[key]);
   }
 
-  return { render, collect, decisionsHeader, reset };
+  function restore(scope, decisions) {
+    _restored[scope] = JSON.parse(JSON.stringify(decisions));
+    _cancel.clear();
+    Object.entries(decisions).forEach(([code, value]) => { if (value.enabled === false) _cancel.add(code); });
+    document.querySelectorAll(`[data-rel-card][data-rel-scope="${scope}"]`).forEach(card => {
+      const value = decisions[card.dataset.relCard];
+      card.querySelectorAll('input[data-parent]').forEach(input => { input.checked = false; });
+      if (!value) return;
+      const wrap = card.querySelector('[data-rel-type]');
+      if (!value.enabled) {
+        const button = card.querySelector('[data-rel-cancel]');
+        if (button) {button.closest('.rel-excel').classList.add('is-cancelled');button.textContent='已取消（出包时不再生成这条关系）';button.disabled=true;}
+        if (wrap) wrap.hidden=true;
+        return;
+      }
+      card.querySelectorAll('input[data-parent]').forEach(input => {input.checked=input.dataset.parent===value.parentObj && input.dataset.field===value.fieldCode;});
+      card.querySelectorAll('input[name^="reltype-"]').forEach(input=>{input.checked=input.value===(value.relType||'PARENT');});
+      if (wrap) wrap.hidden=false;
+    });
+  }
+  return { render, collect, decisionsHeader, reset, restore };
 })();

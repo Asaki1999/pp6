@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>普通模式 · PP6 Studio</title>
+<title>新建业务配置 · PP6 Studio</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Ctext x='16' y='23' font-size='20' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle'%3EP%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -25,18 +25,18 @@
     <div class="side-scroll">
       <div class="side-label">工作区</div>
       <nav class="modes" aria-label="工作区导航">
-        <button class="mode active" data-mode="import" title="普通模式 (1)：普通业务对象 + 表单/列表/数据集，出一个同步包">
+        <button class="mode active" data-mode="import" title="新建业务配置 (1)：普通业务对象 + 表单/列表/数据集，出一个同步包">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 3v11m0 0 4-4m-4 4-4-4"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
           </svg>
-          <span class="mode-label">普通模式</span><kbd>1</kbd>
+          <span class="mode-label">新建业务配置</span><kbd>1</kbd>
         </button>
-        <button class="mode" data-mode="workflow" title="流程模式 (2)：普通模式同一套操作；导出 zip + 固定 开始-审核-通过 XML">
+        <button class="mode" data-mode="workflow" title="新建流程配置 (2)：新建业务配置同一套操作；导出 zip + 固定 开始-审核-通过 XML">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="5" cy="6" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="12" cy="18" r="2.2"/>
             <path d="M7.2 6h9.6"/><path d="M6.2 8 10.8 16"/><path d="M17.8 8 13.2 16"/>
           </svg>
-          <span class="mode-label">流程模式</span><kbd>2</kbd>
+          <span class="mode-label">新建流程配置</span><kbd>2</kbd>
         </button>
         <!-- 存量包修订：暂时隐藏入口。恢复时把 query.js 里 PP6_FEATURES.patch 置 true 即可，
              本行的 hidden 由 applyFeatureFlags() 负责去掉；面板与后端接口都还在。 -->
@@ -57,7 +57,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M4 7h8M17 7h3M4 17h3M12 17h8"/><circle cx="14.5" cy="7" r="2.5"/><circle cx="9.5" cy="17" r="2.5"/>
           </svg>
-          <span class="mode-label">系统设置<span class="ai-dot" id="aiDot"></span></span><kbd>5</kbd>
+          <span class="mode-label">系统设置<span class="ai-dot" id="aiDot"></span><span class="ai-dot up" id="updateDot" hidden></span></span><kbd>5</kbd>
         </button>
       </nav>
 
@@ -80,8 +80,8 @@
     <header class="topbar">
       <div class="ctx">
         <div class="ctx-row">
-          <h2 class="ctx-title" id="ctxTitle">普通模式</h2>
-          <span class="ctx-desc" id="ctxDesc">普通业务对象 + 表单/列表/数据集，出一个同步包；流程对象看「流程模式」</span>
+          <h2 class="ctx-title" id="ctxTitle">新建业务配置</h2>
+          <span class="ctx-desc" id="ctxDesc">普通业务对象 + 表单/列表/数据集，出一个同步包；流程对象看「新建流程配置」</span>
         </div>
       </div>
       <div class="top-actions">
@@ -94,13 +94,22 @@
     </header>
 
     <div class="workspace" id="workspace">
+    <details class="card" id="environmentPanel"><summary>环境档案</summary></details>
+    <div id="historyWarning" role="alert" hidden></div>
+    <details class="card" id="taskHistory">
+      <summary>实施任务记录</summary>
+      <p class="sub">成功出包后自动保存在本机 ~/.pp6kit/history；最近 100 条。可取回原输入继续修改，实际出包参数见记录文件，重新导入时请核对页面设置。</p>
+      <button class="btn ghost sm" id="refreshHistory">刷新记录</button>
+      <div id="historyItems" aria-live="polite"></div>
+    </details>
+
 
 <main id="mode-settings" hidden>
   <div class="set-layout">
     <aside class="set-nav">
       <button class="set-tab active" data-set="llm">大模型</button>
       <button class="set-tab" data-set="db">数据库连接</button>
-      <button class="set-tab" data-set="about">关于</button>
+      <button class="set-tab" data-set="about">关于<span class="ai-dot up" id="tabUpdateDot" hidden></span></button>
     </aside>
 
     <section class="set-main">
@@ -184,11 +193,47 @@
         <div class="set-body">
           <div class="set-kv">
             <div><span>产品</span><b>PP6 Studio / PowerProject V6</b></div>
-            <div><span>版本</span><b>1.0.0</b></div>
-            <div><span id="aboutModeLabel">四个工作区</span><b id="aboutModes">普通模式 · 流程模式 · 数据查询 · 系统设置</b></div>
+            <div><span>版本</span><b id="aboutVersion">读取中</b></div>
+            <div><span>构建</span><b id="aboutBuild">—</b></div>
+            <div><span id="aboutModeLabel">四个工作区</span><b id="aboutModes">新建业务配置 · 新建流程配置 · 数据查询 · 系统设置</b></div>
             <div><span>共用能力</span><b>大模型只配一次</b></div>
             <div><span>配置位置</span><b><code>~/.pp6kit/nlq.json</code></b></div>
           </div>
+
+          <!-- 升级：检查 → 说明 → 确认 → 下载替换重启，一条路走完 -->
+          <section class="up-box" id="updateBox">
+            <div class="up-head">
+              <div class="up-title">
+                <b>升级</b>
+                <span class="up-state" id="updateState">检查是否有新版本</span>
+                <a class="up-link" id="updateLink" href="#" target="_blank" rel="noreferrer" hidden>打开发布页</a>
+              </div>
+              <div class="up-actions">
+                <button class="btn ghost sm" id="btnCheckUpdate">检查更新</button>
+                <button class="btn primary sm" id="btnDoUpdate" hidden>升级并重启</button>
+              </div>
+            </div>
+
+            <div class="up-progress" id="updateProgress" hidden>
+              <div class="up-bar"><i id="updateBar"></i></div>
+              <span class="up-pct" id="updatePct">0%</span>
+            </div>
+
+            <div class="up-confirm" id="updateConfirm" hidden>
+              <p>升级会关闭应用并重启，未保存的编辑会丢失。</p>
+              <div class="up-actions">
+                <button class="btn primary sm" id="btnConfirmUpdate">确认升级</button>
+                <button class="btn ghost sm" id="btnCancelUpdate">取消</button>
+              </div>
+            </div>
+
+            <details class="up-notes" id="updateNotesBox" hidden>
+              <summary>本次更新内容</summary>
+              <pre id="updateNotes"></pre>
+            </details>
+            <p class="up-path" id="updatePath" hidden></p>
+          </section>
+
           <div class="set-note">
             配置文件包含 API Key，迁移电脑时可直接复制；共享设备使用后建议点击「清除」。
           </div>
@@ -208,10 +253,10 @@
     <div class="step" data-step="3"><b>3</b><span>下载导入包</span></div>
   </nav>
 
-  <!-- 流程模式 = 普通模式的同一套操作，仅导出时多给一份固定三步 XML -->
+  <!-- 新建流程配置 = 新建业务配置的同一套操作，仅导出时多给一份固定三步 XML -->
   <div class="pl-pre" id="flowModeBar" hidden>
-    <b>流程模式</b>
-    <span class="sub">操作与普通模式一致；导入包包含流程对象，并附固定三步流程 XML（开始 › 审核 › 通过）。</span>
+    <b>新建流程配置</b>
+    <span class="sub">操作与新建业务配置一致；导入包包含流程对象，并附固定三步流程 XML（开始 › 审核 › 通过）。</span>
   </div>
 
   <!-- ========== 第 1 步：对话即入口，说完就开始生成 ========== -->
@@ -405,6 +450,7 @@
       </div>
     </div>
 
+    <div id="preflightReport" class="card" aria-label="出包前检查报告"></div>
     <div class="stats" id="stats"></div>
     <div class="stats-note" id="statsNote" hidden></div>
     <div class="banner" id="banner" hidden></div>
@@ -440,7 +486,7 @@
         <div>
           <h3>导出模块</h3>
           <div class="sub">
-            仅包含<b>普通业务对象</b>及其表单、列表，默认全选并打成整包。流程模式下导入包包含流程对象，另附固定三步流程 XML。
+            仅包含<b>普通业务对象</b>及其表单、列表，默认全选并打成整包。新建流程配置下导入包包含流程对象，另附固定三步流程 XML。
           </div>
         </div>
         <div class="mod-actions">
@@ -752,7 +798,7 @@
           <span class="status-led"></span>
           <span id="statusText">就绪</span>
           <span class="status-sep">·</span>
-          <span id="statusMode">普通模式</span>
+          <span id="statusMode">新建业务配置</span>
         </div>
         <div class="status-right">
           <span>本地服务</span><span class="status-sep">·</span>
@@ -824,8 +870,13 @@
 
 <script src="/static/relations.js"></script>
 <script src="/static/projlink.js"></script>
+<script src="/static/preflight.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/tasks.js"></script>
+<script src="/static/environment.js"></script>
+<script src="/static/query-explanation.js"></script>
 <script src="/static/patch.js"></script>
 <script src="/static/query.js"></script>
+<script src="/static/update.js"></script>
 </body>
 </html>

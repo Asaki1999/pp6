@@ -6,6 +6,9 @@ dist/
 __pycache__/
 *.pyc
 
+# 打包时由 tools/stamp_version.py 生成，跟随源码没有意义
+pp6kit/_buildinfo.py
+
 # --- 输出目录：排除产物，保留规格样本（tools/test_relations.py 依赖它） ---
 out/*
 !out/规范2.xlsx

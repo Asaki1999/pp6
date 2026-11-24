@@ -8,8 +8,10 @@ from __future__ import annotations
 import base64
 import copy
 import io
+import hmac
 import json
 import re
+import secrets
 import shutil
 import socket
 import threading
@@ -17,7 +19,7 @@ import traceback
 import webbrowser
 import zipfile
 from datetime import datetime
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -63,6 +65,8 @@ from .nlq import providers as nlq_providers
 from .nlq import store as nlq_store
 from .resources import snippets_path, static_dir, work_dir
 from .validate import validate
+from . import environments, diagnostics
+from .nlq.explain import decorate as explain_result
 
 STATIC = static_dir()
 MAX_UPLOAD = 30 * 1024 * 1024
@@ -2677,7 +2681,7 @@ def nlq_ask(payload: dict) -> dict:
             res["summary"] = nlq_engine.explain_sql(res["sql"], _schema())
     except Exception:
         pass
-    return res
+    return explain_result(res)
 
 
 def nlq_ask_stream(payload: dict):
@@ -2705,7 +2709,7 @@ def nlq_ask_stream(payload: dict):
                 payload,
                 on_delta=lambda piece: box.put({"stage": "delta", "delta": piece}),
                 on_event=lambda ev: box.put(ev))
-            box.put({"stage": "done", "result": res})
+            box.put({"stage": "done", "result": explain_result(res)})
         except Exception as exc:      # 闸门拒绝 / 未配 Key / 所有渠道失败
             box.put({"stage": "error", "error": str(exc)})
         finally:
@@ -2735,7 +2739,7 @@ def nlq_run(payload: dict) -> dict:
             out["summary"] = nlq_engine.explain_sql(safe, pack)
         except Exception:
             pass
-        return out
+        return explain_result(out)
     finally:
         conn.close()
 
@@ -2987,9 +2991,36 @@ def _zip_report(data: bytes, error: Exception | None = None) -> dict:
 
 # ---------------------------------------------------------------- HTTP
 
+# 默认只绑回环，Host 必须是本机地址；--lan 模式下每个服务实例发一次性口令。
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+_LAN_COOKIE = "pp6_lan"
+
+
+def _host_only(value: str) -> str:
+    """Host 头去掉端口并转小写：`[::1]:8770` → `::1`，`192.168.1.5:8770` → `192.168.1.5`。"""
+    text = (value or "").strip().lower()
+    if text.startswith("["):
+        return text[1:text.index("]")] if "]" in text else text[1:]
+    return text.split(":", 1)[0]
+
+
+def _origin_host(origin: str) -> str:
+    """Origin 只认 `http(s)://host[:port]`，返回 host[:port]；`null` 与畸形值返回空串。"""
+    m = re.match(r"^https?://([^/?#]+)", (origin or "").strip(), re.I)
+    return m.group(1).lower() if m else ""
+
+
+def _cookie_value(header: str, name: str) -> str:
+    for part in (header or "").split(";"):
+        key, _, value = part.strip().partition("=")
+        if key == name:
+            return value.strip()
+    return ""
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "pp6kit"
+    _pending_cookie = ""   # 本次响应要下发的 Cookie（--lan 模式凭链接里的口令换）
 
     def log_message(self, fmt, *args):  # 静音访问日志
         pass
@@ -3011,8 +3042,53 @@ class Handler(BaseHTTPRequestHandler):
         # 纯附加：默认 None -> 所有既有调用零变化；extra 值均为 ASCII 安全的 base64
         for key, value in (extra or {}).items():
             self.send_header(key, value)
+        if self._pending_cookie:
+            self.send_header("Set-Cookie", self._pending_cookie)
         self.end_headers()
         self.wfile.write(body)
+
+    # --- 来源闸
+    def _cross_site(self) -> str:
+        """请求不是「用户在自己的界面上操作」时返回拒绝原因，否则返回空串。
+
+        挡本机服务的两类越权（2026-11-24）：
+        1. 用户浏览器里**别的网页**向本服务发请求。界面从没发过 CORS 头，对方读不到
+           响应，但能触发出包、查库、保存配置、甚至触发升级替换程序；
+        2. DNS 重绑定：恶意域名解析到 127.0.0.1，响应就变得可读——靠 Host 判定。
+
+        放行规则（与桌面壳 WKWebView、浏览器模式、--headless 自检都兼容）：
+        - 带 Origin 的请求，Origin 必须与 Host 一致（界面自身就是这样发的）；
+        - `Sec-Fetch-Site: cross-site` 一律拒（现代浏览器都会带，不带也不影响）；
+        - 默认回环模式：Host 必须是本机地址；
+        - --lan 模式：Host 管不了（本来就是局域网 IP），改为口令 Cookie。
+        """
+        headers = self.headers
+        if (headers.get("Sec-Fetch-Site") or "").strip().lower() == "cross-site":
+            return "跨站请求已拒绝"
+        origin = headers.get("Origin")
+        if origin and _origin_host(origin) != (headers.get("Host") or "").strip().lower():
+            return "请求来源与本服务不一致"
+        token = getattr(self.server, "lan_token", "")
+        if not token:
+            if _host_only(headers.get("Host")) not in _LOOPBACK_HOSTS:
+                return "只接受通过本机地址访问"
+            return ""
+        supplied = _cookie_value(headers.get("Cookie"), _LAN_COOKIE).encode()
+        if hmac.compare_digest(supplied, token.encode()):
+            return ""
+        # 首次进入：链接里带 ?token= 的首页请求放行，并用 Set-Cookie 记下口令。
+        if self.command == "GET" and self.path.split("?")[0] in ("/", "/index.html"):
+            given = parse_qs(urlparse(self.path).query).get("token", [""])[0]
+            if hmac.compare_digest(given.encode(), token.encode()):
+                self._pending_cookie = (
+                    f"{_LAN_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax")
+                return ""
+        return "缺少访问口令：请用启动时打印的带口令链接打开"
+
+    def _deny(self, reason: str) -> None:
+        self._send(403, json.dumps({"ok": False, "error": reason},
+                                  ensure_ascii=False).encode("utf-8"),
+                   "application/json; charset=utf-8")
 
     def _json(self, payload: dict, status: int = 200,
               extra: dict | None = None) -> None:
@@ -3053,6 +3129,10 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- 路由
     def do_GET(self) -> None:
+        reason = self._cross_site()
+        if reason:
+            self._deny(reason)
+            return
         path = self.path.split("?")[0]
         if path in ("/", "/index.html"):
             self._send(200, (STATIC / "index.html").read_bytes(), "text/html; charset=utf-8")
@@ -3071,6 +3151,35 @@ class Handler(BaseHTTPRequestHandler):
             # 无校验头做启发式缓存，结果改了 CSS/JS 刷新还是旧样子（排查过一次）
             self._send(200, target.read_bytes(), ctype,
                        extra={"Cache-Control": "no-cache, must-revalidate"})
+        elif path == "/api/environments":
+            self._json({**environments.read(), "status": environments.snapshot()})
+        elif path == "/api/version":
+            # 关于页与更新检查共用：版本不再写死在 HTML 里
+            from . import version
+            self._json({"ok": True, **version.build_info()})
+        elif path == "/api/update/check":
+            # 只查不装：手动点「检查更新」时 force=1 绕过缓存
+            from urllib.parse import parse_qs, urlparse
+            from . import updater
+            qs = parse_qs(urlparse(self.path).query)
+            force = (qs.get("force") or [""])[0].lower() in ("1", "true", "yes")
+            self._json(updater.check(force=force))
+        elif path == "/api/history" or path.startswith("/api/history/"):
+            from . import history
+            try:
+                if path == "/api/history/compare":
+                    from urllib.parse import parse_qs, urlparse
+                    query = parse_qs(urlparse(self.path).query)
+                    self._json(history.compare(query.get("left", [""])[0], query.get("right", [""])[0]))
+                elif path == "/api/history":
+                    self._json({"items": history.recent()})
+                else:
+                    _, _, _, key, filename = path.split("/")
+                    data = history.read(key, filename)
+                    self._send(200, data, "application/octet-stream", filename,
+                               extra={"Cache-Control": "no-store"})
+            except (ValueError, OSError):
+                self._json({"error": "任务记录不存在或无法读取"}, 404)
         elif path == "/api/nlq/config":
             self._json(nlq_config())
         elif path == "/api/nlq/test":
@@ -3120,7 +3229,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"not found", "text/plain")
 
     def do_POST(self) -> None:
+        reason = self._cross_site()
+        if reason:
+            self._deny(reason)
+            return
         try:
+            if self.path == "/api/update/stream":
+                # 下载/替换要几十秒，用 SSE 把进度推给前端；替换成功时
+                # updater 会在响应写完后自行退出进程（脚本等着接手）。
+                # 只允许本机触发：--lan 模式下不该让同网段的人替换你的程序。
+                if self.client_address[0] not in ("127.0.0.1", "::1"):
+                    self._json({"ok": False, "error": "只允许在本机升级"}, 403)
+                    return
+                from . import updater
+                self._sse(updater.install_stream(self.server.server_address[1]))
+                return
             if self.path == "/api/parse":
                 # 「关联项目」开关走同一个决策头。/校验放在路由层：头非法是**请求**
                 # 的问题（与 /api/build 4xx 一个口径），不能被 _safe_parse 的
@@ -3130,8 +3253,12 @@ class Handler(BaseHTTPRequestHandler):
                     from .projlink import parse_decisions as _pl_decisions
                     _pl_decisions(pl_header)
                 self._json(self._safe_parse(pl_header))
+            elif self.path.startswith("/api/environments/"):
+                self._json(environments.update(self.path.rsplit("/", 1)[-1], json.loads(self._body())))
             elif self.path == "/api/build":
-                body, name = build_zip(self._body(), _codes(self.headers),
+                environment = environments.snapshot(self.headers.get("X-Environment-Id"))
+                source = self._body()
+                body, name = build_zip(source, _codes(self.headers),
                                        _relations_header(self.headers),
                                        _object_scope(self.headers),
                                        _projlink_header(self.headers),
@@ -3167,6 +3294,16 @@ class Handler(BaseHTTPRequestHandler):
                     extra = {"X-Build-Report": _header_json(report)}
                 except Exception:
                     extra = None                  # 头是纯附加，任何异常都不阻断下载
+                from . import history
+                extra = extra or {}
+                try:
+                    params = {k: self.headers.get(k) for k in (
+                        "X-Modules", "X-Relations", "X-Object-Scope",
+                        "X-Project-Link", "X-Workflow-All") if self.headers.get(k) is not None}
+                    extra["X-History-Id"] = history.save(source, body, name, params, _zip_report(body), environment)
+                except Exception as exc:
+                    diagnostics.failure("history-save", exc)
+                    extra["X-History-Status"] = "failed"
                 self._send(200, body, "application/zip", name, extra=extra)
             elif self.path.split("?")[0] == "/api/confirmed-excel":
                 # 必须**先剥掉 query 再比**：前端带的是 `?name=xxx.xlsx`，
@@ -3378,13 +3515,17 @@ def make_server(port: int = 8770, host: str = "127.0.0.1") -> tuple[ThreadingHTT
     """在 port..port+19 里找可用端口，返回 (server, 实际端口)。
 
     host 默认只绑回环：桌面壳与本地浏览器够用，也不给同网段留入口。
-    要让手机访问须显式传 0.0.0.0（见 `pp6 ui --lan`）。
+    要让手机访问须显式传 0.0.0.0（见 `pp6 ui --lan`）：该模式下 Host 管不了，
+    服务实例会带一个一次性口令（`server.lan_token`），须用带口令的链接进入。
     """
+    lan_token = "" if host in _LOOPBACK_HOSTS else secrets.token_urlsafe(16)
     for candidate in range(port, port + 20):
         try:
-            return ThreadingHTTPServer((host, candidate), Handler), candidate
+            httpd = ThreadingHTTPServer((host, candidate), Handler)
         except OSError:
             continue
+        httpd.lan_token = lan_token
+        return httpd, candidate
     raise RuntimeError(f"端口 {port}-{port + 19} 都被占用，请用 --port 指定其它端口")
 
 
@@ -3400,10 +3541,10 @@ def serve(port: int = 8770, open_browser: bool = True, host: str = "127.0.0.1") 
     url = f"http://127.0.0.1:{used}/"
     print(f"  pp6kit 已启动 -> {url}")
     if host not in ("127.0.0.1", "localhost"):
-        print("  手机/同事访问（须同一 WiFi）：")
+        print("  手机/同事访问（须同一 WiFi），必须用带口令的链接，转发链接等于转发权限：")
         for ip in lan_addresses():
-            print(f"    http://{ip}:{used}/")
-        print("  ⚠ 无口令保护：同网段设备都能打开并查库，用完按 Ctrl+C 关掉")
+            print(f"    http://{ip}:{used}/?token={httpd.lan_token}")
+        print("  ⚠ 能打开这个链接的人都能查库（只读），用完按 Ctrl+C 关掉")
     print("  按 Ctrl+C 停止")
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()

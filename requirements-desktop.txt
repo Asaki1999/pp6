@@ -5,3 +5,5 @@ pywebview>=6.0
 pyinstaller>=6.0
 pypinyin>=0.50
 pypdf>=4.0
+# 冻结包里的 HTTPS 根证书：更新检查要连 GitHub，不能指望系统证书存在
+certifi>=2024.2

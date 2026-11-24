@@ -4,7 +4,7 @@ name: build-desktop
 #   - push 到 main（含每日定时提交）→ 滚动更新 nightly prerelease，同事永远从同一链接拿最新版
 #   - 推 v* tag → 正式版 Release，设为 Latest、保留版本号
 #   - 推 test* tag（test0.01、test0.02…）→ 测试发版 Release，设为 Latest、按 tag 名保留版本
-# 三条路径共用下面这一个 build job。
+# 三条路径共用下面这一个 build job；build 之前先过 regress（回归不过不发版）。
 on:
   workflow_dispatch:
   push:
@@ -20,7 +20,31 @@ permissions:
   contents: write      # 发布 Release 需要写权限
 
 jobs:
+  # 发版闸：回归不过就不打包。以前流水线只有密钥扫描 + 冒烟，621 条回归
+  # 没拦在任何发版前面，而每天都会自动打 test0.NN 发版（2026-11-24 补上）。
+  # 单独一个 ubuntu job 而不是塞进打包矩阵：只跑一遍、约 20 秒，
+  # 且避开 Windows 控制台编码坑（check_secrets 在那上面踩过）。
+  # 原生样本目录 PP6/ 不入库，依赖它的用例在 CI 上会 skip，本地仍然是全量。
+  regress:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      # 跳过不算失败（CI 上没有原生样本），有失败就阻断下面的 build。
+      - name: 回归测试
+        run: python tools/regress.py
+
   build:
+    needs: regress
     strategy:
       fail-fast: false
       matrix:
@@ -52,6 +76,22 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-desktop.txt
+
+      # 版本号必须来自「这次构建实际是什么」：tag 用 tag 名，main 用日期。
+      # 关于页、更新检查、日志排查都读这份指纹；写死常量会三处对不上。
+      - name: 写入构建版本
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="$GITHUB_REF_NAME"
+            CHANNEL="release"
+          else
+            VERSION="nightly-$(date -u +%Y%m%d)"
+            CHANNEL="nightly"
+          fi
+          python tools/stamp_version.py --version "$VERSION" \
+            --commit "${GITHUB_SHA:0:7}" --channel "$CHANNEL" \
+            --repo "$GITHUB_REPOSITORY"
 
       - name: 打包
         run: pyinstaller build/pp6.spec --noconfirm --distpath dist --workpath build/work

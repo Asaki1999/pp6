@@ -27,6 +27,20 @@ echo ==^> 清理旧产物
 if exist build\work rmdir /s /q build\work
 if exist dist rmdir /s /q dist
 
+echo ==^> 写入构建版本（关于页与检查更新都读它）
+set "VER="
+set "COMMIT="
+for /f "delims=" %%v in ('git describe --tags --always --dirty 2^>nul') do set "VER=%%v"
+for /f "delims=" %%c in ('git rev-parse --short HEAD 2^>nul') do set "COMMIT=%%c"
+if "%VER%"=="" set "VER=dev"
+if "%COMMIT%"=="" set "COMMIT=unknown"
+.venv\Scripts\python tools\stamp_version.py --version "%VER%" --commit "%COMMIT%" --channel local
+if errorlevel 1 (
+    echo 版本写入失败
+    pause
+    exit /b 1
+)
+
 echo ==^> 开始打包（约 1-3 分钟）
 .venv\Scripts\pyinstaller build\pp6.spec --noconfirm --distpath dist --workpath build\work
 if errorlevel 1 (
