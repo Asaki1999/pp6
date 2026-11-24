@@ -3405,6 +3405,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(patch_inspect(self._body()))
             elif self.path == "/api/patch/fields":
                 self._json(patch_fields(self._body()))
+            elif self.path.split("?")[0] == "/api/patch/fields/free":
+                # 任意 Excel → 候选字段（不落库）。模板路径 /api/patch/fields 一行不动。
+                from urllib.parse import parse_qs, unquote, urlparse
+                from . import ai_patch
+                qs = parse_qs(urlparse(self.path).query)
+                self._json(ai_patch.free_fields(
+                    self._body(), _llm_conf(),
+                    filename=unquote(self.headers.get("X-Filename") or ""),
+                    sheet=(qs.get("sheet") or [""])[0]))
             elif self.path == "/api/patch/dry-run":
                 self._json(patch_dry_run(json.loads(self._body())))
             elif self.path == "/api/patch/build":
@@ -3484,6 +3493,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(ai_from_sheet(self._body(), hint=hint, sheet=sheet,
                                          with_form=with_form, with_list=with_list,
                                          projlink_header=_projlink_header(self.headers)))
+            elif self.path == "/api/ai/patch-fields":
+                # 存量包修订的对话：只动「本次草稿」，包里已有字段由服务端强制拦住
+                from . import ai_patch
+                self._json(ai_patch.adjust(json.loads(self._body()), _llm_conf()))
             elif self.path == "/api/ai/values":
                 # 预览「值来源」页签的清单（出包时包里会有哪些、谁在用、能不能关）
                 self._json(ai_value_sources(json.loads(self._body()),

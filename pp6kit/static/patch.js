@@ -225,7 +225,7 @@ async function pUploadZip(file) {
     const alignCard = pId("patchAlignCard");
     if (alignCard) alignCard.hidden = true;
     if (P.snap.objects.length) P.selected.add(P.snap.objects[0].file);
-    if (!P.fields.length) P.fields.push(pEmptyField());
+    // 不再自动塞一个空行：草稿为空时给出空态，用户按「手动加一行」或导入
 
     pId("patchFileInfo").hidden = false;
     pId("patchFileInfo").innerHTML =
@@ -390,7 +390,7 @@ function pRenderExisting() {
 function pEmptyField() {
   return { code: "", name: "", type: "varchar", choices: "", objectType: "",
            length: "", precision: "", default: "", required: false,
-           index: false, desc: "" };
+           index: false, desc: "", src: "manual" };
 }
 
 function pNormalizeType(v) {
@@ -398,51 +398,133 @@ function pNormalizeType(v) {
   return P_TYPE_ALIAS[text] || text || "varchar";
 }
 
-function pRenderFields() {
-  const types = (P.snap && P.snap.types) || [];
-  const body = pId("patchRows");
-  body.innerHTML = P.fields.map((f, i) => `
-    <tr data-i="${i}">
-      <td><input data-k="code" value="${pEsc(f.code)}" placeholder="riskLevel" spellcheck="false"></td>
-      <td><input data-k="name" value="${pEsc(f.name)}" placeholder="风险等级"></td>
-      <td><input data-k="type" value="${pEsc(f.type)}" list="patchTypes" placeholder="字符串"></td>
-      <td><input data-k="choices" value="${pEsc(f.choices)}" placeholder="高,中,低"></td>
-      <td><input data-k="objectType" value="${pEsc(f.objectType)}" placeholder="project"></td>
-      <td><input data-k="length" value="${pEsc(f.length)}" class="num"></td>
-      <td><input data-k="precision" value="${pEsc(f.precision)}" class="num"></td>
-      <td><input data-k="default" value="${pEsc(f.default)}"></td>
-      <td class="center"><input type="checkbox" data-k="required" ${f.required ? "checked" : ""}></td>
-      <td class="center"><input type="checkbox" data-k="index" ${f.index ? "checked" : ""}></td>
-      <td><input data-k="desc" value="${pEsc(f.desc)}"></td>
-      <td><button class="link" data-del="${i}" title="删掉这行（只影响这次填写，不会删包里的字段）">×</button></td>
-    </tr>`).join("");
-  let dl = pId("patchTypes");
-  if (!dl) {
-    dl = document.createElement("datalist");
-    dl.id = "patchTypes";
-    document.body.appendChild(dl);
-  }
-  dl.innerHTML = types.map((t) =>
-    `<option value="${pEsc(t.code)}">${pEsc(t.label)}${t.verified ? "" : "（未验证）"}</option>`).join("");
+/* 类型下拉用中文名（后台「添加字段」的叫法），值仍是代码。
+   设计稿只列了 7 种常用，这里按 /api/patch/inspect 返回的 types 全量给，
+   避免 AI 返回 date/department 这类合法类型在界面上显示成空。 */
+function pTypeLabel(code) {
+  const list = (P.snap && P.snap.types) || [];
+  const hit = list.find((t) => t.code === code);
+  return hit ? hit.label : (code || "字符串");
+}
 
-  body.querySelectorAll("input[data-k]").forEach((el) => {
+function pTypeOptions(selected) {
+  const list = (P.snap && P.snap.types) || [];
+  const seen = new Set();
+  const rows = [];
+  list.forEach((t) => {
+    seen.add(t.code);
+    rows.push(`<option value="${pEsc(t.code)}"${t.code === selected ? " selected" : ""}>${pEsc(t.label)}</option>`);
+  });
+  if (selected && !seen.has(selected)) {
+    rows.push(`<option value="${pEsc(selected)}" selected>${pEsc(pTypeLabel(selected))}</option>`);
+  }
+  return rows.join("");
+}
+
+/* 展开的完整定义按索引记：行被删/重排时全部收起，避免展开错行 */
+let pMoreOpen = new Set();
+
+function pSrcBadge(src) {
+  // 列宽只有 40px：写全「Excel」会挤掉行尾按钮，用短标 + title 说明来源
+  const map = {
+    manual: ["手输", "", "手动填写"],
+    excel: ["表", "excel", "从 Excel 导入"],
+    ai: ["AI", "ai", "AI 对话加入"],
+  };
+  const [text, cls, title] = map[src] || map.manual;
+  return `<span class="v5a-src ${cls}" title="${title}">${text}</span>`;
+}
+
+function pRenderFields() {
+  const body = pId("patchRows");
+  if (!body) return;
+  body.innerHTML = P.fields.map((f, i) => {
+    const options = f.type === "dic"
+      ? `<input type="text" data-k="choices" value="${pEsc(f.choices)}" placeholder="高,中,低">`
+      : f.type === "object"
+        ? `<input type="text" data-k="objectType" value="${pEsc(f.objectType)}" placeholder="project">`
+        : `<span class="v5a-none">—</span>`;
+    const more = pMoreOpen.has(i) ? "" : " hidden";
+    return `<tr data-i="${i}">
+      <td><input type="text" data-k="name" value="${pEsc(f.name)}" placeholder="风险等级"></td>
+      <td><input type="text" data-k="code" class="v5a-code" value="${pEsc(f.code)}" placeholder="riskLevel" spellcheck="false"></td>
+      <td class="v5a-type"><select class="v5a-typesel" data-k="type">${pTypeOptions(f.type)}</select></td>
+      <td class="v5a-opts"><span class="v5a-optwrap">${options}<label class="v5a-req"><input type="checkbox" data-k="required"${f.required ? " checked" : ""}>必填</label></span></td>
+      <td class="v5a-srctd">${pSrcBadge(f.src)}</td>
+      <td class="v5a-acts">
+        <button type="button" class="v5a-rowact more" data-more="${i}" title="展开完整定义：长度、精度、默认值、索引、说明">⋯</button>
+        <button type="button" class="v5a-rowact" data-del="${i}" title="从本次草稿移除（不影响包里已有字段）">✕</button>
+      </td>
+    </tr>
+    <tr class="v5a-more" data-i="${i}"${more}>
+      <td colspan="6"><div class="v5a-moregrid">
+        <label>长度<input type="text" data-k="length" value="${pEsc(f.length)}" placeholder="如 64"></label>
+        <label>精度<input type="text" data-k="precision" value="${pEsc(f.precision)}" placeholder="小数位"></label>
+        <label>默认值<input type="text" data-k="default" value="${pEsc(f.default)}" placeholder="—"></label>
+        <label>索引<select class="v5a-index" data-k="index"><option value="">无</option><option value="1"${f.index ? " selected" : ""}>有</option></select></label>
+        <label>说明<textarea data-k="desc" placeholder="给导入后维护的人看">${pEsc(f.desc)}</textarea></label>
+      </div></td>
+    </tr>`;
+  }).join("");
+
+  const empty = pId("patchEmpty");
+  if (empty) empty.hidden = P.fields.length > 0;
+  const count = pId("patchDraftCount");
+  if (count) count.textContent = String(P.fields.length);
+
+  body.querySelectorAll("[data-k]").forEach((el) => {
     const apply = () => {
-      const i = Number(el.closest("tr").dataset.i);
+      const tr = el.closest("tr[data-i]");
+      if (!tr) return;
+      const i = Number(tr.dataset.i);
       const k = el.dataset.k;
-      P.fields[i][k] = el.type === "checkbox" ? el.checked : el.value;
-      pHint();
+      if (!P.fields[i]) return;
+      if (el.type === "checkbox") P.fields[i][k] = el.checked;
+      else if (k === "index") P.fields[i][k] = el.value === "1";
+      else P.fields[i][k] = el.value;
+      if (k === "type") pRenderFields();   // 类型变了，第 4 列要换成选项/关联输入
+      else pHint();
     };
     el.addEventListener("input", apply);
     el.addEventListener("change", apply);
   });
+  body.querySelectorAll("[data-more]").forEach((btn) => {
+    btn.onclick = () => {
+      const i = Number(btn.dataset.more);
+      if (pMoreOpen.has(i)) pMoreOpen.delete(i); else pMoreOpen.add(i);
+      pRenderFields();
+    };
+  });
   body.querySelectorAll("[data-del]").forEach((btn) => {
     btn.onclick = () => {
       P.fields.splice(Number(btn.dataset.del), 1);
-      if (!P.fields.length) P.fields.push(pEmptyField());
+      pMoreOpen = new Set();
       pRenderFields(); pHint();
     };
   });
   pPaintVSteps();
+}
+
+/* 新加入的行淡蓝底 4 秒（CSS v5a-new 的 animation 负责淡出） */
+function pFlashRows(indexes) {
+  indexes.forEach((i) => {
+    const tr = document.querySelector(`#patchRows tr[data-i="${i}"]`);
+    if (!tr) return;
+    tr.classList.add("v5a-new");
+    tr.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    setTimeout(() => tr.classList.remove("v5a-new"), 4200);
+  });
+}
+
+/* 包里已有字段（只给编码与名称）：自由导入判重名、对话红线都靠它 */
+function pExistingFields() {
+  const out = [];
+  ((P.snap && P.snap.objects) || []).forEach((o) => {
+    (o.fields || []).forEach((f) => {
+      if (f && f.code) out.push({ code: f.code, name: f.name || "" });
+    });
+  });
+  return out;
 }
 
 function pCollectFields() {
@@ -467,7 +549,6 @@ function pCollectFields() {
       return out;
     });
 }
-
 function pSpec(targets) {
   if (!P.snap) throw new Error("请先上传原来的 zip 包");
   const picked = targets || Array.from(P.selected);
@@ -616,13 +697,247 @@ async function pImportFields(file) {
   try {
     const res = await pApi("/api/patch/fields", await file.arrayBuffer(), true);
     const data = await res.json();
-    const rows = (data.fields || []).map((f) => ({ ...pEmptyField(), ...f }));
+    const rows = (data.fields || []).map((f) => ({ ...pEmptyField(), ...f, src: "excel" }));
     if (!rows.length) { toast("字段表中未读取到字段行"); return; }
     P.fields = P.fields.filter((f) => String(f.code || "").trim())
       .concat(rows);
     pRenderFields(); pHint();
     toast(`导入了 ${rows.length} 个字段`, 4000);
   } catch (err) { pFail(err); }
+}
+
+/* ---------------- ④ 任意 Excel 识别 + 对话调整（v5） ---------------- */
+
+let pLlmReady = false;
+
+function pChatHtml() {
+  return `<div class="v5a-chathead"><svg class="i sm"><use href="#i-spark"/></svg>AI 调整字段
+      <span class="tag ok" id="v5aCfgTag">已配置</span></div>
+    <div class="v5a-log" id="v5aLog" aria-live="polite"></div>
+    <div class="v5a-ask" id="v5aAsk">
+      <textarea id="v5aText" rows="1" placeholder="加、删或改哪个字段？"></textarea>
+      <button type="button" class="btn primary v5a-send" id="v5aSend">添加</button>
+    </div>`;
+}
+
+function pBindChat() {
+  const send = pId("v5aSend");
+  const text = pId("v5aText");
+  if (!send) return;
+  send.onclick = () => pChatSend();
+  if (text) {
+    text.onkeydown = (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); pChatSend(); }
+    };
+  }
+  document.querySelectorAll("#v5aLog [data-row]").forEach((chip) => {
+    chip.onclick = () => pFlashRows([Number(chip.dataset.row)]);
+  });
+}
+
+function pRailNoLlm() {
+  const log = pId("v5aLog");
+  const ask = pId("v5aAsk");
+  if (ask) ask.hidden = true;
+  if (log) log.innerHTML = `<div class="v5a-nollm"><b>配置大模型后可对话调整字段</b>
+    <div style="margin-top:9px"><button type="button" class="btn ghost sm" id="v5aGoSet">打开设置</button></div></div>`;
+  const go = pId("v5aGoSet");
+  if (go) go.onclick = () => {
+    const m = document.querySelector('.mode[data-mode="settings"]');
+    if (m) m.click();
+  };
+}
+
+/* 恢复对话卡（候选清单取消/确认后回到普通态） */
+function pRailDefault() {
+  const chat = pId("v5aChat");
+  if (!chat) return;
+  chat.innerHTML = pChatHtml();
+  const log = pId("v5aLog");
+  if (log) {
+    log.innerHTML = P.chatLogHtml
+      || `<div class="v5a-emptylog">说一句要加或去掉的字段，例如「加一个风险等级，选项高、中、低」</div>`;
+  }
+  if (!pLlmReady) pRailNoLlm();
+  pBindChat();
+}
+
+function pChatMsg(role, html, chips) {
+  const log = pId("v5aLog");
+  if (!log) return;
+  const box = document.createElement("div");
+  box.className = "v5a-msg " + role;
+  const chipHtml = (chips || []).map((c) =>
+    `<button type="button" class="v5a-chip ${c.cls || ""}" data-row="${c.row}">${pEsc(c.text)}</button>`).join("");
+  box.innerHTML = html + (chipHtml ? `<div class="v5a-chips">${chipHtml}</div>` : "");
+  log.appendChild(box);
+  log.scrollTop = log.scrollHeight;
+  box.querySelectorAll("[data-row]").forEach((chip) => {
+    chip.onclick = () => pFlashRows([Number(chip.dataset.row)]);
+  });
+  P.chatLogHtml = log.innerHTML;
+}
+
+async function pLoadLlm() {
+  try {
+    const res = await fetch("/api/nlq/config", { cache: "no-store" });
+    const data = await res.json();
+    pLlmReady = !!(data && data.llm && data.llm.ready);
+  } catch (_) {
+    pLlmReady = false;
+  }
+  const tag = pId("v5aCfgTag");
+  if (tag) {
+    tag.textContent = pLlmReady ? "已配置" : "未配置";
+    tag.className = "tag " + (pLlmReady ? "ok" : "warn");
+  }
+  if (!pLlmReady) {
+    pRailNoLlm();
+  } else if (document.querySelector("#v5aChat .v5a-nollm")) {
+    // 首屏先按「未配置」渲染，状态回来后要把空态换回可输入的对话
+    pRailDefault();
+  }
+}
+
+function pShowCandidates(data, filename) {
+  const chat = pId("v5aChat");
+  if (!chat) return;
+  const fields = data.fields || [];
+  const existing = new Set(pExistingFields().map((f) => f.name));
+  const rows = fields.map((f, i) => {
+    const dup = existing.has(f.name);
+    const sub = [f.code, pTypeLabel(f.type), f.choices].filter(Boolean).map(pEsc).join(" · ");
+    return `<label class="v5a-row"><input type="checkbox" data-ci="${i}"${dup ? "" : " checked"}>
+      <span class="v5a-rtx"><b>${pEsc(f.name)}</b>
+      <span class="v5a-sub">${sub}</span>
+      ${dup ? `<span class="v5a-warn">包里已有「${pEsc(f.name)}」，默认跳过</span>` : ""}</span></label>`;
+  }).join("");
+  const notes = (data.notes || []).length
+    ? `<div class="v5a-note">${data.notes.map((n) => `· ${pEsc(n)}`).join("<br>")}</div>` : "";
+  chat.innerHTML = `<div class="v5a-confirm">
+    <div class="v5a-chathead">从「${pEsc(filename)}」识别出 ${fields.length} 个候选字段</div>
+    <div class="v5a-cand">${rows}</div>${notes}
+    <div class="v5a-cfoot">
+      <button type="button" class="linkbtn" data-all>全选</button>
+      <span style="flex:1"></span>
+      <button type="button" class="btn ghost sm" data-cancel>取消</button>
+      <button type="button" class="btn primary sm" data-ok></button>
+    </div></div>`;
+  const ok = chat.querySelector("[data-ok]");
+  const picked = () => Array.from(chat.querySelectorAll("[data-ci]:checked")).length;
+  const paint = () => {
+    ok.textContent = `导入勾选的 ${picked()} 个`;
+    ok.disabled = picked() === 0;
+  };
+  chat.querySelectorAll("[data-ci]").forEach((cb) => { cb.onchange = paint; });
+  chat.querySelector("[data-all]").onclick = () => {
+    const boxes = Array.from(chat.querySelectorAll("[data-ci]"));
+    const turnOn = boxes.some((cb) => !cb.checked);
+    boxes.forEach((cb) => { cb.checked = turnOn; });
+    paint();
+  };
+  chat.querySelector("[data-cancel]").onclick = () => pRailDefault();
+  ok.onclick = () => {
+    const list = [];
+    chat.querySelectorAll("[data-ci]:checked").forEach((cb) => {
+      const f = fields[Number(cb.dataset.ci)];
+      if (f) list.push({ ...pEmptyField(), ...f, src: "excel" });
+    });
+    if (!list.length) return;
+    P.fields = P.fields.filter((f) => String(f.code || "").trim()).concat(list);
+    pRailDefault();
+    pRenderFields(); pHint();
+    pFlashRows(list.map((_, k) => P.fields.length - list.length + k));
+    toast(`已导入 ${list.length} 个字段到草稿`, 4000);
+  };
+  paint();
+}
+
+async function pFreeImport(file) {
+  if (!file) return;
+  const chat = pId("v5aChat");
+  if (!chat) return;
+  chat.innerHTML = `<div class="v5a-parsing"><div class="spinner"></div>
+    <span>正在读「${pEsc(file.name)}」并识别字段…</span></div>`;
+  try {
+    const res = await fetch("/api/patch/fields/free?name=" + encodeURIComponent(file.name), {
+      method: "POST",
+      body: await file.arrayBuffer(),
+      headers: { "X-Filename": encodeURIComponent(file.name) },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || `识别失败 ${res.status}`);
+    pShowCandidates(data, file.name);
+  } catch (err) {
+    pRailDefault();
+    pChatMsg("ai warn", `没能识别这份 Excel：${pEsc(err.message)}<br>
+      可以改用「有标准模板？直接导入」，或从 Excel 粘贴。`);
+    toast("识别失败，已给出替代路径", 6000);
+  }
+}
+
+function pApplyAi(data) {
+  const removed = new Set(data.remove || []);
+  if (removed.size) {
+    P.fields = P.fields.filter((f) => !removed.has(String(f.code || "").trim()));
+  }
+  (data.modify || []).forEach((patch) => {
+    const f = P.fields.find((x) => x.code === patch.code);
+    if (f) Object.assign(f, patch);
+  });
+  const added = [];
+  (data.add || []).forEach((item) => {
+    if (!item || !item.code) return;
+    if (P.fields.some((f) => f.code === item.code)) return;
+    P.fields.push({ ...pEmptyField(), ...item, src: "ai" });
+    added.push(P.fields.length - 1);
+  });
+  pRenderFields(); pHint();
+  if (added.length) pFlashRows(added);
+  return added;
+}
+
+async function pChatSend() {
+  const ta = pId("v5aText");
+  const btn = pId("v5aSend");
+  const message = (ta && ta.value ? ta.value : "").trim();
+  if (!message) { if (ta) ta.focus(); return; }
+  if (!pLlmReady) { toast("还没配置大模型：去系统设置里填一个平台和 Key", 6000); return; }
+  ta.value = "";
+  pChatMsg("user", pEsc(message));
+  btn.disabled = true;
+  btn.textContent = "思考中…";
+  P.chatHistory = P.chatHistory || [];
+  try {
+    const res = await fetch("/api/ai/patch-fields", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        draft: P.fields, existing: pExistingFields(),
+        history: P.chatHistory.slice(-6), message,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || `调整失败 ${res.status}`);
+    const before = P.fields.length;
+    const added = pApplyAi(data);
+    const addedNames = added.map((i) => P.fields[i] && P.fields[i].name).filter(Boolean);
+    P.chatHistory.push({ role: "user", content: message });
+    P.chatHistory.push({ role: "assistant", content: data.reply || "" });
+    const chips = added.map((i) => ({ text: `看这一行`, row: i }));
+    let html = pEsc(data.reply || "已按你的要求调整草稿");
+    if (addedNames.length) html += `<br><span class="hint">已加入：${pEsc(addedNames.join("、"))}</span>`;
+    if ((data.remove || []).length) {
+      html += `<br><span class="hint">已从草稿去掉：${pEsc(data.remove.join("、"))}</span>`;
+    }
+    if (data.refused) pChatMsg("ai warn", html, chips);
+    else pChatMsg("ai", html, chips);
+  } catch (err) {
+    pChatMsg("ai warn", `没调整成功：${pEsc(err.message)}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "添加";
+    if (ta) ta.focus();
+  }
 }
 
 /* ---------------- ④ 出包 ---------------- */
@@ -826,23 +1141,39 @@ function pBind() {
   };
 
   pId("patchAddRow").onclick = () => {
-    P.fields.push(pEmptyField()); pRenderFields(); pHint();
+    P.fields.push(pEmptyField());
+    pMoreOpen = new Set([P.fields.length - 1]);   // 新行直接展开，长度/说明就在眼前
+    pRenderFields(); pHint();
   };
   pId("patchPasteAdd").onclick = () => {
-    const rows = pParsePaste(pId("patchPaste").value);
+    const rows = pParsePaste(pId("patchPaste").value)
+      .map((r) => ({ ...r, src: "manual" }));
     if (!rows.length) { toast("未解析出字段行，请检查列顺序"); return; }
     P.fields = P.fields.filter((f) => String(f.code || "").trim()).concat(rows);
     pId("patchPaste").value = "";
     pRenderFields(); pHint();
     toast(`已追加 ${rows.length} 个字段`, 3500);
   };
+  pId("patchPasteToggle").onclick = () => {
+    const box = pId("patchPasteBox");
+    if (box) box.open = true;
+    const ta = pId("patchPaste");
+    if (ta) ta.focus();
+  };
   pId("patchPickXlsx").onclick = () => pId("patchXlsxInput").click();
   pId("patchXlsxInput").onchange = (e) => {
     const file = e.target.files[0];
     e.target.value = "";
+    if (file) pFreeImport(file);
+  };
+  // 模板路径保持原样：导入仍走 /api/patch/fields，按钮挪到右栏
+  pId("patchTpl").onclick = () => pId("patchTplInput").click();
+  pId("patchTplInput").onchange = (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
     if (file) pImportFields(file);
   };
-  pId("patchTpl").onclick = (e) => pTemplate(e.currentTarget);
+  pId("patchTplDownload").onclick = (e) => pTemplate(e.currentTarget);
   pId("patchDryRun").onclick = (e) => pPreview(e.currentTarget);
   pId("patchBuild").onclick = (e) => pBuild(e.currentTarget);
   pId("patchWorkbook").onclick = (e) => pWorkbook(e.currentTarget);
@@ -858,6 +1189,34 @@ function pBind() {
         editTabs.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
         pApplyEditTabs();
       };
+    });
+  }
+
+  // 整张「新增字段」卡都是接收区：拖 Excel 进来走自由导入（与 v4 文件入口同一套）
+  const fieldCard = pId("patchFieldsCard");
+  const fieldVeil = fieldCard && fieldCard.querySelector(".drop-veil");
+  if (fieldCard && fieldVeil) {
+    let depth = 0;
+    const hasFiles = (e) => e.dataTransfer
+      && Array.from(e.dataTransfer.types || []).includes("Files");
+    fieldCard.addEventListener("dragenter", (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      if (++depth === 1) fieldVeil.hidden = false;
+    });
+    fieldCard.addEventListener("dragover", (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+    });
+    fieldCard.addEventListener("dragleave", () => {
+      if (depth > 0 && --depth === 0) fieldVeil.hidden = true;
+    });
+    fieldCard.addEventListener("drop", (e) => {
+      e.preventDefault();
+      depth = 0;
+      fieldVeil.hidden = true;
+      const file = (e.dataTransfer.files || [])[0];
+      if (file) pFreeImport(file);
     });
   }
 
@@ -877,6 +1236,9 @@ function pBind() {
 }
 
 pBind();
+pRenderFields();
+pRailDefault();
+pLoadLlm();
 
 /* 首屏：左栏先把「上传原包」标成当前步，后面三步锁住；
    上传成功后再由 pUploadZip → pPaintVSteps 更新。 */

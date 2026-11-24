@@ -325,3 +325,65 @@ def _():
     assert got["sn"] == "3", got                     # 行序号不动
     assert old_type == "varchar"
     assert "isindex" in changed
+
+
+@case("PAT22", "patch", "对话调草稿：已有字段不能删/改，只动本次草稿", "P0",
+      ["remove 只认草稿里的编码，指向包里已有字段 → refused", "modify 指向已有字段 → 丢弃",
+       "add 与已有字段同名 → 跳过并 refused（不自动改名）"])
+def ai_adjust_red_lines():
+    import json
+    from unittest.mock import patch as mpatch
+
+    from pp6kit import ai_patch
+
+    draft = [{"code": "riskLevel", "name": "风险等级", "type": "dic", "choices": "高、中、低"}]
+    existing = [{"code": "name", "name": "项目名称"}]
+    model = {
+        "reply": "好的", "refused": False,
+        "add": [{"code": "remark2", "name": "项目名称", "type": "文本"},
+                {"code": "purchaseNote", "name": "采购说明", "type": "大文本"}],
+        "modify": [{"code": "name", "name": "改名"}],
+        "remove": ["name", "riskLevel"],
+    }
+    with mpatch.object(ai_patch.llm, "chat_any",
+                       return_value=(json.dumps(model, ensure_ascii=False), {})):
+        out = ai_patch.adjust({"draft": draft, "existing": existing, "message": "改一下"}, {})
+
+    assert out["refused"] is True, out
+    assert [f["code"] for f in out["add"]] == ["purchaseNote"], out["add"]
+    assert out["modify"] == [], out["modify"]
+    assert out["remove"] == ["riskLevel"], out["remove"]
+    assert out["add"][0]["type"] == "clob", out["add"][0]
+
+
+@case("PAT23", "patch", "任意 Excel 认字段：去重、类型归一、缺编码跳过", "P1",
+      ["同一编码/同名只留一条并记 conflict", "中文类型映射成代码", "没有编码的候选丢弃"])
+def ai_free_fields_normalize():
+    import io
+    import json
+    from unittest.mock import patch as mpatch
+
+    from openpyxl import Workbook
+
+    from pp6kit import ai_patch
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["字段名称", "类型"])
+    ws.append(["风险等级", "选项"])
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    model = {"fields": [
+        {"code": "riskLevel", "name": "风险等级", "type": "选项", "choices": "高、中、低"},
+        {"code": "riskLevel", "name": "重复编码", "type": "文本"},
+        {"code": "purchaseNote", "name": "风险等级", "type": "大文本"},
+        {"code": "", "name": "没编码", "type": "文本"},
+    ], "notes": ["演示"]}
+    with mpatch.object(ai_patch.llm, "chat_any",
+                       return_value=(json.dumps(model, ensure_ascii=False), {})):
+        out = ai_patch.free_fields(buf.getvalue(), {}, "x.xlsx")
+
+    assert [f["code"] for f in out["fields"]] == ["riskLevel"], out["fields"]
+    assert out["fields"][0]["type"] == "dic", out["fields"][0]
+    assert len(out["conflicts"]) == 3, out["conflicts"]

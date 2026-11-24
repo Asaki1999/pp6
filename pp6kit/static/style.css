@@ -5175,3 +5175,262 @@ body.v3 .drop-veil span { font-size: 13px; color: #5f6b81; }
 body.v4-strong .file-tile { background: #f5f9ff; border-color: #b9d4ff; }
 body.v4-strong .ft-ic { background: #dbe9ff; }
 body.v4-strong .file-tile:hover { border-color: #126efa; background: #eef5ff; box-shadow: none; }
+
+/* ============================================================
+   v5 设计补丁 · 存量包修订 ·「新增字段」改为 左表右聊 双栏
+   ------------------------------------------------------------
+   用法：原样追加到 pp6kit/static/style.css 末尾（后写者赢），配合
+   v5-patch-add.js 的 DOM 调整。只作用于 #patchFieldsCard（新增字段页签）。
+   删掉本段、把面板还原成单列表格即回退。
+
+   为什么改（2026-11-24 用户需求）：
+   1. 新增字段想导入任意 Excel，不依赖系统模板——现状 /api/patch/fields
+      只认「字段编码/字段名称/…」这套固定中文表头；
+   2. 想用 AI 多轮对话加减字段——现状只有手填表格、按列序粘贴、模板导入三条路；
+   3. 现状 12 列表格在 740px 卡片里横向溢出（首屏就要滚动）。
+   红线不变：只加字段、改名称；不删包里已有字段（PAT10）。对话里的「减」
+   只作用于本次草稿。
+   ============================================================ */
+
+/* ---------- 0. 页面级：步骤条收窄，给「修改字段」卡让出宽度 ---------- */
+body.v3 .patch { grid-template-columns: 168px minmax(0, 1fr); gap: 16px; }
+body.v3 .vsteps { padding: 10px; }
+body.v3 .vstep { gap: 8px; padding: 8px 9px; }
+body.v3 .vstep .vt b { font-size: 12.5px; line-height: 20px; }
+body.v3 .vstep .vt span { font-size: 11px; }
+
+/* ---------- 1. 面板骨架：左（草稿表）右（导入 + 对话）双栏 ---------- */
+body.v3 #patchFieldsCard > .patch-body.v5a-add {
+  display: grid; grid-template-columns: minmax(0, 1fr) 288px; gap: 14px;
+  align-items: start; padding: 14px;
+}
+body.v3 #patchFieldsCard { position: relative; }
+@media (max-width: 1040px) {
+  body.v3 #patchFieldsCard > .patch-body.v5a-add { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---------- 2. 左栏：草稿字段表 ---------- */
+body.v3 .v5a-main { min-width: 0; }
+body.v3 .v5a-drafthead {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+}
+body.v3 .v5a-drafthead > b { font-size: 14px; font-weight: 600; }
+body.v3 .v5a-count {
+  min-width: 20px; height: 20px; padding: 0 7px; border-radius: 10px;
+  background: var(--accent-soft, #edf4ff); color: #0958d9; font-size: 12px; font-weight: 600;
+  display: inline-grid; place-items: center;
+}
+body.v3 .v5a-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+body.v3 .v5a-table th {
+  padding: 6px 8px; border-bottom: 1px solid var(--border, #e9ecf2);
+  color: var(--muted, #6b7689); font-weight: 500; font-size: 12px; text-align: left; white-space: nowrap;
+}
+body.v3 .v5a-table td { padding: 5px 6px; border-bottom: 1px solid var(--border, #eef1f6); vertical-align: middle; }
+body.v3 .v5a-table tr:hover > td { background: #fafcff; }
+body.v3 .v5a-table input[type="text"] {
+  width: 100%; min-width: 0; height: 30px; padding: 0 8px;
+  border: 1px solid transparent; border-radius: 6px; background: none;
+  font: inherit; font-size: 13px; color: var(--text, #1b2437);
+}
+body.v3 .v5a-table input[type="text"]:hover { border-color: var(--border, #dde1eb); }
+body.v3 .v5a-table input[type="text"]:focus {
+  outline: none; border-color: #126efa; background: #fff;
+  box-shadow: 0 0 0 3px #edf4ff;
+}
+body.v3 .v5a-code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; padding: 0 6px !important; }
+body.v3 .v5a-type { white-space: nowrap; width: 60px; }
+body.v3 .v5a-typesel {
+  width: 100%; height: 30px; padding: 0 0 0 2px;
+  border: 1px solid transparent; border-radius: 6px; background: none;
+  font: inherit; font-size: 12.5px; color: var(--text, #1b2437); cursor: pointer;
+}
+body.v3 .v5a-typesel:hover { border-color: var(--border, #dde1eb); }
+body.v3 .v5a-srctd { white-space: nowrap; }
+body.v3 .v5a-opts { color: var(--text-2, #4b5568); font-size: 12.5px; }
+/* 必填并入「选项 / 关联」列，不再单独占一列 */
+body.v3 .v5a-req {
+  margin-left: 6px; padding: 0 6px; border-radius: 8px;
+  background: #fdecec; color: #b4232a; font-size: 11px; white-space: nowrap;
+}
+/* 新加入的行：淡蓝底 + 行首竖线，几秒后由脚本撤掉 */
+body.v3 .v5a-table tr.v5a-new > td {
+  background: #f0f6ff;
+  animation: v5a-fade 4s ease forwards;
+}
+body.v3 .v5a-table tr.v5a-new > td:first-child { box-shadow: inset 3px 0 0 #126efa; }
+@keyframes v5a-fade { to { background: transparent; } }
+/* 来源徽标 */
+body.v3 .v5a-src {
+  display: inline-block; padding: 1px 8px; border-radius: 10px;
+  font-size: 11.5px; font-weight: 500; white-space: nowrap;
+  background: #f1f3f7; color: var(--muted, #6b7689);
+}
+body.v3 .v5a-src.excel { background: #edf4ff; color: #0b4fb3; }
+body.v3 .v5a-src.ai { background: #f3efff; color: #6b3fd4; }
+/* 行内删除与展开 */
+body.v3 .v5a-rowact {
+  display: inline-grid; place-items: center; width: 23px; height: 26px;
+  border: 0; border-radius: 6px; background: none; color: var(--muted, #6b7689); cursor: pointer;
+}
+body.v3 .v5a-rowact:hover { background: #feecec; color: #c21f27; }
+body.v3 .v5a-rowact.more:hover { background: #edf4ff; color: #0958d9; }
+/* 展开的完整定义：长度 / 精度 / 默认值 / 索引 / 说明 */
+body.v3 .v5a-more > td { background: #fafbfd; padding: 10px 12px 12px 34px; }
+body.v3 .v5a-moregrid {
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px 10px;
+}
+body.v3 .v5a-moregrid label { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: var(--muted, #6b7689); }
+body.v3 .v5a-moregrid input, body.v3 .v5a-moregrid textarea {
+  height: 28px; padding: 0 8px; border: 1px solid var(--border, #dde1eb); border-radius: 6px;
+  background: #fff; font: inherit; font-size: 12.5px; color: var(--text, #1b2437);
+}
+body.v3 .v5a-moregrid textarea { height: 44px; padding: 5px 8px; resize: vertical; }
+body.v3 .v5a-more .v5a-moregrid input:focus, body.v3 .v5a-more .v5a-moregrid textarea:focus {
+  outline: none; border-color: #126efa; box-shadow: 0 0 0 3px #edf4ff;
+}
+/* 空态与底栏 */
+body.v3 .v5a-empty { padding: 26px 0 22px; text-align: center; color: var(--muted, #6b7689); }
+body.v3 .v5a-empty b { display: block; font-size: 13.5px; font-weight: 600; color: var(--text-2, #4b5568); margin-bottom: 3px; }
+body.v3 .v5a-draftfoot { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+body.v3 .v5a-paste { margin-top: 8px; }
+body.v3 .v5a-paste > summary { cursor: pointer; list-style: none; font-size: 12.5px; font-weight: 500; color: #0958d9; width: fit-content; }
+body.v3 .v5a-paste > summary::-webkit-details-marker { display: none; }
+body.v3 .v5a-paste > summary::before { content: "▸ "; }
+body.v3 .v5a-paste[open] > summary::before { content: "▾ "; }
+body.v3 .v5a-paste textarea {
+  display: block; width: 100%; margin-top: 8px; padding: 8px 10px;
+  border: 1px solid var(--border, #dde1eb); border-radius: 8px;
+  font: 12.5px/1.6 ui-monospace, "SF Mono", Menlo, monospace; color: var(--text, #1b2437);
+}
+
+/* ---------- 3. 右栏：导入入口 + AI 对话 ---------- */
+body.v3 .v5a-rail { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+/* 导入：延续 v4 的「图标 + 两行」控件（file-tile 同族） */
+body.v3 .v5a-import { padding: 12px; border: 1px solid var(--border, #e9ecf2); border-radius: 10px; background: #fff; }
+body.v3 .v5a-import .file-tile { width: 100%; }
+body.v3 .v5a-import .v5a-tpl { display: flex; align-items: center; margin-top: 8px; }
+body.v3 .v5a-import .v5a-tpl .linkbtn { font-size: 12px; }
+body.v3 .v5a-import .v5a-tpl .hint { margin-left: auto; }
+/* 对话卡 */
+body.v3 .v5a-chat {
+  display: flex; flex-direction: column; min-height: 320px;
+  border: 1px solid var(--border, #e9ecf2); border-radius: 10px; background: #fff; overflow: hidden;
+}
+body.v3 .v5a-chathead {
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+  border-bottom: 1px solid var(--border, #eef1f6); font-size: 13px; font-weight: 600;
+}
+body.v3 .v5a-chathead .tag { margin-left: auto; }
+body.v3 .v5a-log { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 12px; overflow: auto; max-height: 300px; }
+body.v3 .v5a-msg { max-width: 92%; font-size: 12.5px; line-height: 1.65; border-radius: 10px; padding: 8px 11px; }
+body.v3 .v5a-msg.user { align-self: flex-end; background: #edf4ff; color: #143d80; border-bottom-right-radius: 3px; }
+body.v3 .v5a-msg.ai { align-self: flex-start; background: #f5f7fa; color: var(--text, #1b2437); border-bottom-left-radius: 3px; }
+body.v3 .v5a-msg.ai.warn { background: #fff7f0; border-left: 3px solid #ff6900; color: #5a3a1e; }
+body.v3 .v5a-msg .v5a-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+body.v3 .v5a-chip {
+  display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 9px;
+  border: 1px solid #c9ddff; border-radius: 11px; background: #fff;
+  font-size: 11.5px; font-weight: 500; color: #0b4fb3; cursor: pointer;
+}
+body.v3 .v5a-chip:hover { background: #edf4ff; }
+body.v3 .v5a-chip.off { border-color: #f3d5c8; color: #a04d16; }
+body.v3 .v5a-emptylog { padding: 18px 14px; text-align: center; color: var(--muted, #6b7689); font-size: 12.5px; }
+/* 输入区 */
+body.v3 .v5a-ask { display: flex; align-items: flex-end; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border, #eef1f6); }
+body.v3 .v5a-ask textarea {
+  flex: 1; min-height: 40px; max-height: 96px; padding: 8px 10px; resize: none;
+  border: 1px solid var(--border, #dde1eb); border-radius: 8px;
+  font: inherit; font-size: 13px; color: var(--text, #1b2437);
+}
+body.v3 .v5a-ask textarea:focus { outline: none; border-color: #126efa; box-shadow: 0 0 0 3px #edf4ff; }
+body.v3 .v5a-send { height: 40px; padding: 0 14px; border-radius: 8px; }
+/* AI 未配置时的空态 */
+body.v3 .v5a-nollm { padding: 22px 16px; text-align: center; color: var(--muted, #6b7689); font-size: 12.5px; }
+
+/* ---------- 4. 导入确认：识别结果清单（盖在对话卡上） ---------- */
+body.v3 .v5a-confirm { display: flex; flex-direction: column; min-height: 320px; }
+body.v3 .v5a-confirm .v5a-cand { flex: 1; overflow: auto; padding: 6px 8px; }
+body.v3 .v5a-cand label.v5a-row {
+  display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 2px 8px;
+  align-items: center; padding: 7px 8px; border-radius: 8px; cursor: pointer; font-size: 12.5px;
+}
+body.v3 .v5a-cand .v5a-rtx { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+body.v3 .v5a-cand .v5a-rtx b { font-weight: 600; }
+body.v3 .v5a-cand .v5a-sub { font-size: 11.5px; color: var(--muted, #6b7689); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+body.v3 .v5a-cand label.v5a-row:hover { background: #f7faff; }
+body.v3 .v5a-cand .v5a-code { font-size: 11.5px; color: var(--text-2, #4b5568); }
+body.v3 .v5a-cand .v5a-warn { color: #a04d16; font-size: 11.5px; }
+body.v3 .v5a-confirm .v5a-cfoot {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--border, #eef1f6);
+}
+/* 解析中 */
+body.v3 .v5a-parsing { display: grid; place-content: center; justify-items: center; gap: 10px; min-height: 200px; color: var(--muted, #6b7689); font-size: 13px; }
+body.v3 .v5a-parsing .spinner {
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 2.5px solid #c9ddff; border-top-color: #126efa;
+  animation: v5a-spin .8s linear infinite;
+}
+@keyframes v5a-spin { to { transform: rotate(360deg); } }
+
+/* ---------- 5. 拖入反馈：整张新增字段卡都是接收区 ---------- */
+body.v3 #patchFieldsCard .drop-veil {
+  position: absolute; inset: -1px; z-index: 6;
+  display: grid; place-content: center; justify-items: center; gap: 4px;
+  border: 2px dashed #126efa; border-radius: 12px;
+  background: rgba(247, 250, 255, .96); pointer-events: none;
+}
+body.v3 #patchFieldsCard .drop-veil[hidden] { display: none; }
+body.v3 #patchFieldsCard .drop-veil .i { width: 28px; height: 28px; margin-bottom: 4px; color: #126efa; stroke-width: 1.5; }
+body.v3 #patchFieldsCard .drop-veil b { font-size: 16px; font-weight: 600; color: #1b2437; }
+body.v3 #patchFieldsCard .drop-veil span { font-size: 13px; color: #5f6b81; }
+
+/* ---------- 6. 窄屏 ---------- */
+@media (max-width: 1040px) {
+  body.v3 .v5a-rail { order: -1; }          /* 导入与对话提到表格前面：先给输入，再看结果 */
+  body.v3 .v5a-log { max-height: 220px; }
+}
+
+/* v5 收口：草稿表里设计稿没画到的几个小控件 */
+body.v3 .v5a-optwrap { display: flex; align-items: center; gap: 5px; min-width: 0; }
+body.v3 .v5a-optwrap input[type="text"] { flex: 1; min-width: 56px; width: auto; }
+body.v3 .v5a-opts .v5a-none { flex: none; }
+body.v3 .v5a-opts .v5a-req { flex: none; display: inline-flex; align-items: center; gap: 3px; margin-left: 0; }
+body.v3 .v5a-opts .v5a-req input { width: 13px; height: 13px; margin: 0; }
+body.v3 .v5a-index {
+  width: 100%; height: 28px; padding: 0 6px;
+  border: 1px solid var(--border, #dde1eb); border-radius: 6px;
+  background: #fff; font: inherit; font-size: 12.5px;
+}
+body.v3 .v5a-note { padding: 2px 12px 0; font-size: 11.5px; line-height: 1.6; color: var(--muted, #6b7689); }
+
+/* v5 收口 2：固定列宽，类型列不再被挤成一个字；必填改成普通勾选 */
+body.v3 .v5a-table { table-layout: fixed; }
+body.v3 .v5a-table th, body.v3 .v5a-table td { overflow: hidden; }
+body.v3 .v5a-table .v5a-type { width: auto; }
+body.v3 .v5a-table .v5a-acts { white-space: nowrap; text-align: right; }
+body.v3 .v5a-opts .v5a-req { background: none; color: var(--muted, #6b7689); padding: 0; font-size: 11.5px; }
+body.v3 .v5a-opts .v5a-req input:checked { accent-color: #126efa; }
+
+/* v5 收口 3：1280 下给表格让出宽度；小屏表格自身横向滚动，页面不溢出 */
+@media (min-width: 1041px) and (max-width: 1360px) {
+  body.v3 .patch { grid-template-columns: 156px minmax(0, 1fr); }
+  body.v3 #patchFieldsCard > .patch-body.v5a-add { grid-template-columns: minmax(0, 1fr) 260px; padding: 12px; }
+}
+body.v3 .v5a-tablewrap { overflow-x: auto; }
+body.v3 .v5a-table { min-width: 520px; }
+body.v3 .v5a-table td, body.v3 .v5a-table th { padding-left: 5px; padding-right: 5px; }
+body.v3 .v5a-table input[type="text"] { padding: 0 5px; font-size: 12.5px; }
+body.v3 .v5a-src { padding: 1px 6px; }
+
+body.v3 .v5a-rowact { width: 21px; }
+body.v3 .v5a-table .v5a-acts { padding-right: 2px; }
+
+/* v5 收口 4：候选清单比对话卡高时不要被裁掉底部按钮 */
+body.v3 .v5a-chat { overflow: visible; }
+body.v3 .v5a-chat .v5a-log { max-height: 320px; }
+body.v3 .v5a-confirm { min-height: 0; }
+body.v3 .v5a-confirm .v5a-cand { max-height: 300px; flex: 0 1 auto; }
+body.v3 .v5a-cand .v5a-warn { display: block; white-space: normal; }
+
+body.v3 .v5a-tpl { gap: 10px; }
+body.v3 .v5a-tpl .linkbtn { font-size: 12px; white-space: nowrap; }

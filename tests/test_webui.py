@@ -1538,3 +1538,47 @@ def _():
             got = environments.read()
         assert got["items"][0]["name"] == "华东实施", got
         assert got["activeId"] == "e1", got
+
+
+@case("WEB53", "webui", "存量包「新增字段」：左表右聊双栏，红线文案与关键 id 都在", "P0",
+      ["6 列草稿表 + 右栏导入/对话；名称、编码、类型列不截断（列宽写死在 colgroup）",
+       "表头写「不删除已有字段」，删除按钮 title 说清只影响本次草稿",
+       "草稿为空给空态；模板/粘贴两个兜底入口仍在（#patchTpl、#patchPasteAdd）",
+       "AI 未配置时对话卡给空态与「打开设置」"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "pp6kit" / "static" / "patch.js").read_text(encoding="utf-8")
+    css = (root / "pp6kit" / "static" / "style.css").read_text(encoding="utf-8")
+    web = (root / "pp6kit" / "webui.py").read_text(encoding="utf-8")
+
+    # ① 双栏骨架 + 关键 id
+    for mark in ('class="patch-body v5a-add"', 'class="v5a-rail"', 'id="patchFieldsCard"',
+                 'id="patchRows"', 'id="patchAddRow"', 'id="patchPaste"', 'id="patchPasteAdd"',
+                 'id="patchPasteToggle"', 'id="v5aLog"', 'id="v5aText"', 'id="v5aSend"',
+                 'id="patchTpl"', 'id="patchPickXlsx"', 'id="patchXlsxInput"'):
+        assert mark in html, f"缺 {mark}"
+
+    # ② 6 列表头 + 固定列宽（避免 1280 下把类型/来源挤成一个字）
+    table = html[html.index('class="v5a-table"'):html.index("</table>", html.index('class="v5a-table"'))]
+    for th in ("字段名称", "字段编码", "类型", "选项 / 关联", "来源"):
+        assert th in table, th
+    assert "<colgroup>" in table and "calc((100% - 290px)" in table, "列宽没有按可用宽度分配"
+
+    # ③ 红线文案
+    assert "不删除已有字段" in html
+    assert 'title="从本次草稿移除（不影响包里已有字段）"' in js
+    for copy in ("还没配置大模型", "打开设置", "配置大模型后可对话调整字段"):
+        assert copy in js, copy
+
+    # ④ 兜底入口与后端契约
+    assert '"/api/patch/fields/free"' in web
+    assert '"/api/ai/patch-fields"' in web
+    assert "function pFreeImport(" in js and "function pApplyAi(" in js
+
+    # ⑤ 样式：双栏 / 单列断点 / 小屏表格自身滚动
+    assert "grid-template-columns: minmax(0, 1fr) 288px" in css
+    assert "body.v3 .v5a-tablewrap { overflow-x: auto; }" in css
+    assert "@media (min-width: 1041px) and (max-width: 1360px)" in css
