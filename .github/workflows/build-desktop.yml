@@ -76,6 +76,11 @@ jobs:
 
   build:
     needs: regress
+    # Windows runner 的控制台默认 cp1252：stamp_version.py 打印中文会
+    # UnicodeEncodeError（exit 1），打包还没开始就红。统一 UTF-8。
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
     strategy:
       fail-fast: false
       matrix:
