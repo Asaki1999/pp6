@@ -1923,6 +1923,25 @@ function renderFieldCheck() {
 
 /* ------------------------------------------------ 下载 */
 
+/**
+ * base64(UTF-8 JSON) -> object；头缺失 / 解码失败一律返回 null（降级）。
+ * 关键：atob 输出是 latin-1 二进制串，必须经 TextDecoder("utf-8")
+ * 解码后再交给 JSON.parse；直接把 atob 结果喂给 JSON.parse 会让中文乱码（严禁）。
+ *
+ * 与服务端 webui._header_json 成对：X-Build-Report / X-Package-Summary
+ * 都是 base64(json UTF-8)，和 X-Filename 的 decodeURIComponent 是两套编码。
+ */
+function decodeHeaderJson(raw) {
+  if (!raw) return null;
+  try {
+    const bin = atob(raw);
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    return JSON.parse(new TextDecoder("utf-8").decode(bytes));
+  } catch (_) {
+    return null;                 // 降级：不抛、不阻断、不报错给用户
+  }
+}
+
 function b64ToFile(b64, filename, mime) {
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);

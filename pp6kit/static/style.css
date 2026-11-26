@@ -5453,3 +5453,313 @@ body.v3 .v5a-tpl .linkbtn { font-size: 12px; white-space: nowrap; }
 .ai-resume .ai-resume-txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-resume .ai-resume-txt b { color: var(--text, #1f1f1f); font-weight: 600; }
 .ai-resume .link { flex: none; }
+
+/* ==========================================================================
+   按钮体系 · 显眼度分级（2026-11-26 · 像素君设计稿）
+   出处：out/界面设计-v6/按钮体系/设计说明.html
+
+   做法：整段原样追加到 pp6kit/static/style.css 末尾（后写者赢）。
+         不改 DOM、不改 JS、不动任何 id / class / 文案；
+         删除本段即完整回退。
+
+   分级（显眼度从高到低，一屏一个 L1）：
+     L1 primary   实心蓝——当前画面唯一的主角动作
+     L2 secondary 描边白底——必须点的次要动作（原透明 ghost 全部升级为这级）
+     L3 text      文字按钮——行内低频动作（.link / .linkbtn）
+     L4 danger    危险——描边红用于页面；确认弹窗内升级实心红
+     L5 nested    嵌入小按钮——banner / 列表行 / 候选 chip 里的按钮
+     另有：导航选中态（tab / step / seg / set-tab，是「位置」不是「动作」）
+           图标按钮（关闭 × / 刷新 / ？，28px 方形）
+   ========================================================================== */
+
+body.v3 {
+  /* L1 主按钮 */
+  --btn-primary: #126efa;
+  --btn-primary-hover: #0a5ee0;
+  --btn-primary-active: #0850c4;
+  /* L2 次按钮（描边） */
+  --btn-2nd-border: #cdd5e1;
+  --btn-2nd-border-hover: #8fb8ff;
+  --btn-2nd-bg-hover: #f5f8ff;
+  --btn-2nd-bg-active: #eef5ff;
+  --btn-2nd-text: #344054;
+  --btn-2nd-text-hover: #0958d9;
+  /* L3 文字按钮 */
+  --btn-text: #0958d9;
+  --btn-text-soft: #edf4ff;
+  /* L4 危险 */
+  --btn-danger: #b42318;
+  --btn-danger-border: #efb0ab;
+  --btn-danger-bg-hover: #fdecec;
+  --btn-danger-solid: #d92d20;
+  --btn-danger-solid-hover: #b42318;
+  /* 禁用：任何一级禁用后长一个样——不再像「也许能点」 */
+  --btn-disabled-bg: #f2f4f7;
+  --btn-disabled-border: #e4e8f0;
+  --btn-disabled-text: #98a2b3;
+}
+
+/* ---------- L1 · primary：颜色不变，禁用态重做 ----------
+   原禁用是浅蓝实心（#9db9e6），看起来仍像可点；改成灰化，
+   与 L2/L3 禁用同款，「不能点」一眼可辨。 */
+body.v3 .btn.primary:disabled {
+  background: var(--btn-disabled-bg);
+  border-color: var(--btn-disabled-border);
+  color: var(--btn-disabled-text);
+  box-shadow: none;
+}
+body.v3 .btn.primary:active:not(:disabled) {
+  background: var(--btn-primary-active);
+  border-color: var(--btn-primary-active);
+}
+
+/* ---------- L2 · secondary：透明 ghost → 描边白底 ----------
+   依据设计原则 7「能点的东西必须长得像控件」：ghost 目前承担了大量
+   必须点的动作（弹窗取消、导出 Excel、复制路径、查看差异…），透明底
+   会和旁边的说明文字读成一串。类名保持 .btn.ghost 不变，零 DOM 改动。 */
+body.v3 .btn.ghost {
+  background: #fff;
+  border-color: var(--btn-2nd-border);
+  color: var(--btn-2nd-text);
+}
+body.v3 .btn.ghost:hover {
+  background: var(--btn-2nd-bg-hover);
+  border-color: var(--btn-2nd-border-hover);
+  color: var(--btn-2nd-text-hover);
+}
+body.v3 .btn.ghost:active {
+  background: var(--btn-2nd-bg-active);
+  color: var(--btn-2nd-text-hover);
+  transform: translateY(1px);
+}
+/* L2 禁用与 L1 同款灰化 */
+body.v3 .btn.ghost:disabled {
+  background: var(--btn-disabled-bg);
+  border-color: var(--btn-disabled-border);
+  color: var(--btn-disabled-text);
+  opacity: 1;
+}
+/* 普通描边（.btn 无修饰）禁用同款，替换旧 opacity 写法 */
+body.v3 .btn:not(.primary):not(.ghost):disabled {
+  background: var(--btn-disabled-bg);
+  border-color: var(--btn-disabled-border);
+  color: var(--btn-disabled-text);
+  opacity: 1;
+  box-shadow: none;
+}
+
+/* ---------- L3 · text：补对比度 + 命中面积 ----------
+   原 .link 用 #1677ff（对白底 3.7:1，不达 AA）；统一换成 #0958d9
+   （6.2:1）。类名不变，只换色值与 hover 反馈。 */
+body.v3 .link,
+body.v3 .linkbtn {
+  color: var(--btn-text);
+}
+body.v3 .link:hover,
+body.v3 .linkbtn:hover {
+  background: var(--btn-text-soft);
+  border-bottom-color: transparent;
+}
+/* 危险文字按钮（设置页「清除」等）保持红色系，颜色同步加深到 AA */
+body.v3 .link-btn { color: var(--btn-danger); }
+body.v3 .link-btn:hover { background: var(--danger-soft); border-bottom-color: transparent; }
+
+/* ---------- L4 · danger：页面用描边红 ----------
+   原 .btn.danger 只把文字染红，无边无底，与普通描边按钮并排时看不出
+   危险性。描边红 = 白底 + 红字 + 浅红边；确认弹窗内的最终确认另加
+   .danger-solid（实心红），本次 DOM 未使用，先给规范。 */
+body.v3 .btn.danger {
+  background: #fff;
+  border-color: var(--btn-danger-border);
+  color: var(--btn-danger);
+}
+body.v3 .btn.danger:hover {
+  background: var(--btn-danger-bg-hover);
+  border-color: var(--btn-danger);
+  color: var(--btn-danger);
+}
+body.v3 .btn.danger:active { background: #fbe0de; transform: translateY(1px); }
+body.v3 .btn.danger:disabled {
+  background: var(--btn-disabled-bg);
+  border-color: var(--btn-disabled-border);
+  color: var(--btn-disabled-text);
+}
+body.v3 .btn.danger-solid {
+  background: var(--btn-danger-solid);
+  border-color: var(--btn-danger-solid);
+  color: #fff;
+}
+body.v3 .btn.danger-solid:hover { background: var(--btn-danger-solid-hover); border-color: var(--btn-danger-solid-hover); }
+
+/* ---------- L5 · nested：候选 chip 统一 ----------
+   候选词（常用问法 / AI 快捷指令 / 值来源候选）是「建议」不是「命令」，
+   用浅色底 + 细边，hover 才亮蓝；与 L2 描边拉开一档。 */
+body.v3 .chip-btn,
+body.v3 .v5a-chip {
+  background: #fff;
+  border-color: #d4dcea;
+  color: #344054;
+}
+body.v3 .chip-btn:hover,
+body.v3 .v5a-chip:hover {
+  background: var(--btn-text-soft);
+  border-color: #b9d4ff;
+  color: var(--btn-text);
+}
+/* 查询模板卡（.ex）：两行文字卡，hover 反馈与 chip 同族 */
+body.v3 .ex { border-color: #d4dcea; }
+body.v3 .ex:hover { border-color: var(--btn-2nd-border-hover); background: #f7faff; }
+body.v3 .ex b { color: var(--text); }
+body.v3 .ex:hover b { color: var(--btn-text); }
+
+/* 嵌在横幅里的动作按钮（定位首条错误 →）：白色小胶囊，
+   在红/绿色横幅上都清晰，hover 轻压深。 */
+body.v3 .banner-act {
+  background: #fff;
+  border: 1px solid rgba(16, 24, 40, .16);
+  border-radius: 6px;
+  padding: 1px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: inherit;
+  opacity: 1;
+}
+body.v3 .banner-act:hover { background: #f7f8fa; opacity: 1; }
+body.v3 .banner-act:active { background: #eef0f3; }
+
+/* 行内小图标按钮（行删除 × / 添加规则）：统一 24px 命中、hover 有底 */
+body.v3 .ai-del, body.v3 .ai-vs-del, body.v3 .v5a-rowact {
+  width: 24px; height: 24px;
+  border-radius: 6px;
+  color: var(--muted);
+}
+body.v3 .ai-del:hover, body.v3 .ai-vs-del:hover, body.v3 .v5a-rowact:hover,
+body.v3 .v5a-rowact.more:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+/* ---------- 图标按钮：关闭 × / 刷新 / ？ ----------
+   统一 28px 方形 + hover 底色；aria-label 已有，样式只补显眼度。 */
+body.v3 .iconbtn,
+body.v3 .rh-refresh {
+  width: 28px; height: 28px;
+  border-radius: 6px;
+  color: var(--muted);
+}
+body.v3 .iconbtn:hover,
+body.v3 .rh-refresh:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+body.v3 .pl-modal-close {
+  width: 28px; height: 28px;
+  color: var(--muted);
+}
+body.v3 .pl-modal-close:hover { background: var(--surface-3); color: var(--text); }
+
+/* ---------- 导航选中态：选中 = 浅蓝底，不与 L1 抢实心 ----------
+   页签 / 步骤条 / 分段控件是「我在哪」，不是「点我做主」；
+   统一为 accent-soft 底 + 深蓝字，页签不再用白底阴影（与卡片同色发闷）。 */
+body.v3 .tabs .tab.active {
+  background: var(--btn-text-soft);
+  color: var(--btn-text);
+  box-shadow: none;
+}
+body.v3 .set-tab.active { color: var(--btn-text); }
+body.v3 .steps .step.active { background: var(--btn-text-soft); color: var(--btn-text); }
+body.v3 .seg button.on,
+body.v3 .seg label:has(input:checked),
+body.v3 .q-mode button.on {
+  background: var(--btn-text-soft);
+  color: var(--btn-text);
+}
+
+/* ---------- 右栏「下载导入包」：蓝色描边强调 ----------
+   与顶部 #btnPackTop 同一动作；顶部已是一屏唯一 L1，右栏这颗升级为
+   蓝色描边（介于 L1/L2 的强调档），不再是裸灰描边。 */
+body.v3 #btnPack {
+  background: #fff;
+  border-color: var(--btn-primary);
+  color: var(--btn-primary);
+  font-weight: 600;
+}
+body.v3 #btnPack:hover {
+  background: var(--btn-2nd-bg-hover);
+  border-color: var(--btn-primary-hover);
+  color: var(--btn-primary-hover);
+}
+
+/* ---------- 出包成功条（next-step）绿色语义重申 ----------
+   追加的 ghost 描边规则会按同优先级覆盖旧绿色规则，这里放在其后
+   重申一次，保住「成功后绿色」的语义。 */
+body.v3 .next-step .btn {
+  background: #fff;
+  border-color: #bfe7cd;
+  color: #067a3c;
+}
+body.v3 .next-step .btn:hover { background: #f3fbf6; border-color: #067a3c; color: #067a3c; }
+
+/* ---------- 加载中：按钮内转圈，宽度不变 ----------
+   JS 侧可选接入：请求开始 add('is-loading') + disabled，结束移除。
+   样式先行，不接 JS 也不影响现有界面。 */
+body.v3 .btn.is-loading {
+  color: transparent !important;
+  pointer-events: none;
+  position: relative;
+}
+body.v3 .btn.is-loading::after {
+  content: "";
+  position: absolute;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, .45);
+  border-top-color: #fff;
+  animation: pp6btnspin .7s linear infinite;
+}
+body.v3 .btn.is-loading:not(.primary)::after {
+  border-color: #c9ddff;
+  border-top-color: var(--btn-primary);
+}
+@keyframes pp6btnspin { to { transform: rotate(360deg); } }
+
+/* ---------- 弹窗底部：间距与命中 ----------
+   三个弹窗底部按钮统一 min-height 34（sm 弹窗键 28 保留）、间距 10；
+   顺序规范：[取消/暂不] 左 · [主操作] 右 · 关闭 × 固定右上角。 */
+body.v3 .pl-modal-foot { gap: 10px; }
+body.v3 .pl-modal-foot .btn { min-height: 34px; }
+
+/* v6 收口：右栏「有标准模板？直接导入 / 下载模板」两枚文字按钮
+   .linkbtn 自带 -4px 负外边距（行内文字钮贴住基线用），在 flex 行里
+   会把容器高度压到 17px，文字上缘溢出卡片内边距，看起来像被压住。 */
+body.v3 .v5a-tpl .linkbtn {
+  margin: 0;
+  padding: 2px 0;
+  height: auto;
+  line-height: 1.5;
+}
+body.v3 .v5a-tpl { align-items: center; min-height: 24px; }
+
+/* v6 收口 2：弹窗底部左侧文字链
+   .link 的 -6px 负外边距是为了把命中区外扩、视觉位置不变；放在 gap:8px 的
+   flex 行里会互相吞掉 4px，「全选」的右边缘其实压在「全不选」上。 */
+body.v3 .pl-foot-left { gap: 12px; }
+body.v3 .pl-foot-left .link { margin-inline: 0; padding: 4px 2px; }
+
+/* v6 收口 3：禁用态要真的「长一个样」
+   旧层给 .btn.primary:disabled 留了 opacity:.5，叠在补丁的灰底上仍是
+   半透明蓝灰；hover 规则也没排除 disabled（鼠标停在上面会转成悬停蓝）。 */
+body.v3 .btn.primary:hover:not(:disabled) {
+  background: var(--btn-primary-hover);
+  border-color: var(--btn-primary-hover);
+  color: #fff;
+}
+body.v3 .btn.primary:disabled,
+body.v3 .btn.primary:disabled:hover {
+  background: var(--btn-disabled-bg);
+  border-color: var(--btn-disabled-border);
+  color: var(--btn-disabled-text);
+  opacity: 1;
+  box-shadow: none;
+  transform: none;
+}

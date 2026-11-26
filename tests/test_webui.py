@@ -1677,7 +1677,9 @@ def _():
     table = html[html.index('class="v5a-table"'):html.index("</table>", html.index('class="v5a-table"'))]
     for th in ("字段名称", "字段编码", "类型", "选项 / 关联", "来源"):
         assert th in table, th
-    assert "<colgroup>" in table and "calc((100% - 290px)" in table, "列宽没有按可用宽度分配"
+    assert "<colgroup>" in table and "calc((100% - 298px)" in table, "列宽没有按可用宽度分配"
+    # 末列要装下两个 24px 图标钮（48 + 内边距），52px 会顶出表格右侧
+    assert '<col style="width:60px">' in table, "行尾操作列宽度不够"
 
     # ③ 红线文案
     assert "不删除已有字段" in html
@@ -1694,3 +1696,58 @@ def _():
     assert "grid-template-columns: minmax(0, 1fr) 288px" in css
     assert "body.v3 .v5a-tablewrap { overflow-x: auto; }" in css
     assert "@media (min-width: 1041px) and (max-width: 1360px)" in css
+
+
+@case("WEB56", "webui", "按钮体系分级：ghost 描边、导航选中浅蓝、禁用灰化", "P1",
+      ["补丁整段在 style.css 末尾，删段即回退",
+       ".btn.ghost 白底 + #cdd5e1 描边（L2 必须长得像控件）",
+       "页签选中浅蓝底，不与主按钮抢实心",
+       "primary 禁用灰化且 hover 不覆盖；#btnPack 蓝描边（顶部才是唯一 L1）"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    css = (root / "pp6kit" / "static" / "style.css").read_text(encoding="utf-8")
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+
+    start = css.index("按钮体系 · 显眼度分级")
+    patch = css[start:]
+    # 标题注释必须出现在文件末尾这一段（回退只删这里）
+    assert "删除本段即完整回退" in patch
+    assert len(patch) > 3000, "补丁被截断了"
+
+    assert "body.v3 .btn.ghost {" in patch
+    assert "--btn-2nd-border: #cdd5e1;" in patch
+    assert "body.v3 .tabs .tab.active {" in patch
+    assert "--btn-text-soft: #edf4ff;" in patch
+    assert "body.v3 .btn.primary:disabled" in patch
+    assert "body.v3 #btnPack {" in patch
+    assert "border-color: var(--btn-primary);" in patch
+
+    # 禁用态收口：opacity 必须回 1，hover 必须排除 disabled
+    assert "body.v3 .btn.primary:hover:not(:disabled)" in patch
+    assert "opacity: 1;" in patch
+
+    # 主按钮仍只有页头一颗（右栏那颗是描边）
+    assert 'id="btnPackTop"' in html and 'id="btnPack"' in html
+    assert "删除本段即完整回退" in patch
+
+
+@case("WEB57", "webui", "X-Build-Report 解码函数必须在位（出包不再报未定义）", "P0",
+      ["app.js 定义 decodeHeaderJson 且 /api/build 调用它",
+       "服务端按 base64(UTF-8 JSON) 编码，前端必须 atob + TextDecoder",
+       "曾经因为重构删掉了函数定义、只留调用，出包直接失败"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    js = (root / "pp6kit" / "static" / "app.js").read_text(encoding="utf-8")
+    web = (root / "pp6kit" / "webui.py").read_text(encoding="utf-8")
+
+    assert "function decodeHeaderJson(raw)" in js, "解码函数定义丢了"
+    assert 'TextDecoder("utf-8")' in js, "解码没有按 UTF-8（中文会乱码）"
+    assert "X-Build-Report" in js and "decodeHeaderJson(res.headers.get(\"X-Build-Report\"))" in js
+
+    start = web.index("def _header_json(")
+    assert "base64" in web[start:start + 900]
+    assert "TextDecoder(\"utf-8\")" in web[start:start + 900], "服务端注释没写清前端解码方式"
