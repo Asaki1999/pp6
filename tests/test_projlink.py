@@ -3759,16 +3759,17 @@ def _():
     assert out["F_offSilent"] is True, "关掉关联时不该提示"
 
 
-@case("PL86", "projlink", "字段来源提示：连库/没连库都只提示一次，没连库不再弹窗",
+@case("PL86", "projlink", "字段来源：连库 toast 只提示一次；没连库弹「字段来源」选择",
       "P0", ["dbConfigured=true → resolve true 且不弹 #psMask",
              "toast 同时点明「已连接数据库」「字段取自库中」「无需再选项目文件」",
-             "没连库但随包快照够用 → 不弹窗，提示指向「项目字段来源」",
+             "没连库（随包快照够用）→ 弹窗主推「使用随包快照」，次选导入 zip",
              "随包快照不可用 → 仍然弹窗拦住，取消即不继续",
              "已有 token 的快速返回不提示"])
 def _():
-    """用户把「连库时静默跳过 zip 弹窗」误认成弹窗被删了。
-    这次不恢复强制弹窗（用户要求不打扰），改成可见但不挡路的 toast。
-    """
+    """没连库的口径有两轮用户反馈：
+    2026-11-24「点关联立刻被 zip 弹窗拦住」→ 弹窗挪到解析前 + 快照够用不弹；
+    2026-11-26「快照够用不弹，我找不到导 zip 的入口」→ 恢复弹窗，但用 usable
+    模式：主按钮「使用随包快照」，想完整对齐才导入 zip。"""
     out = _probe_frontend("fe_projlink_snapshot_probe.js")
 
     assert out["G_dbResolve"] is True, "连库时没继续走主流程"
@@ -3786,15 +3787,15 @@ def _():
     assert len(out["G_afterNewFile"]) == 1, "换文件后提示没有重新出现"
     assert len(out["G_afterNewFile"][0]) <= 40, out["G_afterNewFile"]
 
-    # 没连库但随包快照够用：不弹窗、直接继续（用户反馈「点关联就跳项目弹窗」）
-    assert out["G_noDbResolve"] is True, "没连库时随包快照路径被改坏"
-    assert out["G_noDbMaskHidden"] is True, "没连库又弹窗了（用户反馈的就是这个）"
-    assert len(out["G_noDbToasts"]) == 1, out["G_noDbToasts"]
-    msg = out["G_noDbToasts"][0]
-    assert "未连数据库" in msg and "随包快照" in msg and "项目字段来源" in msg, msg
-    assert out["G_noDbFlag"] is True, "没连库的提示标志没记下（会刷屏）"
-    assert out["G_noDbAgainToasts"] == [], "同一份文件里提示刷屏了"
-    # 随包快照不可用：这时才该弹窗拦住，取消就不继续
+    # 没连库（快照够用）：弹「字段来源」选择，主推快照、次选 zip（2026-11-26 口径）
+    assert out["G_noDbMaskHidden"] is False, \
+        "没连库没弹字段来源弹窗：用户找不到导入项目 zip 的入口"
+    assert "字段来源" in out["G_noDbTitle"], out["G_noDbTitle"]
+    assert "使用随包快照" in out["G_noDbCancelLabel"], out["G_noDbCancelLabel"]
+    assert "导入项目 zip" in out["G_noDbPickLabel"], out["G_noDbPickLabel"]
+    assert out["G_noDbToasts"] == [], "弹窗之外又发 toast，两条提示打架"
+    assert out["G_noDbResolve"] is True, "选了「使用随包快照」却没继续主流程"
+    # 随包快照不可用：仍弹窗拦住，取消就不继续
     assert out["G_noDbUnavailable"]["maskHidden"] is False, "快照不可用时没拦住"
     assert out["G_noDbUnavailableResolve"] is False, out["G_noDbUnavailableResolve"]
     assert out["G_tokenResolve"] is True, "已有 token 的快速返回被改坏"
@@ -3804,7 +3805,7 @@ def _():
 @case("PL87", "projlink", "点「关联」只切档不弹窗；项目字段来源改成显式入口", "P0",
       ["bindPlPre 切档不再调 ensureLinkTarget（弹窗就是从那儿来的）",
        "目标行有 #plProjectSrc，只在目标为项目时显示",
-       "ensureProjectSnapshot 先用随包快照，不可用才弹窗"])
+       "ensureProjectSnapshot 未连库必弹字段来源选择（主推快照）"])
 def _():
     from pathlib import Path
 
@@ -3822,6 +3823,11 @@ def _():
 
     start = app.index("async function ensureProjectSnapshot()")
     seg = app[start:app.index("\n}\n", start)]
-    assert "projectSnapshotUsable(st)" in seg, "没连库时没有先用随包快照"
-    assert seg.index("projectSnapshotUsable(st)") < seg.index("askProjectZip(st)"), \
-        "随包快照可用时不该弹窗"
+    # 没连库最终都要走弹窗（2026-11-26：不弹用户找不到导 zip 的入口）；
+    # projectSnapshotUsable 的判断在弹窗内部（askProjectZip）按可用性分主次按钮
+    assert "askProjectZip(st)" in seg, \
+        "没连库没有弹「字段来源」选择弹窗"
+    assert "未连数据库" not in seg, \
+        "没连库的路径又改成 toast 静默带过：用户会找不到导 zip 的入口"
+    # 连库的「字段取自库中」toast 保留（那边的静默是对的）
+    assert "已连接数据库" in seg, "连库时的字段来源提示被误删"

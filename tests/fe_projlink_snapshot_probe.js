@@ -240,7 +240,8 @@ async function main() {
    *   · dbConfigured=true → 不弹 #psMask、resolve true，用 toast 说清字段来源；
    *   · 同一份文件再调用一次不再 toast（防刷屏）；
    *   · 换文件（模拟 handleFile 重置标志）后才再提示一次；
-   *   · 没连库仍走原来的弹窗；已有 token 的快速返回也不提示。
+   *   · 没连库弹「字段来源」选择（2026-11-26 用户要求恢复）；
+   *   · 已有 token（导过 zip）的快速返回也不提示。
    */
   const DB = {
     ok: true, dbConfigured: true, source: "target_db",
@@ -281,33 +282,27 @@ async function main() {
   await callWithDb();
   out.G_afterNewFile = toasts.slice();
 
-  /* 没连库、随包快照够用：不再弹窗（用户点「关联」不该被项目 zip 拦住），
-   * 用一条非阻塞提示说清字段来源，并指向「项目字段来源」入口。 */
+  /* 没连库（随包快照够用）：弹「字段来源」选择弹窗——主按钮「使用随包快照」，
+   * 次按钮「导入项目 zip」。2026-11-26 用户要求恢复弹窗：不弹他找不到导 zip
+   * 的入口。导过 zip 有 token 后不再弹（G_token 场景管）。 */
   const NO_DB_OK = {
     ok: true, dbConfigured: false, source: "package_snapshot",
     sourceLabel: "随包快照", fieldCount: 51, status: "ok",
   };
-  async function callNoDb(status) {
-    resetSnapshotState();
-    st.plDbHintShown = false;
-    q("#psMask").hidden = true;
-    ctx.fetch = async () => ({ ok: true, json: async () => status });
-    return await ctx.ensureProjectSnapshot();
-  }
-
-  toasts.length = 0;
-  out.G_noDbResolve = await callNoDb(NO_DB_OK);
-  out.G_noDbMaskHidden = q("#psMask").hidden;
-  out.G_noDbToasts = toasts.slice();
-  out.G_noDbFlag = st.plDbHintShown;
-
-  // 同一份文件再问一次：不重复提示
-  toasts.length = 0;
+  toasts.length = 0;               // 清掉 G_db 段遗留，别让它混进本段断言
   resetSnapshotState();
+  st.plDbHintShown = false;
   q("#psMask").hidden = true;
   ctx.fetch = async () => ({ ok: true, json: async () => NO_DB_OK });
-  await ctx.ensureProjectSnapshot();
-  out.G_noDbAgainToasts = toasts.slice();
+  const okPending = ctx.ensureProjectSnapshot();
+  for (let i = 0; i < 40 && q("#psMask").hidden; i += 1) await flush();
+  out.G_noDbMaskHidden = q("#psMask").hidden;          // false = 弹了
+  out.G_noDbTitle = q("#psTitle").textContent;
+  out.G_noDbCancelLabel = q("#psCancel").textContent;  // 主按钮：使用随包快照
+  out.G_noDbPickLabel = q("#psPick").textContent;      // 次按钮：导入项目 zip（刷新）
+  out.G_noDbToasts = toasts.slice();                   // 提示靠弹窗本身，不用 toast
+  if (q("#psCancel").onclick) q("#psCancel").onclick(); // 选「使用随包快照」
+  out.G_noDbResolve = await okPending;
 
   // 快照不可用：仍然必须拦住（这里才该弹窗，取消即不继续）
   const NO_DB_BAD = {

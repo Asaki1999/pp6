@@ -1223,15 +1223,11 @@ async function ensureProjectSnapshot() {
     }
     return true;
   }
-  // 未连库但随包快照字段够用：直接用它继续，不弹窗打断。
-  // 想完整对齐的用户可以从「项目字段来源」主动导入项目 zip。
-  if (projectSnapshotUsable(st)) {
-    if (!state.plDbHintShown) {
-      state.plDbHintShown = true;
-      toast(`未连数据库，项目字段用随包快照（${st.fieldCount} 个字段）；要完整对齐点「项目字段来源」`, 8000);
-    }
-    return true;
-  }
+  // 没连库：把「字段来源」的选择摆给用户（2026-11-26 用户要求恢复弹窗——
+  // 不弹的话他找不到导入项目 zip 的入口，包里就少了字段对齐）。
+  // 弹窗是 usable 模式：主按钮「使用随包快照」不用找 zip，次按钮才导 zip；
+  // 导过一次 token 记住，之后不再弹。弹窗时机在解析/出包前，档位已选完，
+  // 不会复现 2026-11-24「点关联立刻被弹窗拦住」的问题。
   return await askProjectZip(st);
 }
 
