@@ -218,6 +218,15 @@ def refine(payload: dict, cfg: dict, timeout: int = 150,
     bo, notices = ai_bo.build_bo(spec.get("bo") or {}, known,
                                  strict_objects=True, prefer_code=True)
 
+    # 编码撞库硬校验（2026-11-26 用户要求）：微调改成（或本来就带着）一个
+    # 系统已占用的编码时，这次修改不应用，报错让人先换编码。
+    # 报错时前端不会覆盖 state.aiData，之前的修改都还在，链路不会卡死。
+    # （旧的「⚠ 系统里已有同名对象」notice 被这道闸覆盖：能走到它的编码
+    #   都已在这里报错，不再有「只提示不拦」的中间态。）
+    _hit = _objects.code_taken(bo.code)
+    if _hit:
+        raise ValueError(_objects.code_conflict_message(_hit))
+
     # 编码变更要显式说出来：它会连带改物理表名 pp_<code> 和字典 key 前缀，
     # 用户需要知道这不是「只改个显示名」。
     _old_code = str((payload.get("bo") or {}).get("code") or "").strip()
@@ -225,13 +234,6 @@ def refine(payload: dict, cfg: dict, timeout: int = 150,
     if _old_code and bo.code != _old_code:
         _code_change = f"对象编码 {_old_code} → {bo.code}（物理表名 {bo.tbl_name}）"
         notices.insert(0, _code_change)
-        # 改成系统里已存在的编码 = 导入时会命中那个对象（更新而不是新建）。
-        # 这一步必须说出来，否则用户以为自己在「新造一个」，实际覆盖了线上对象。
-        _hit = _objects.lookup(bo.code)
-        if _hit.get("exists"):
-            notices.insert(0,
-                f"⚠ 编码 {bo.code} 系统里已有同名对象（id {_hit.get('id', '')}），"
-                f"导入会更新它而不是新建；想新建请换一个编码")
 
     # 微调也可能把级联子字段的候选值改拍平了（模型重排 values 时常见），
     # 补一轮归属映射，别让级联在纠错后失效

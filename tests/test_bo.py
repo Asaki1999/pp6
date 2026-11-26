@@ -1574,3 +1574,161 @@ def _():
     frag = next(t for t in all_tags(fx, "formField")
                 if attrs(t).get("name") == "pinZhongFenLei")
     assert attrs(frag).get("fieldType") == "select", attrs(frag).get("fieldType")
+
+
+@case("BO52", "bo", "连库时新对象编码不许和库里已有对象一样（存量包修订除外）",
+      "P0", ["配库实时查 iform_bo_def，命中就拦", "查询成功但库里没有 → 即使本地缓存有同名也放行",
+             "连不上降级本地清单并说明来源", "编码归一（PP_Project=project）",
+             "AI 生成 / 微调 / 套用导出都拦", "存量包修订不经过这道闸"])
+def _():
+    """2026-11-26 用户要求：AI 生成的新对象 code 撞库 = 导入后跟线上对象搅在一起，
+    必须在生成时报错，不能等出包（bind 只给 ⚠ 提示）。豁免：存量包修订本来
+    就在改已有对象（ai_patch 只动字段草稿，不经过这条链路）；Excel 手填要
+    保留「显式更新已有对象」的场景，维持 bind() 的提示口径。"""
+    import contextlib
+    import json as _json
+
+    from pp6kit import ai_refine, objects, webui
+    from pp6kit.model import Bo
+
+    @contextlib.contextmanager
+    def _db(rows_by_code, connect_fail=False, catalog=None):
+        """模拟连库状态：rows_by_code[code] = (id, name)；connect_fail 模拟连不上。"""
+        class _Cur:
+            def execute(self, sql, args=()):
+                # code_taken 是全量拉回来归一比对，fake 就按 (id, code, name) 给
+                self._rows = [(v[0], k, v[1]) for k, v in rows_by_code.items()]
+            def fetchall(self):
+                return self._rows
+            def close(self):
+                pass
+        class _Conn:
+            def cursor(self):
+                if connect_fail:
+                    raise RuntimeError("connection refused")
+                return _Cur()
+            def close(self):
+                pass
+
+        old = (objects._db_ready, objects._connect_ro, objects.catalog,
+               objects._cache_source)
+        objects._db_ready = lambda: {"database": "unit-test"}
+        objects._connect_ro = lambda db, timeout=4: _Conn()
+        objects.catalog = lambda force=False: catalog or []
+        objects._cache_source = "目标库"
+        try:
+            yield
+        finally:
+            (objects._db_ready, objects._connect_ro, objects.catalog,
+             objects._cache_source) = old
+
+    # ---- ① 实时查库：命中 / 不命中 / 归一 / 连不上降级
+    with _db({"project": ("1001", "项目")}):
+        hit = objects.code_taken("project")
+        assert hit and hit["source"] == "目标库" and hit["id"] == "1001", hit
+        assert "项目" in objects.code_conflict_message(hit)
+        # 查询成功且库里没有 → 即使本地清单/快照里有同名也放行（实时库说了算）
+        assert objects.code_taken("contract") is None
+        with _db({"project": ("1001", "项目")},
+                 catalog=[{"code": "contract", "name": "合同"}]):
+            pass
+        # 归一：AI 写 PP_Project / pp-project 也要拦
+        assert objects.code_taken("PP_Project") is not None
+        assert objects.code_taken("pp-project") is not None
+    # 连不上 → 降级本地清单，且来源标注不是「目标库」
+    with _db({}, connect_fail=True,
+             catalog=[{"code": "contract", "name": "合同", "id": "7"}]):
+        hit = objects.code_taken("contract")
+        assert hit and hit["source"] == "本地对象清单" and hit["id"] == "7", hit
+        assert "本地对象清单" in objects.code_conflict_message(hit)
+        assert objects.code_taken("nothing_here") is None
+
+    # ---- ② 没配库（用户口径：连接了数据库才校验）→ 只看本地清单
+    old_ready = objects._db_ready
+    objects._db_ready = lambda: None
+    try:
+        old_cat = objects.catalog
+        objects.catalog = lambda force=False: [{"code": "contract", "name": "合同"}]
+        try:
+            assert objects.code_taken("contract") is not None
+            assert objects.code_taken("other") is None
+        finally:
+            objects.catalog = old_cat
+    finally:
+        objects._db_ready = old_ready
+
+    # ---- ③ AI 一句话生成：撞了在表单/列表设计之前报错
+    orig_generate = webui.ai_bo.generate
+    def _fake_generate(desc, cfg, known_objects=None):
+        return {"bo": Bo(code="project", name="项目", tbl_name="pp_project"),
+                "notices": [], "model": "fake", "seconds": 0}
+    webui.ai_bo.generate = _fake_generate
+    try:
+        with _db({"project": ("1001", "项目")}):
+            try:
+                webui.ai_generate_bo({"description": "生成一个项目"}, None)
+                raise AssertionError("撞库没有拦下生成")
+            except ValueError as exc:
+                assert "project" in str(exc) and "编码改成" in str(exc), exc
+    finally:
+        webui.ai_bo.generate = orig_generate
+
+    # ---- ④ 微调：改撞库编码 / 带着撞库编码加字段，都拦；不撞时照常返回
+    fake = {"bo": {"code": "project", "name": "项目",
+                   "fields": [{"code": "name", "name": "项目名称",
+                               "type": "varchar", "values": []}]},
+            "form": {"key": "create_project", "name": "新建项目",
+                     "fields": [{"name": "name", "label": "项目名称", "type": "text"}]},
+            "list": {"key": "project_list", "name": "项目列表",
+                     "columns": [{"code": "name", "label": "项目名称"}],
+                     "views": ["grid"]},
+            "changes": []}
+    old_chat = ai_refine.llm.chat_any
+    ai_refine.llm.chat_any = lambda *a, **k: (_json.dumps(fake, ensure_ascii=False),
+                                              {"model": "fake"})
+    try:
+        payload = {
+            "instruction": "把对象编码改成 project",
+            "bo": {"code": "contract", "name": "合同",
+                   "fields": [{"code": "name", "name": "合同名称",
+                               "type": "varchar", "choices": []}]},
+            "form": {"key": "create_contract", "name": "新建合同",
+                     "fields": [{"name": "name", "label": "合同名称", "type": "text"}]},
+            "list": {"key": "contract_list", "name": "合同列表",
+                     "columns": [{"code": "name", "label": "合同名称"}],
+                     "views": ["grid"]},
+        }
+        with _db({"project": ("1001", "项目")}):
+            try:
+                ai_refine.refine(payload, {})
+                raise AssertionError("微调撞库没有拦下")
+            except ValueError as exc:
+                assert "project" in str(exc) and "编码改成" in str(exc), exc
+        # 不撞（实时库没有 contract）→ 正常返回（BO25 的老路径不受影响）
+        with _db({"project": ("1001", "项目")}):
+            payload2 = dict(payload)
+            payload2["instruction"] = "改一下"
+            fake2 = dict(fake)
+            fake2["bo"] = dict(fake["bo"], code="contract")
+            ai_refine.llm.chat_any = lambda *a, **k: (
+                _json.dumps(fake2, ensure_ascii=False), {"model": "fake"})
+            res = ai_refine.refine(payload2, {})
+            assert res["bo"]["code"] == "contract", res["bo"]["code"]
+    finally:
+        ai_refine.llm.chat_any = old_chat
+
+    # ---- ⑤ 套用导出：最后一道闸，撞了拒绝导出 Excel
+    with _db({"project": ("1001", "项目")}):
+        try:
+            webui.ai_apply_bo({"bo": {"code": "project", "name": "项目",
+                                      "fields": []}})
+            raise AssertionError("导出撞库没有拦下")
+        except ValueError as exc:
+            assert "project" in str(exc), exc
+
+    # ---- ⑥ 豁免：存量包修订链路不接这道闸（它本来就在改已有对象）
+    import pathlib
+    patch_src = (pathlib.Path(objects.__file__).parent / "ai_patch.py").read_text(
+        encoding="utf-8")
+    assert "code_taken" not in patch_src, \
+        "存量包修订不该做新建编码撞库校验（它修订的就是已有对象）"

@@ -2428,26 +2428,43 @@ def _():
     assert "plBackEdit" in app and "backToInput" in app, "返回修改 Excel 没有绑到第 1 步"
 
 
-@case("PL63", "projlink", "AI 首屏返回后再点「开始生成」：走全新生成并进第 2 步，不能当增量修改",
-      "P0", ["返回后能再进第 2 步", "fresh 生成", "/api/ai/bo 不是 refine"])
+@case("PL63", "projlink", "AI 首屏接记忆：有结果时回第 1 步是接着改，从头要显式点「从头重新生成」",
+      "P0", ["fresh 参数仍在，aiChatSendFrom 透传", "首屏入口不再强制 fresh",
+             "首屏发起的修改成功后进第 2 步", "预览页仍是增量修改",
+             "提示条随 renderEntry/renderAiBo 刷新"])
 def _():
-    # 用户实测：第 1 步「描述 → 开始生成」进第 2 步，点「回去接着说」改描述，
-    # 再点开始生成就停在第 1 步。根因：sendAiChat 只看 state.aiData 判 first，
-    # 旧结果还在 → 走 /api/ai/refine，而 refine 不 goStep(2)。
-    # 修法：首屏发送显式带 fresh=true，first = fresh || !state.aiData。
+    # 历史一（2026-11-21 前）：首屏只看 state.aiData 判 first，旧结果还在 →
+    # 走 refine 又不 goStep(2)，用户看起来「点生成卡在第 1 步」。
+    # 历史二（2026-11-26 用户报）：修法当时是首屏强制 fresh=true——结果
+    # 「生成完 → 返回上一步 → 让 AI 加字段」从零生成，只剩新提的那一个字段。
+    # 现口径：首屏有结果默认接着改（refine），成功后由 fromEntry 跳第 2 步；
+    # 想推倒重来点提示条里的「从头重新生成」（#aiRedo1）。路由选择由
+    # WEB54 的 node 探针实跑钉住，这里在源码层多一道闸。
     from pathlib import Path
     app = (Path(webui.STATIC) / "app.js").read_text(encoding="utf-8")
     assert re.search(r"async function sendAiChat\(text,\s*\{\s*fresh = false\s*\}\s*=\s*\{\}\)",
                      app), "sendAiChat 没有 fresh 参数"
     assert "const first = !!fresh || !state.aiData" in app, "first 仍然只看 aiData"
     assert "sendAiChat(msg, { fresh })" in app, "aiChatSendFrom 没把 fresh 传下去"
-    # 首屏三个入口（按钮 / Enter / 快捷 chip）都必须 fresh
-    assert 'aiChatSendFrom("aiChatText1", "aiChatLog1", { fresh: true })' in app, \
-        "首屏发送没有标 fresh"
+    # 首屏三个入口（按钮 / Enter / 快捷 chip）都不许再写死 fresh：
+    # 写死 = AI 失忆，「返回上一步再加字段」只剩新字段（2026-11-26 用户报）
+    assert 'aiChatSendFrom("aiChatText1", "aiChatLog1", { fresh: true })' not in app, \
+        "首屏发送又写死 fresh：AI 会对已有结果失忆"
+    assert 'aiChatSendFrom("aiChatText1", "aiChatLog1")' in app, "首屏发送入口不见了"
     # 预览页仍是增量修改，不能误改成全新生成
     assert 'aiChatSendFrom("aiChatText", "aiChatLog")' in app, "预览页发送被改坏了"
-    assert 'btn.textContent = first ? "开始生成" : "发送修改"' in app, \
-        "按钮文案仍按 state.aiData 判断，回到第 1 步会显示「发送修改」"
+    # 首屏发起的修改（refine）成功后要跳第 2 步，别让人停在输入框前猜改没改
+    assert re.search(r"if \(!first && fromEntry\) goStep\(2\);", app), \
+        "首屏发起的增量修改成功后没有跳到预览页"
+    # 首屏按钮/提示条由 syncEntryResume 统一管：回第 1 步、结果更新都要刷
+    assert "function syncEntryResume()" in app, "syncEntryResume 不见了"
+    m_entry = re.search(r"function renderEntry\(\)\s*\{[\s\S]{0,600}?\n\}", app)
+    assert m_entry and "syncEntryResume()" in m_entry.group(0), \
+        "renderEntry 没刷提示条：回第 1 步会显示上一次的字段数"
+    assert re.search(r"function renderAiBo\(d\)\s*\{[\s\S]{0,400}?syncEntryResume\(\)", app), \
+        "renderAiBo 没刷提示条：微调后字段数不更新"
+    assert 'id="aiRedo1"' in (Path(webui.STATIC) / "index.html").read_text(encoding="utf-8"), \
+        "首屏没有「从头重新生成」出口"
 
 
 @case("PL64", "projlink", "预算 → 预算状态/总预算：两个候选都列出来，手选总预算能落",
@@ -3236,6 +3253,26 @@ def _():
 @case("PL76", "projlink", "AI 路径的三种拒绝：自关联 / 编码被占 / 目标解析不了",
       "P1", ["不硬塞字段", "错误信息能照着改", "解析不了就 400（不是静默按项目对齐）"])
 def _():
+    # 编码撞库的硬校验（BO52）在这条链路里排在最前面；这里测的是另外三种
+    # 拒绝，压住它避免本机 ~/.pp6kit/objects.json 里有同名对象时先报撞库、
+    # 盖掉本用例要验的文案（CI 上是随包快照，同样不受本机状态影响）。
+    import contextlib
+    from pp6kit import objects as _objects
+
+    @contextlib.contextmanager
+    def _no_code_taken():
+        old = _objects.code_taken
+        _objects.code_taken = lambda code: None
+        try:
+            yield
+        finally:
+            _objects.code_taken = old
+
+    with _no_code_taken():
+        _pl76_checks()
+
+
+def _pl76_checks():
     # ① 对象就是目标对象本身 → 自关联不允许
     same = {"bo": {"code": "project", "name": "项目", "fields": [
         {"code": "name", "name": "项目名称", "type": "varchar"}]}}

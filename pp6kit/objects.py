@@ -505,6 +505,61 @@ def _norm(text: str) -> str:
     return t
 
 
+def code_taken(code: str) -> dict | None:
+    """「新建对象」的编码撞库检查：被占用返回 {code, name, id, source}，否则 None。
+
+    只服务**新建**场景的硬校验（AI 一句话生成 / 读表识别 / 微调改编码 /
+    套用导出）。存量包修订本来就在改已有对象，不走这里；Excel 手填要保留
+    「显式更新已有对象」的合法场景，出包侧仍走 bind() 的同名提示。
+
+    判定顺序：配了库就实时查 iform_bo_def（毫秒级，库里刚建的对象也能查到）；
+    连不上降级本地对象清单（连库刷回的缓存，其次随包快照）——降级提示里会
+    说明来源，不能让人误以为刚核对过实时库。
+    """
+    raw = (code or "").strip()
+    if not raw:
+        return None
+
+    db = _db_ready()
+    if db:
+        try:
+            conn = _connect_ro(db)
+            cur = conn.cursor()
+            # 全量拉一遍在 Python 侧归一比对（对象表几百行，毫秒级）：
+            # AI 可能给 PP_Project / pp-project 这类变体，SQL 精确匹配认不出
+            cur.execute(
+                "SELECT id_, code_, name_ FROM iform_bo_def "
+                "WHERE COALESCE(state_, '')<>'deleted'")
+            rows = cur.fetchall()
+            cur.close(); conn.close()
+            for bo_id, db_code, db_name in rows:
+                if not db_code:
+                    continue
+                if _norm(db_code) == _norm(raw):
+                    return {"code": db_code, "id": str(bo_id or ""),
+                            "name": (db_name or "").strip() or db_code,
+                            "source": "目标库"}
+            return None          # 查询成功且库里没有 → 直接定论，不用再翻缓存
+        except Exception:
+            pass                 # 连不上 → 用本地清单兜底，别拦住生成
+
+    key = _norm(raw)
+    for it in catalog():
+        if it["code"] == raw or _norm(it["code"]) == key:
+            return {"code": it["code"], "id": it.get("id", "") or "",
+                    "name": it.get("name", "") or it["code"], "source": "本地对象清单"}
+    return None
+
+
+def code_conflict_message(hit: dict) -> str:
+    """撞库报错文案：说清被谁占用、这次产物没有生效、出路是什么。"""
+    name = hit.get("name") or hit.get("code") or ""
+    where = hit.get("source") or "系统"
+    return (f"编码 {hit.get('code', '')} 已被{where}里的「{name}」占用，"
+            f"再导进去会跟它撞在一起。请换一个编码："
+            f"在对话里说「编码改成 xxx」")
+
+
 def resolve(text: str, items: list[dict] | None = None) -> str | None:
     """把用户/AI 写的各种说法归一到真实对象编码。
 

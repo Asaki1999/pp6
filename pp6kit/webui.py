@@ -1483,6 +1483,14 @@ def ai_generate_bo(payload: dict, projlink_header: str | None = None) -> dict:
     notices.extend(bo_res["notices"])
     steps.append({"step": "对象", "model": bo_res["model"], "seconds": bo_res["seconds"]})
 
+    # 编码撞库硬校验（2026-11-26 用户要求）：连着库时，新对象的 code 不许和
+    # 系统已有对象一样——AI 起的名撞了库，导入就会跟线上对象搅在一起。
+    # 放在表单/列表设计之前：撞了就报错，不多烧两次模型调用。
+    # 存量包修订（/api/patch/*）本来就在改已有对象，不在这条链路上，天然豁免。
+    hit = objects.code_taken(bo.code)
+    if hit:
+        raise ValueError(objects.code_conflict_message(hit))
+
     # 链接字段插在**表单/列表设计之前**：设计器看得见它，才会把它当成本对象的
     # 一部分（列宽、分组、列表列都跟着它走），否则预览里对象有字段、表单却没有控件。
     link_field = _attach_ai_link(bo, link_target, link_decisions, notices)
@@ -1608,6 +1616,12 @@ def ai_from_sheet(data: bytes, hint: str = "", with_form: bool = True,
     bo = res["bo"]
     notices.extend(res["notices"])
     steps.append({"step": "映射字段", "model": res["model"], "seconds": res["seconds"]})
+
+    # 与 ai_generate_bo 同一道闸：识别出的对象编码不许撞库（撞了就在这里报错，
+    # 不等出包、更不等导入）。存量包修订不走这条链路。
+    hit = objects.code_taken(bo.code)
+    if hit:
+        raise ValueError(objects.code_conflict_message(hit))
 
     # 链接字段插在表单/列表设计之前（理由见 ai_generate_bo 同名注释）
     link_field = _attach_ai_link(bo, link_target, link_decisions, notices)
@@ -2022,6 +2036,13 @@ def ai_apply_bo(payload: dict, relations_header: str | None = None,
     data = payload.get("bo") or {}
     if not data.get("code"):
         raise ValueError("缺少对象信息")
+
+    # 导出前的最后一道闸（2026-11-26 用户要求）：生成/微调时没连库拦不住，
+    # 预览停留期间库里也可能被人建了同名对象。撞了就拒绝导出，别让一份
+    # 必撞库的 Excel 流出去。存量包修订不经过这条链路。
+    hit = objects.code_taken(str(data["code"]))
+    if hit:
+        raise ValueError(objects.code_conflict_message(hit))
 
     proj = Project()
     demo = demo_project()
