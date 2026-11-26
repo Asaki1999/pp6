@@ -3819,7 +3819,8 @@ def _():
         "点关联又去做目标校验，会把项目 zip 弹窗带回来"
 
     assert 'id="plProjectSrc"' in html, "目标行没有「项目字段来源」入口"
-    assert 'src.hidden = state.plTargetKind !== "project"' in app, "入口没有按目标类型显示"
+    assert 'src.hidden = state.plTargetKind !== "project" || dbKnown' in app, \
+        "入口没有按目标类型 / 连库状态显示"
 
     start = app.index("async function ensureProjectSnapshot()")
     seg = app[start:app.index("\n}\n", start)]
@@ -3831,3 +3832,34 @@ def _():
         "没连库的路径又改成 toast 静默带过：用户会找不到导 zip 的入口"
     # 连库的「字段取自库中」toast 保留（那边的静默是对的）
     assert "已连接数据库" in seg, "连库时的字段来源提示被误删"
+
+
+@case("PL88", "projlink", "已连库时「项目字段来源」不出现；来源写在提示里", "P0",
+      ["连库 = 字段固定来自库，没有可选项 → 按钮不该出现（点了只会弹远处 toast）",
+       "未连库才露出按钮，点开在随包快照与项目 zip 之间换",
+       "提示文案直接写明当前来源，用户不必点按钮去猜",
+       "探针失败不能回调渲染（会 render→probe→失败→render 空转）"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    app = (root / "pp6kit" / "static" / "app.js").read_text(encoding="utf-8")
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert 'id="plProjectSrc"' in html
+    assert ">项目字段来源<" in html, "按钮文案没说清是「项目」的字段来源"
+
+    start = app.index("function syncPlTargetUI()")
+    seg = app[start:app.index("function ", start + 10)]
+    assert "state.plSnapshotStatus && state.plSnapshotStatus.dbConfigured" in seg
+    assert "src.hidden = state.plTargetKind !== \"project\" || dbKnown" in seg
+
+    # 提示文案：连库/未连库两种来源各一句
+    assert "字段定义取自数据库" in app
+    assert "字段来自随包快照，可换项目 zip" in app
+
+    # 探针：只在成功时重渲染
+    start = app.index("function probeSnapshotStatus()")
+    seg = app[start:app.index("\n}\n", start)]
+    assert ".catch(() => {})" in seg, "探针失败没被吞掉"
+    assert "if (d) syncPlTargetUI();" in seg, "探针失败也会重渲染 → 死循环"

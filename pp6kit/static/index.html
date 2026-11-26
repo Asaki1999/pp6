@@ -319,10 +319,10 @@
                      autocomplete="off" spellcheck="false">
               <button type="button" class="btn ghost sm" id="plTargetCheck">核对</button>
             </span>
-            <!-- 项目字段来源：没连库时默认用随包快照，不再在点「关联」时弹窗；
-                 要换字段（完整对齐）从这里进，属于用户主动动作。 -->
+            <!-- 项目字段来源：只在「没连数据库 + 目标为项目」时出现。
+                 已连库时来源固定为库（库是权威），不提供切换，按钮不渲染。 -->
             <button type="button" class="btn ghost sm" id="plProjectSrc" hidden
-                    title="项目字段来源：没连库时用随包快照，可导入项目 zip 刷新">字段来源</button>
+                    title="项目字段从哪来：没连库时默认用随包快照，可导入项目 zip 换成完整字段">项目字段来源</button>
             <span class="pl-target-ok" id="plTargetInfo" hidden></span>
           </span>
           <span class="sub"><span class="lb-hint" id="plPreHint">不关联：各对象独立生成，不挂到其他业务对象下。</span></span>

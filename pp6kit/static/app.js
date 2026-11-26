@@ -504,9 +504,30 @@ function paintSegLabels() {
   });
 }
 
+/* 项目字段来源探针：已连库时来源就是库，换不了——那颗按钮不该出现。
+ * 首屏先探一次（一次 GET，结果缓存在 state.plSnapshotStatus），
+ * 解析/切换目标会把缓存清掉，下次渲染再探。 */
+let psStatusProbe = null;
+function probeSnapshotStatus() {
+  if (state.plSnapshotStatus || psStatusProbe) return;
+  let pending;
+  try {
+    pending = projectSnapshotStatus();
+  } catch (_) {
+    return;             // 单测探针里没有这个函数：保持「未连库」口径，不重试
+  }
+  // 只在探到结果后重渲染一次；失败不回调 syncPlTargetUI，
+  // 否则 render -> probe -> 失败 -> render 会空转成死循环。
+  psStatusProbe = Promise.resolve(pending)
+    .then((d) => { if (d) syncPlTargetUI(); })
+    .catch(() => {})
+    .finally(() => { psStatusProbe = null; });
+}
+
 /* 第 1 步的「关联目标」控件同步：只在选了「关联」时展开；选其他对象时
  * 露出手输名称 + 核对按钮。状态、提示、已核对 chip 全部从 state 投影。 */
 function syncPlTargetUI() {
+  probeSnapshotStatus();
   const box = $("#plTargetBox");
   if (box) box.hidden = state.plPre !== "on";
   // 页签标题跟着目标走：关联合同时还写「项目对齐」会让人以为对错了对象
@@ -517,7 +538,12 @@ function syncPlTargetUI() {
   const other = $("#plTargetOther");
   if (other) other.hidden = state.plTargetKind !== "other";
   const src = $("#plProjectSrc");
-  if (src) src.hidden = state.plTargetKind !== "project";
+  if (src) {
+    // 已连库 = 来源固定为库（库是权威），没有可选项，按钮直接不出现；
+    // 未连库才露出「项目字段来源」，点开可在随包快照与项目 zip 之间换。
+    const dbKnown = !!(state.plSnapshotStatus && state.plSnapshotStatus.dbConfigured);
+    src.hidden = state.plTargetKind !== "project" || dbKnown;
+  }
   const input = $("#plTargetName");
   if (input && input.value !== state.plTargetName) input.value = state.plTargetName;
 
@@ -542,10 +568,13 @@ function syncPlTargetUI() {
   const hint = $("#plPreHint");
   if (hint) {
     // 常态提示 ≤30 字：一句说清这一档的后果，不重复标题
+    const dbKnown = !!(state.plSnapshotStatus && state.plSnapshotStatus.dbConfigured);
     hint.textContent = state.plPre !== "on"
       ? "各对象独立生成，不挂到其他业务对象下"
       : (state.plTargetKind === "project"
-        ? "全部对象关联项目，同名字段按项目定义对齐"
+        ? (dbKnown
+          ? "全部对象关联项目，字段定义取自数据库"
+          : "全部对象关联项目，字段来自随包快照，可换项目 zip")
         : `全部对象关联「${plTargetLabel()}」，同名字段按目标定义对齐`);
   }
   syncAiNextLabel();
@@ -716,7 +745,10 @@ function bindPlTarget() {
       try {
         const st = await projectSnapshotStatus(true);
         if (st && st.dbConfigured) {
-          toast("已连接数据库，项目字段取自库中；要换来源请先改数据库连接", 7000);
+          // 正常情况按钮已经隐藏（连库时来源固定）；走到这里说明状态刚变，
+          // 刷新一下界面让按钮自己消失，再给一句说明。
+          syncPlTargetUI();
+          toast("已连接数据库，项目字段直接取自库中，无需选择来源", 7000);
           return;
         }
         await askProjectZip(st || {});
