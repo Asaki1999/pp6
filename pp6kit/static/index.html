@@ -96,8 +96,7 @@
           <svg class="i sm"><use href="#i-spark"/></svg>
           <span class="ai-dot" id="ctxAiDot"></span><span id="ctxAiText">AI 未配置</span>
         </button>
-        <button class="btn ghost" id="btnInspect" data-feature="inspect" hidden>反解现有导出包</button>
-        <input type="file" id="inspectInput" accept=".zip" hidden>
+        <input type="file" id="aiSheetInput" accept=".xlsx,.xlsm,.pdf,.docx" hidden>
         <button class="iconbtn" id="btnHelp" type="button" aria-label="快捷键" aria-expanded="false">?</button>
         <div class="pop" id="helpPop" hidden>
           <h4>快捷键</h4>
@@ -140,34 +139,23 @@
 
           <div class="q-form set-form v3-form">
             <div class="frow">
-              <label for="qProvider">平台</label>
-              <div class="fctl">
-                <select id="qProvider">
-                  <option value="">选择平台后自动填充</option>
-                </select>
-              </div>
-              <div class="help" id="qProvHint" hidden></div>
-            </div>
-
-            <div class="frow">
               <label for="qBase">接口地址</label>
               <div class="fctl"><input id="qBase" placeholder="https://api.deepseek.com/v1"></div>
-              <div class="help"></div>
+              <div class="help">OpenAI 兼容接口即可，自建网关 / 本地模型也行</div>
             </div>
 
             <div class="frow">
               <label for="qKey">API Key</label>
-              <div class="fctl"><input id="qKey" type="password" placeholder="粘贴平台的 Key（sk-...）"></div>
+              <div class="fctl"><input id="qKey" type="password" placeholder="粘贴服务商发的 Key（sk-...）"></div>
               <div class="help" id="qKeyNote">仅保存在本机 <code>~/.pp6kit/nlq.json</code>，不随安装包分发。</div>
             </div>
 
             <div class="frow">
               <label for="qModel">模型</label>
               <div class="fctl">
-                <select id="qModelPick" hidden></select>
-                <input id="qModel" placeholder="glm-4.7-flash">
+                <input id="qModel" placeholder="模型名照服务商文档填，如 deepseek-chat">
               </div>
-              <div class="help"></div>
+              <div class="help">填接口实际支持的模型名；名称写错会报 model_not_found</div>
             </div>
 
             <div class="frow">
@@ -302,8 +290,6 @@
 
   <!-- ========== 第 1 步：对话即入口，说完就开始生成 ========== -->
   <section id="stepInput">
-    <!-- P0-4 反解摘要卡片：必须留在 #stepInput 内，inspectZip() 的 finally 会 goStep(1) -->
-    <div id="pp6zipInspectCard" hidden></div>
 
     <!-- 第 1 步 · 业务对象关联
          生成前必须定的开关放在输入卡上方，一眼能看到。对象级选择放在导入前，
@@ -719,9 +705,8 @@
           <!-- P0-2 包结构表：消费 /api/patch/inspect 已有的 entries/comment/copies，后端零改动 -->
           <div id="pp6zipPatchStruct" hidden></div>
           <div class="set-note">
-            <strong>与「反解现有导出包」的区别：</strong>反解会拆成 Excel 再重建，包内未建模的内容（对象角色、日志模板、字典样式、权限）会丢失。
-            本功能仅在 <code>bo/*.xml</code> 中新增字段或修改字段名称，其余条目<b>保持不变</b>；
-            <b>已有字段的类型、选项值、长度等定义不可修改</b>，也不会删除字段。
+            <strong>与直接重新出包的区别：</strong>本功能仅在 <code>bo/*.xml</code> 中新增字段或修改字段名称，其余条目<b>保持不变</b>；
+            <b>已有字段的类型、选项值、长度等定义不可修改</b>，也不会删除字段。包内未建模的内容（对象角色、日志模板、字典样式、权限）不会被动到。
           </div>
         </div>
       </section>

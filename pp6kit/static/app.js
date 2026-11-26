@@ -248,8 +248,6 @@ function resetParseArtifacts() {
   state.zipPhase = { build: "idle", inspect: "idle" };
   const staleBuild = $("#pp6zipBuildReport");
   if (staleBuild) { staleBuild.hidden = true; staleBuild.innerHTML = ""; }
-  const staleInspect = $("#pp6zipInspectCard");
-  if (staleInspect) { staleInspect.hidden = true; staleInspect.innerHTML = ""; }
 }
 
 /* 一次 POST /api/parse。plHeader 非空才带 Content-Type / X-Project-Link。
@@ -1472,8 +1470,6 @@ async function toggleProjLink(code, checked, input) {
     state.zipPhase = { build: "idle", inspect: "idle" };
     const staleBuild = $("#pp6zipBuildReport");
     if (staleBuild) { staleBuild.hidden = true; staleBuild.innerHTML = ""; }
-    const staleInspect = $("#pp6zipInspectCard");
-    if (staleInspect) { staleInspect.hidden = true; staleInspect.innerHTML = ""; }
     renderAll();
     toast(`对象 ${label}：关联${plTargetLabel()}=${checked ? "是" : "否"}，已重新分析`, 4000);
   } catch (err) {
@@ -2148,65 +2144,6 @@ async function importOne(code, btn) {
     btn.disabled = false;
   }
 }
-
-async function inspectZip(file) {
-  if (!file && state.desktop) {
-    // 反解入口也是原生选文件：同样走守卫，避免和别的入口叠出两个面板
-    if (!beginPick()) return;
-    try { file = await pickFile("zip"); } finally { endPick(); }
-  }
-  if (!file) return;
-  if (!/\.zip$/i.test(file.name)) {
-    toast("请选择 .zip 导出包");
-    return;
-  }
-  setLoading(true, "正在反解导出包…");
-  setZipPhase("inspect", "busy");
-  try {
-    const buf = await file.arrayBuffer();
-    const res = await fetch("/api/inspect", { method: "POST", body: buf });
-    // 先读头再判 res.ok：失败响应（400）同样带 X-Package-Summary。
-    const summary = decodeHeaderJson(res.headers.get("X-Package-Summary"));
-    state.inspectSummary = summary;
-    if (summary === null) {
-      // legacy：头缺失 / 坏 base64 / 非 JSON -> 逐字走改动前行为，不报错、不阻断。
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "反解失败");
-      }
-      const blob = await res.blob();
-      const name = decodeURIComponent(res.headers.get("X-Filename") || "inspect.xlsx");
-      if (await saveBlob(blob, name)) toast("已反解为 Excel：" + name);
-      setZipPhase("inspect", "legacy");
-      return;
-    }
-    let parsedErr = null;
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      parsedErr = new Error(err.error || "反解失败");
-    }
-    const cls = classifyInspect(res, summary, parsedErr);
-    if (cls.skipDownload) {
-      // 空 / 异常态：跳过 saveBlob()（D4，不下载误导性的空 xlsx），
-      // 渲染分类卡片（实际条目名 + 恢复动作）+ 带恢复动作的 toast。
-      setZipPhase("inspect", cls.kind === "empty" ? "empty" : "error",
-                  { classify: cls, summary });
-      toast(`反解失败（${cls.title}）：${cls.message} ${cls.recovery}`, 6500);
-      return;
-    }
-    const blob = await res.blob();
-    const name = decodeURIComponent(res.headers.get("X-Filename") || "inspect.xlsx");
-    if (await saveBlob(blob, name)) toast("已反解为 Excel：" + name);
-    setZipPhase("inspect", "ok", { classify: cls, summary });
-  } catch (err) {
-    // 真·异常（网络断 / 解码意外）：沿用改动前的通用文案。
-    toast("反解失败：" + err.message, 6000);
-  } finally {
-    setLoading(false);
-    goStep(1);
-  }
-}
-
 /* ------------------------------------------------ AI 生成业务对象 */
 
 async function apiPost(path, payload, extraHeaders) {
@@ -3957,7 +3894,7 @@ async function apiPostBlob(path, payload, extraHeaders) {
 }
 
 /* ================================================ P0-1 / P0-4 / P0-5 新增函数块
-   只新增下列命名，禁止覆盖 / 重命名任何现有 renderXxx() / buildZip() / inspectZip()。
+   只新增下列命名，禁止覆盖 / 重命名任何现有 renderXxx() / buildZip()。
    两态共用同一个 renderPackage() + 同一段 renderPackageTable() 模板；
    复用既有 CSS 类，style.css 零改动。                                       */
 
@@ -4110,108 +4047,6 @@ const PP6ZIP_TIPS = [
   "不要往包里加 manifest、txt、图标；也不要把里面的文件拆出来单独传。",
 ];
 
-/**
- * base64(UTF-8 JSON) -> object；头缺失 / 解码失败一律返回 null（降级）。
- * 关键：atob 输出是 latin-1 二进制串，必须经 TextDecoder("utf-8")
- * 解码后再交给 JSON.parse；直接把 atob 结果喂给 JSON.parse 会让中文乱码（严禁）。
- */
-function decodeHeaderJson(raw) {
-  if (!raw) return null;
-  try {
-    const bin = atob(raw);
-    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-    return JSON.parse(new TextDecoder("utf-8").decode(bytes));
-  } catch (_) {
-    return null;                 // 降级：不抛、不阻断、不报错给用户
-  }
-}
-
-/**
- * 反解分类（§6.3 六类优先级，先命中先返回）。
- * @returns {{kind, skipDownload, title, message, recovery, summary}}
- */
-function classifyInspect(res, summary, err) {
-  const base = { summary: summary || null };
-  if (summary === null) {
-    return Object.assign(base, {
-      kind: "legacy", skipDownload: false,
-      title: "", message: "", recovery: "",
-    });
-  }
-  const entries = Array.isArray(summary.entries) ? summary.entries : [];
-  const white = ["bo", "form", "data_template", "dataset"];
-  const names = entries.map((e) => e.name || "");
-  const listText = names.length
-    ? "实际读到：" + names.slice(0, 30).join("、")
-      + (summary.truncated && !summary.summaryOnly && summary.entriesTotal > names.length
-        ? ` …（仅显示前 ${names.length} 条，共 ${summary.entriesTotal} 条）` : "")
-    : "实际读到 0 个条目";
-
-  // 1 非 zip / 损坏
-  if (!res.ok || summary.ok === false) {
-    return Object.assign(base, {
-      kind: "not_zip", skipDownload: true,
-      title: "这不是一个有效的 zip 包（或包已损坏）",
-      message: (summary.message || (err && err.message) || "无法打开为 zip 包。") + "。" + listText,
-      recovery: "确认选的是 .zip；重新从系统「发布 ZIP」下载（.crdownload 直接改名 .zip）"
-        + (patchModeOn() ? "；或到工作区 3「存量包修订」验证能否打开。" : "。"),
-    });
-  }
-  /* 是否「外层多套了一层」：首段不是合法目录，但路径里出现 /bo/ 之类。
-     必须与后端的 _nested() 同口径，否则会出现「后端说套层、前端说多余条目」。 */
-  const isNestedName = (name) => {
-    const low = String(name || "").toLowerCase();
-    if (!low.endsWith(".xml")) return false;
-    if (white.indexOf(low.split("/", 1)[0]) >= 0) return false;
-    return /(^|\/)(bo|form|data_template)\//.test(low);
-  };
-  // 2 外层被套了一层（必须先判：套层包的顶层目录同样不在白名单里）
-  const nested = entries.filter((e) => isNestedName(e.name));
-  if (nested.length) {
-    return Object.assign(base, {
-      kind: "nested_dir", skipDownload: true,
-      title: "包外层被套了一层文件夹（线上原话：同步包文件缺少业务类型目录）",
-      message: "服务端按最外层目录名识别业务类型，多套一层就找不到 bo/ form/ data_template/。" + listText,
-      recovery: "解压后把 bo/ form/ data_template/ 直接放在 zip 最外层重新压缩，不要再套一层文件夹。",
-    });
-  }
-  // 3 多余条目（排除已判为套层的条目，避免同一批文件报两次）
-  const extras = entries.filter((e) => white.indexOf(e.kind) < 0 && !isNestedName(e.name));
-  if (extras.length) {
-    return Object.assign(base, {
-      kind: "extra_entries", skipDownload: true,
-      title: "包里有系统不认的多余条目（线上原话：不支持的同步对象类型）",
-      message: "顶层只认 bo/ form/ data_template/（数据菜单手建数据集为 dataset/ 特例）。" + listText,
-      recovery: "只保留 bo/ form/ data_template/ 三类裸 XML；删掉 manifest / txt / 图标 / 说明文件 / __MACOSX；不要往包里加任何新文件。",
-    });
-  }
-  // 4 XML 编码错误
-  const badXml = entries.filter((e) => e.utf8 === false);
-  if (badXml.length) {
-    return Object.assign(base, {
-      kind: "encoding", skipDownload: true,
-      title: "包内 XML 不是合法 UTF-8 编码",
-      message: "这些条目无法按 UTF-8 解码：" + badXml.map((e) => e.name).join("、") + "。" + listText,
-      recovery: "把 XML 另存为 UTF-8 无 BOM 后重新打包；或走工作区 1 反解后重新出包。",
-    });
-  }
-  // 5 空包
-  if (summary.empty === true) {
-    return Object.assign(base, {
-      kind: "empty", skipDownload: true,
-      title: "包内没有可反解的 bo/form/data_template XML",
-      message: "没有下载会误导人的空 xlsx。" + listText,
-      recovery: "去工作区 1 重新出包（空模板 / 全不选会被拦）"
-        + (patchModeOn() ? "；只是想给线上对象补字段请改用工作区 3「存量包修订」。" : "。"),
-    });
-  }
-  // 6 正常
-  return Object.assign(base, {
-    kind: "ok", skipDownload: false,
-    title: "反解完成", message: "", recovery: "",
-  });
-}
-
 /** 统一状态机入口（§6.1）：写 state.zipPhase、切 #banner、调对应 render。 */
 function setZipPhase(op, phase, payload) {
   state.zipPhase[op] = phase;
@@ -4246,13 +4081,6 @@ function setZipPhase(op, phase, payload) {
       }
     }
     // busy / idle 不动 banner，保留 renderAll() 的校验结论
-  } else if (op === "inspect") {
-    if (phase === "ok" || phase === "empty" || phase === "error") {
-      renderInspectCard({ classify: p.classify, summary: p.summary });
-    } else {
-      const card = $("#pp6zipInspectCard");
-      if (card) { card.hidden = true; card.innerHTML = ""; }
-    }
   }
 }
 
@@ -4412,70 +4240,6 @@ function renderPackage(data, mode) {
   panel.innerHTML = renderPackageTable(normalizePackageVM(data, mode));
 }
 
-/** 反解摘要 / 空态 / 异常分类卡片（容器在 #stepInput 内，goStep(1) 后可见）。 */
-function renderInspectCard(payload) {
-  const box = $("#pp6zipInspectCard");
-  if (!box) return;
-  const cls = payload && payload.classify ? payload.classify : null;
-  const s = payload && payload.summary ? payload.summary : null;
-  if (!cls || cls.kind === "legacy" || !s) {
-    box.hidden = true; box.innerHTML = ""; return;
-  }
-  const entries = Array.isArray(s.entries) ? s.entries : [];
-  const names = entries.map((e) => e.name || "");
-  const badNames = names.filter((n) => !PP6ZIP_LEGAL_RE.test(n));
-  const seqs = entries.map((e) => e.seq).filter((x) => typeof x === "number");
-  const dup = seqs.length !== new Set(seqs).size;
-  const sorted = [...seqs].sort((a, b) => a - b);
-  const gap = sorted.some((v, i) => i > 0 && v !== sorted[i - 1] + 1);
-  let verdict;
-  if (!names.length) verdict = "没有条目，无法判定";
-  else if (badNames.length) verdict = `有 ${badNames.length} 条不符合 ^(bo|form|data_template)/\\d{3}-[a-z0-9_]+\\.xml$（dataset/ 为特例）`;
-  else if (dup || gap) verdict = "序号存在重号或不连续（Duplicate name 警告会静默丢内容）";
-  else verdict = "命名合规、序号跨目录连续无重号";
-
-  const counts = s.counts || {};
-  const dirText = Object.keys(counts).length
-    ? Object.keys(counts).map((k) => `${esc(k)}/ ${Number(counts[k])}`).join(" · ")
-    : "（无）";
-  const rows = entries.map((e) => `
-    <tr><td>${esc(e.kind || "")}</td><td><code>${esc(e.name || "")}</code></td>
-        <td>${e.seq == null ? "—" : e.seq}</td>
-        <td>${esc(humanSize(Number(e.size || 0)))}</td>
-        <td>${e.utf8 === false
-          ? '<span class="chip warn">非 UTF-8</span>'
-          : (PP6ZIP_LEGAL_RE.test(e.name || "") ? "合规" : "不合规")}</td></tr>`).join("");
-  const isOk = cls.kind === "ok";
-  const headCls = isOk ? "banner ok" : (cls.kind === "empty" ? "banner warn" : "banner error");
-  const recovery = cls.recovery
-    ? `<div class="set-note"><strong>恢复动作</strong>：${esc(cls.recovery)}</div>` : "";
-  const extraOk = isOk
-    ? `<div class="set-note">反解会拆成 Excel 重造包，原生包未建模内容（对象角色 / 日志模板 / 字典样式 / 权限）会丢${patchModeOn() ? "；补字段请改用工作区 3「存量包修订」" : ""}。</div>`
-    : "";
-  box.hidden = false;
-  box.innerHTML = `
-    <div class="card">
-      <div class="card-head"><div><h3>反解摘要</h3>
-        <div class="sub">${isOk ? "已下载 Excel；下面是上传包的实测结构" : "未下载 Excel（避免误导性的空 xlsx）"}</div></div></div>
-      <div class="${headCls}">${isOk
-        ? `<strong>${esc(cls.title)}</strong>：包内 ${Number(s.entryCount || 0)} 个条目，命名合规结论见下表。`
-        : `<strong>${esc(cls.title)}</strong>：${esc(cls.message || "")}`}</div>
-      <div class="tbl-wrap"><table><tbody>
-        <tr><th>条目数</th><td>${Number(s.entryCount || 0)}${s.truncated && !s.summaryOnly
-          ? ` <span class="chip warn">仅显示前 ${entries.length} 条，共 ${s.entriesTotal || s.entryCount} 条</span>` : ""}${s.summaryOnly
-          ? ' <span class="chip warn">清单过大，仅显示统计摘要</span>' : ""}</td></tr>
-        <tr><th>目录分布</th><td>${dirText} <span class="muted">（口径待复核）</span></td></tr>
-        <tr><th>comment 原文</th><td><code>${esc(s.comment || "")}</code>${s.commentTruncated
-          ? ' <span class="muted">（已截断，CONFIG_SYNC_NOTE: 前缀完整保留）</span>' : ""}</td></tr>
-        <tr><th>实际读到的条目名</th><td>${names.length ? `<code>${esc(names.join("、"))}</code>` : "（无）"}</td></tr>
-        <tr><th>命名合规结论</th><td>${esc(verdict)}</td></tr>
-      </tbody></table></div>
-      ${entries.length
-        ? `<div class="tbl-wrap"><table><thead><tr><th>目录</th><th>条目名</th><th>序号</th><th>大小</th><th>结论</th></tr></thead><tbody>${rows}</tbody></table></div>`
-        : '<div class="empty">包内没有可列出的条目。</div>'}
-      ${recovery}${extraOk}
-    </div>`;
-}
 
 /** 出包「交付报告」卡片 8 字段（包名 / 目录清单 / 条目数 / comment / 状态 / 时间 / 导入路径 / 验收提示）。 */
 function renderBuildReport(report, name) {
@@ -4752,17 +4516,6 @@ function bind() {
 
   // ?demo=1 直接进示例视图，便于截图与巡检
   if (new URLSearchParams(location.search).get("demo")) loadDemo();
-  $("#btnInspect").onclick = async () => {
-    if (state.desktop) { await inspectZip(null); return; }
-    $("#inspectInput").click();
-  };
-
-  // 空白模板入口已下线：主流程改成「说需求或传表 → AI 生成 → 预览」，
-  // 不再要求先下模板再填。需要一份现成结构可以点「载入示例看效果」。
-  $("#inspectInput").onchange = (e) => {
-    inspectZip(e.target.files[0]);
-    e.target.value = "";
-  };
 
   /* v3 顶栏：快捷键浮层；AI 状态胶囊点一下直接进设置。
      浮层只在点击外部 / Esc 时收起，点浮层内部不关。 */

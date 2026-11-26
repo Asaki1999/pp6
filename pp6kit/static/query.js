@@ -25,7 +25,7 @@ async function qApi(path, body) {
    类型/选项/长度等定义不给改，也不删字段（后端 patch.py 同样硬拦）。
    关闭时：把 patch 改回 false，按钮、快捷键 3、关于页文案一起收起来，
    patch.js、#mode-patch 面板、/api/patch/* 后端都保留。 */
-window.PP6_FEATURES = { patch: true, inspect: false };
+window.PP6_FEATURES = { patch: true };
 const PATCH_ON = () => window.PP6_FEATURES.patch !== false;
 
 /* 按开关调整导航：隐藏的工作区按钮 / 快捷键说明 / 关于页文案 */
@@ -33,11 +33,6 @@ function applyFeatureFlags() {
   const on = PATCH_ON();
   const btn = document.querySelector('.mode[data-feature="patch"]');
   if (btn) btn.hidden = !on;
-  /* 反解入口：2026-11-18 下线（与存量包修订的「加字段」重叠，且重造包会丢未建模内容）。
-     inspectZip()、反解摘要卡片、/api/inspect、X-Package-Summary 全部保留没删；
-     恢复：把上面 inspect 改成 true，HTML 里那个 hidden 会被这里覆盖掉。 */
-  const inspectBtn = document.getElementById("btnInspect");
-  if (inspectBtn) inspectBtn.hidden = window.PP6_FEATURES.inspect !== true;
   const keys = document.getElementById("keysModes");
   if (keys) {
     keys.innerHTML = on
@@ -148,59 +143,14 @@ document.querySelectorAll(".mode").forEach((b) => {
   b.onclick = () => switchMode(b.dataset.mode);
 });
 
-/* ---------------- 配置 ---------------- */
-let Q_PROVIDERS = [];
-let Q_CHANNEL_KEY = "";        // 当前渠道的标识，保存时带上
+/* ---------------- 配置 ----------------
+ * 不再提供「平台预设」：接口地址和模型名都由用户自己填（2026-11-26）。
+ * 渠道标识固定为 custom，后端只是存个名字，不参与路由。 */
+const CHANNEL_KEY = "custom";
 
-function fillProvider(p) {
-  if (!p) return;
-  Q_CHANNEL_KEY = p.key;
-  if (p.base_url) Q.get("qBase").value = p.base_url;
-
-  // 模型：有预设列表就用下拉，用户也能改（下拉里带「自定义」输入）
-  // 自定义渠道（自建网关 / Ollama）永远给输入框——网关上有什么模型我们不可能知道，
-  // 给下拉等于把人锁死在预设的几个名字上（曾因此在 newapi 上报 model_not_found）
-  const pick = Q.get("qModelPick");
-  const inp = Q.get("qModel");
-  const models = p.models || (p.model ? [p.model] : []);
-  if (models.length && p.key !== "custom") {
-    pick.hidden = false;
-    inp.hidden = true;
-    pick.innerHTML = models
-      .map((m) => `<option value="${qEsc(m)}">${qEsc(m)}${m === p.model ? " · 默认" : ""}</option>`)
-      .join("");
-    pick.value = p.model || models[0];
-  } else {
-    pick.hidden = true;
-    inp.hidden = false;
-    inp.value = p.model || "";
-  }
-
-  const hint = Q.get("qProvHint");
-  if (p.free_note) {
-    hint.hidden = false;
-    hint.innerHTML = `${qEsc(p.free_note)}` +
-      (p.apply_url ? ` · <a href="${qEsc(p.apply_url)}" target="_blank">去申请 Key</a>` : "");
-  } else {
-    hint.hidden = true;
-  }
-}
-
-/* 当前选的模型名（下拉或手填都兼容） */
+/* 当前选的模型名（手填框） */
 function currentModel() {
-  const pick = Q.get("qModelPick");
-  if (!pick.hidden) return pick.value.trim();
-  return Q.get("qModel").value.trim();
-}
-
-function renderProviders(list) {
-  const sel = Q.get("qProvider");
-  sel.innerHTML = `<option value="">选择平台后自动填充</option>` +
-    list.map((p) => `<option value="${qEsc(p.key)}">${qEsc(p.name)}${p.free ? " · 免费" : ""}</option>`).join("");
-  sel.onchange = () => {
-    const p = Q_PROVIDERS.find((x) => x.key === sel.value);
-    if (p) fillProvider(p);
-  };
+  return (Q.get("qModel").value || "").trim();
 }
 
 /* 进查询页就自动读一次结构：连接状态、可查表数、示例问题都不该等用户
@@ -282,25 +232,12 @@ async function loadConfig() {
     // 用户刚敲进去、还没保存的新值不能被「已保存」的黑点盖掉
     if (db.password_set && canMask(Q.get("qPass"))) maskSecret(Q.get("qPass"), true);
 
-    Q_PROVIDERS = d.providers || [];
-    renderProviders(Q_PROVIDERS);
     if (d.instructions) Q.get("qInstr").value = d.instructions;
 
     const ch = ((d.llm || {}).channels || [])[0] || {};
     if (ch.base_url) Q.get("qBase").value = ch.base_url;
-    if (ch.model) {
-      Q.get("qModel").value = ch.model;
-      const pick = Q.get("qModelPick");
-      if (!pick.hidden) {
-        if (![...pick.options].some((o) => o.value === ch.model)) {
-          pick.insertAdjacentHTML("beforeend",
-            `<option value="${qEsc(ch.model)}">${qEsc(ch.model)} · 已保存</option>`);
-        }
-        pick.value = ch.model;
-      }
-    }
-    Q_CHANNEL_KEY = ch.key || "";
-    if (ch.key) Q.get("qProvider").value = ch.key;
+    if (ch.model) Q.get("qModel").value = ch.model;
+    Q_CHANNEL_KEY = ch.key || CHANNEL_KEY;
     if (ch.api_key_set) {
       if (canMask(Q.get("qKey"))) maskSecret(Q.get("qKey"), true);
       const box = Q.get("qLlmSaved");
@@ -474,8 +411,8 @@ Q.get("qSaveLlm").onclick = async () => {
   const base = Q.get("qBase").value.trim();
   const model = currentModel();
   const key = secretValue(Q.get("qKey")).trim();
-  if (!base) { toast("请先选一个平台，或手填接口地址"); return; }
-  if (!model) { toast("请填写模型名称（选择平台后自动填充）"); return; }
+  if (!base) { toast("请填写接口地址"); return; }
+  if (!model) { toast("请填写模型名称"); return; }
   if (!key && !AI_READY) { toast("请粘贴 API Key"); return; }
 
   btn.disabled = true; btn.textContent = "测试中…";
@@ -484,7 +421,7 @@ Q.get("qSaveLlm").onclick = async () => {
   try {
     // 第一步：测连通性。Key 空（已保存过）则不传 channel，用已存配置测。
     const payload = key
-      ? { channel: { key: Q_CHANNEL_KEY, base_url: base, api_key: key, model: model } }
+      ? { channel: { key: Q_CHANNEL_KEY || CHANNEL_KEY, base_url: base, api_key: key, model: model } }
       : {};
     const d = await qApi("/api/nlq/test-llm", payload);
     if (!d.ok) {
@@ -492,15 +429,12 @@ Q.get("qSaveLlm").onclick = async () => {
       return;
     }
 
-    // 第二步：测通了才保存
-    const prov = Q_PROVIDERS.find((x) => x.key === Q_CHANNEL_KEY);
-    const fallbacks = ((prov && prov.models) || [])
-      .filter((m) => m !== model).slice(0, 4);
+    // 第二步：测通了才保存。没有平台预设了，备选模型也不存在
     await qApi("/api/nlq/save-config", {
       llm: {
         channels: [{
-          key: Q_CHANNEL_KEY, base_url: base, api_key: key,
-          model: model, fallbacks: fallbacks, enabled: true,
+          key: Q_CHANNEL_KEY || CHANNEL_KEY, base_url: base, api_key: key,
+          model: model, fallbacks: [], enabled: true,
         }],
       },
       // 全局指令跟 Key 一起存，用户不用再找个单独的地方点保存

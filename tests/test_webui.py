@@ -700,9 +700,10 @@ def _():
     assert not parsed["objects"], "空白模板里解析出了对象"
 
 
-@case("WEB35", "webui", "入口：空白模板按钮真下载，反解入口默认下线", "P1",
+@case("WEB35", "webui", "入口：空白模板按钮真下载，反解 UI 彻底移除", "P1",
       ["模板按钮必须下载文件，不能退化成「载入示例」",
-       "反解下线只关入口：inspectZip 与 /api/inspect 保留，开关注释写明怎么恢复"])
+       "反解的按钮 / 文件框 / 摘要卡 / 对比文案全都不在页面上",
+       "/api/inspect 后端能力保留（存量链路还能用），只是不再露出入口"])
 def _():
     from pathlib import Path
 
@@ -717,12 +718,16 @@ def _():
     assert "/api/template?blank=1" in js, "按钮没请求空白模板"
     assert "blankTplBtn.onclick = downloadBlankTemplate" in js, "按钮没绑上下载"
 
-    # 反解：HTML 直接带 hidden（无 JS 也不露），query.js 开关默认 false
-    assert 'id="btnInspect" data-feature="inspect" hidden' in html
-    assert "inspect: false" in qjs
-    assert "PP6_FEATURES.inspect !== true" in qjs
-    # 只关入口，能力不删
-    assert "async function inspectZip(" in js
+    # 反解：2026-11-18 只关入口（hidden + 开关），2026-11-26 用户要求连元素一起删
+    for gone in ('id="btnInspect"', 'id="inspectInput"', 'id="pp6zipInspectCard"',
+                 "反解现有导出包", "反解摘要卡片"):
+        assert gone not in html, f"反解元素还在页面上：{gone}"
+    for gone in ("inspectZip", "classifyInspect", "renderInspectCard",
+                 "pp6zipInspectCard", "PP6_FEATURES.inspect"):
+        assert gone not in js, f"反解代码还在 app.js 里：{gone}"
+    assert "inspect" not in qjs or "PP6_FEATURES.inspect" not in qjs, \
+        "query.js 还留着反解开关"
+    # 后端 /api/inspect 保留（能力未删），页面上没有任何入口指向它
     assert '"/api/inspect"' in py
 
 
@@ -1276,7 +1281,7 @@ def _():
     assert "function showNextStep(" in js and "function hideNextStep(" in js
     build = js[js.index("async function buildZip("):js.index("async function importOne(")]
     assert "showNextStep(name)" in build, "整包下载成功后没给下一步"
-    one = js[js.index("async function importOne("):js.index("async function inspectZip(")]
+    one = js[js.index("async function importOne("):js.index("async function apiPost(")]
     assert "showNextStep(name)" in one, "单模块下载成功后没给下一步"
     render_all = js[js.index("function renderAll("):js.index("function renderAll(") + 1500]
     assert "hideNextStep()" in render_all, "换了新数据还留着上一份的「已保存」"
@@ -1524,6 +1529,45 @@ def _():
         and 'id="aiResumeName"' in html, "首屏「正在调整」提示条结构件丢了"
     css = (root / "pp6kit" / "static" / "style.css").read_text(encoding="utf-8")
     assert ".ai-resume" in css, "提示条没有样式（会裸成一堆文字）"
+
+
+@case("WEB55", "webui", "大模型配置：不选平台，接口地址与模型名都由用户手填",
+      "P0", ["设置页没有平台下拉与模型预设下拉",
+             "接口地址 / Key / 模型名三个手填框都在",
+             "保存时渠道标识固定 custom，不再依赖平台预设",
+             "后端 providers 字段保留但前端不渲染"])
+def _():
+    """2026-11-26 用户要求：模型名自己填（预设下拉会锁死在几个名字上，
+    自建网关 / 新模型永远追不上）。平台下拉整行移除。"""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+    qjs = (root / "pp6kit" / "static" / "query.js").read_text(encoding="utf-8")
+
+    # ① 平台选择整行移除（下拉 + 提示 + 模型预设下拉）
+    for gone in ('id="qProvider"', 'id="qProvHint"', 'id="qModelPick"',
+                 "选择平台后自动填充"):
+        assert gone not in html, f"平台选择的痕迹还在设置页：{gone}"
+    # ② 三个手填框与说明都在
+    for need in ('id="qBase"', 'id="qKey"', 'id="qModel"'):
+        assert need in html, f"设置页缺 {need}"
+    assert "自建网关" in html and "model_not_found" in html, \
+        "接口地址/模型名的说明文案丢了"
+    # ③ query.js：渠道标识固定，保存不依赖预设；文案不再提「选平台」
+    assert "CHANNEL_KEY" in qjs and '"custom"' in qjs, \
+        "渠道标识没有固定成 custom"
+    assert "Q_PROVIDERS" not in qjs and "renderProviders" not in qjs \
+        and "fillProvider" not in qjs, "平台预设逻辑还在 query.js 里"
+    assert "qModelPick" not in qjs, "模型预设下拉还在被读写"
+    assert "选择平台" not in qjs, "校验文案还在引导用户选平台"
+    # currentModel 只读手填框
+    seg = qjs[qjs.index("function currentModel("):qjs.index("function currentModel(") + 200]
+    assert 'Q.get("qModel")' in seg and "qModelPick" not in seg, seg
+    # ④ 后端 providers 字段保留（响应兼容），前端不再消费
+    webui_src = (root / "pp6kit" / "webui.py").read_text(encoding="utf-8")
+    assert '"providers": nlq_providers.as_list()' in webui_src
 
 
 @case("WEB50", "webui", "首页与静态资源都不留缓存；打开浏览器带构建指纹", "P1",
