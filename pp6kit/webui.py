@@ -96,9 +96,21 @@ def _projlink_header(headers) -> str | None:
 
     parse（分析）/ build / confirmed-excel 三个入口共用同一个头：以前 PRD 写的是
     X-Align，和 X-Relations 各一套会造成「两个头都带、谁优先」的口径问题。
+
+    前端会把整段 JSON encodeURIComponent（target.name 是中文，浏览器禁止
+    header 里出现非 ISO-8859-1 字符，2026-11-26 实测报错）；这里统一解码。
+    对旧的未编码头，unquote 基本是无操作（编码规范里没有 % 字符），兼容。
     """
     raw = (headers.get("X-Project-Link") or "").strip()
-    return raw or None
+    if not raw:
+        return None
+    if "%" in raw:
+        from urllib.parse import unquote
+        try:
+            raw = unquote(raw)
+        except Exception:
+            pass
+    return raw
 
 
 def _workflow_all(headers) -> bool:
@@ -1226,6 +1238,122 @@ def _ai_should_link(decisions: dict | None, code: str) -> bool:
     return _pl_link_object(decisions, code)
 
 
+# ---------------------------------------------------------------- 对话克隆业务对象
+# 用户上传过一份对象包（字段快照在 target_fields/<code>.json），想让 AI 生成一个
+# 「跟它完全一样」的新对象。让 AI 抄几十个字段必丢细节，这里程序化克隆：
+# 字段编码/名称/类型/长度/候选值/级联/子表列原样复制，AI 只负责起新名字。
+
+_CLONE_WORDS = ("一样", "相同", "同样", "一模一样", "照着", "照搬", "复制", "克隆", "副本")
+
+
+def _clone_intent(desc: str, target) -> bool:
+    """描述点名了关联目标、且带着「照它来」的意思，才算克隆意图。
+
+    target 可以是 TargetObject，也可以就是对象名字符串（调用处两种都有）。"""
+    name = target if isinstance(target, str) else getattr(target, "name", "")
+    name = (name or "").strip()
+    if not name or len(name) < 2 or name not in desc:
+        return False
+    return any(w in desc for w in _CLONE_WORDS)
+
+
+def _clone_fields_spec(snap) -> list[dict]:
+    """快照字段 → build_bo 的字段 spec。
+
+    编码原样保留（不同对象之间字段编码可以重名，系统按对象隔离）；
+    dic 字段**不带** objectType——字典 key 是 <对象编码>_<字段编码>，
+    新对象的编码变了，key 必须重新生成，带了旧值导出就是失效引用。
+    """
+    out = []
+    for f in snap.fields:
+        item = {"code": f.code, "name": f.name, "type": f.type_new}
+        if f.length:
+            item["length"] = f.length
+        if f.type_new == "number" and f.precision is not None:
+            item["precision"] = f.precision
+        if f.type_new == "object" and f.object_type:
+            item["objectType"] = f.object_type
+        # 候选值：私有 selectOptions 优先，其次全局字典 items 的显示名
+        values = list(f.choices or [])
+        if not values and f.dict and f.dict.items:
+            values = [i.name for i in f.dict.items]
+        if values:
+            item["values"] = values
+        if f.choice_groups:
+            item["choiceGroups"] = {k: list(v) for k, v in f.choice_groups.items()}
+        if f.cascade_parent:
+            item["cascadeParent"] = f.cascade_parent
+        if (f.options or {}).get("isMultiple"):
+            item["isMultiple"] = True
+        if f.table_columns:
+            item["columns"] = [dict(c) for c in f.table_columns]
+        out.append(item)
+    return out
+
+
+def _clone_missing_values_hint(snap) -> str:
+    """快照是旧结构（没存私有候选值）时提醒重新上传，别让人以为字段本来就没值。"""
+    dic_total = sum(1 for f in snap.fields if f.type_new == "dic")
+    if not dic_total:
+        return ""
+    dic_with = sum(1 for f in snap.fields if f.type_new == "dic"
+                   and (f.choices or (f.dict and f.dict.items)))
+    if dic_with >= dic_total:
+        return ""
+    return ("这份对象包是旧版本解析的，选项候选值没存进快照；"
+            "请在「关联」处重新上传这份对象 zip 再克隆一次，候选值就齐了")
+
+
+def _clone_name(desc: str, snap, cfg) -> tuple[str, str, list[str]]:
+    """给克隆对象起新名。AI 起名失败回退「原名副本 / <code>_copy」。"""
+    old_name = str((snap.project or {}).get("name") or "")
+    old_code = str((snap.project or {}).get("code") or "")
+    fallback_name = (old_name + "副本") if old_name else "克隆对象"
+    fallback_code = (old_code + "_copy") if old_code else "clone_copy"
+    try:
+        from .nlq import llm
+        text, _used = llm.chat_any(ai_bo._fast_cfg(cfg), [
+            {"role": "system", "content": "你只输出 JSON，不解释。"},
+            {"role": "user", "content":
+                "用户要参照已有业务对象克隆出一个新的业务对象。\n"
+                f"原对象：{old_name}（编码 {old_code}）\n"
+                f"用户说明：{desc}\n\n"
+                "给新对象起名：中文名体现用户说明里的用途或与原对象的关系，"
+                "除非用户明确说了，不要就叫「XX副本」；编码用语义化小写英文"
+                "（可带下划线，不用拼音），20 字符内。"
+                '只输出 JSON：{"name": "...", "code": "..."}'},
+        ], timeout=60, max_tokens=2000)
+        spec = ai_bo._extract_json(text)
+        name = str(spec.get("name") or "").strip() or fallback_name
+        code = str(spec.get("code") or "").strip() or fallback_code
+        return name[:60], code[:40], []
+    except Exception as exc:
+        return fallback_name, fallback_code, [
+            f"没起成新名字（{str(exc)[:60]}），已用默认名，可在预览里改"]
+
+
+def _clone_bo_result(snap, target, desc: str, cfg: dict) -> dict:
+    """从快照程序化克隆对象。返回与 ai_bo.generate 同构的 dict（bo/notices/model/seconds）。"""
+    import time as _t
+    t0 = _t.time()
+    notices: list[str] = []
+    new_name, new_code, name_notes = _clone_name(desc, snap, cfg)
+    notices.extend(name_notes)
+    spec = {"name": new_name, "code": new_code, "fields": _clone_fields_spec(snap)}
+    bo, build_notes = ai_bo.build_bo(spec, known_objects=objects.ensure(),
+                                     strict_objects=True, prefer_code=True,
+                                     trust_codes=True)
+    notices.extend(build_notes)
+    old_name = str((snap.project or {}).get("name") or target.name)
+    notices.insert(0, f"已照「{old_name}」克隆出 {len(bo.fields)} 个字段的新对象"
+                      f"「{bo.name}」（{bo.code}），表单和列表接着自动配")
+    hint = _clone_missing_values_hint(snap)
+    if hint:
+        notices.append(hint)
+    return {"bo": bo, "notices": notices, "model": "clone",
+            "seconds": round(_t.time() - t0, 2)}
+
+
 def _attach_ai_link(bo, target, decisions: dict | None,
                     notices: list[str] | None = None,
                     name: str = "") -> "BoField | None":
@@ -1478,7 +1606,27 @@ def ai_generate_bo(payload: dict, projlink_header: str | None = None) -> dict:
     link_target, link_decisions = _ai_link_target(projlink_header)
 
     pool = objects.ensure()
-    bo_res = ai_bo.generate(desc, cfg, known_objects=pool)
+
+    # 对话克隆（2026-11-26 用户要求）：描述点名了关联目标、且要求「一样/照着做」，
+    # 就照上传的对象包快照程序化克隆字段定义，AI 只起新名字——
+    # 让 AI 抄几十个字段必丢细节。快照不在（没上传对象包）就照旧从零设计。
+    snap = None
+    if link_target is not None and _clone_intent(desc, link_target.name):
+        from .projlink import load_snapshot as _pl_load
+        try:
+            snap = _pl_load((link_decisions or {}).get("snapshot"),
+                            target=link_target)
+        except Exception:
+            snap = None
+        if not snap or not snap.fields:
+            notices.append(
+                f"要照「{link_target.name}」克隆，需要先在「关联」处上传它的对象 zip"
+                f"（没读到字段快照）；已按你的描述从零设计")
+
+    if snap is not None:
+        bo_res = _clone_bo_result(snap, link_target, desc, cfg)
+    else:
+        bo_res = ai_bo.generate(desc, cfg, known_objects=pool)
     bo = bo_res["bo"]
     notices.extend(bo_res["notices"])
     steps.append({"step": "对象", "model": bo_res["model"], "seconds": bo_res["seconds"]})

@@ -240,6 +240,14 @@ class ProjectField:
     sn: int = 0
     options: dict = field(default_factory=dict)
     dict: DictMeta | None = None
+    # 私有选项字段的候选值（非全局字典，XML selectOptions 里的那份）。
+    # 快照原本只存 dict，克隆「一模一样」的对象时会丢候选值（2026-11-26）。
+    choices: list[str] = field(default_factory=list)
+    cascade_parent: str = ""
+    # 注意：上面有个叫 dict 的字段，类体里内置 dict 已被遮蔽成 None——
+    # 这里的 default_factory 不能再写 dict，要用 lambda
+    choice_groups: "dict[str, list[str]]" = field(default_factory=lambda: {})
+    table_columns: "list[dict]" = field(default_factory=list)   # 子表列（_clean_columns 友好键）
     desc: str = ""
 
 
@@ -739,6 +747,11 @@ def _field_from_payload(row: dict) -> ProjectField | None:
         format=(str(row["format"]) if row.get("format") not in (None, "") else None),
         sn=_as_int(row.get("sn")) or 0,
         options=dict(options) if isinstance(options, dict) else {},
+        choices=[str(x) for x in (row.get("choices") or []) if str(x).strip()],
+        cascade_parent=str(row.get("cascadeParent") or row.get("cascade_parent") or ""),
+        choice_groups=dict(row.get("choiceGroups") or row.get("choice_groups") or {}),
+        table_columns=[dict(c) for c in (row.get("tableColumns") or row.get("table_columns") or [])
+                       if isinstance(c, dict)],
         dict=meta,
         desc=str(row.get("desc") or ""),
     )
@@ -761,6 +774,10 @@ def _field_payload(f: ProjectField) -> dict:
         "format": f.format,
         "sn": f.sn,
         "options": dict(f.options),
+        "choices": list(f.choices or []),
+        "cascadeParent": f.cascade_parent,
+        "choiceGroups": {k: list(v) for k, v in (f.choice_groups or {}).items()},
+        "tableColumns": [dict(c) for c in (f.table_columns or [])],
         "dict": (None if f.dict is None else {
             "ref": f.dict.ref,
             "name": f.dict.name,
@@ -1033,6 +1050,15 @@ def _field_from_bo_field(f: BoField, sn: int) -> ProjectField:
         default_value=f.default_value or "",
         sn=f.sn or sn,
         options=dict(f.options or {}),
+        choices=list(f.choices or []),
+        cascade_parent=f.cascade_parent or "",
+        choice_groups={k: list(v) for k, v in (f.choice_groups or {}).items()},
+        table_columns=[
+            {"name": c.name, "type": c.input_type,
+             "precision": c.precision, "widthPercent": c.width_percent,
+             "required": bool(c.required), "values": list(c.choices or [])}
+            for c in (f.table_columns or [])
+        ],
         dict=meta,
         desc=f.desc or "",
     )

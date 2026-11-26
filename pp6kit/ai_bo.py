@@ -412,7 +412,8 @@ def _filter_mentioned(fields: list[dict], description: str) -> tuple[list[dict],
 def build_bo(spec: dict, known_objects: list | None = None,
              strict_objects: bool = False,
              prefer_code: bool = False,
-             description: str | None = None) -> tuple[Bo, list[str]]:
+             description: str | None = None,
+             trust_codes: bool = False) -> tuple[Bo, list[str]]:
     """把 AI 给的 JSON 规整成 Bo。返回 (对象, 提示)。
 
     strict_objects=True（读非标准 Excel 时用）：object 字段的关联编码不在对象库里，
@@ -422,6 +423,10 @@ def build_bo(spec: dict, known_objects: list | None = None,
 
     prefer_code=True（微调/显式改编码时用）：spec 里的 code 只要是合法英文编码就照用，
     不再按 name 重新推导。见 _norm_code 的说明。
+
+    trust_codes=True（克隆时用）：字段编码来自线上真实对象包，一律保留——
+    末尾的 pm_terms 原生口径改名（「状态」→ projectStatus 这种）会破坏
+    「一模一样」的承诺，跳过。
     """
     notices: list[str] = []
     pool = _as_pool(known_objects) or objects.catalog()
@@ -577,9 +582,11 @@ def build_bo(spec: dict, known_objects: list | None = None,
                 f"（既不是字段编码也不是字段名），请预览里改成正确编码")
     infer_cascade_parents(bo, notices)
     strip_parent_choices(bo, notices)
-    # 最后再对齐原生口径：此时字段都已落定，改编码不会影响级联/字典的构造
-    from . import pm_terms
-    notices.extend(pm_terms.apply(bo))
+    # 最后再对齐原生口径：此时字段都已落定，改编码不会影响级联/字典的构造。
+    # 克隆（trust_codes）例外：原对象编码是线上真实的，不改。
+    if not trust_codes:
+        from . import pm_terms
+        notices.extend(pm_terms.apply(bo))
     return bo, notices
 
 

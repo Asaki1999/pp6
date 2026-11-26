@@ -1339,7 +1339,8 @@ function projLinkHeader() {
   }
   // 没连库时用的是用户上传的对象包快照；预览和出包都认这个 token
   if (state.plSnapshotToken) payload.snapshot = state.plSnapshotToken;
-  return JSON.stringify(payload);
+  // 与 aiLinkHeader 同理：target.name 可能是中文，header 值必须编码
+  return encodeURIComponent(JSON.stringify(payload));
 }
 
 /* AI 生成/导出这条链的决策头（对象还不存在时用）。
@@ -1365,7 +1366,10 @@ function aiLinkHeader() {
   }
   // 没连库时字段池来自用户上传的对象包；不带 token，服务端就没有字段池可用
   if (state.plSnapshotToken) payload.snapshot = state.plSnapshotToken;
-  return JSON.stringify(payload);
+  // header 值只允许 ISO-8859-1：target.name 是中文（如「项目变更」），
+  // 不编码浏览器直接抛 "String contains non ISO-8859-1 code point"，
+  // 生成请求根本发不出去（2026-11-26 用户截图实测）。服务端统一 unquote。
+  return encodeURIComponent(JSON.stringify(payload));
 }
 
 /* aiLinkHeader() 的 header 形态。三个 AI 入口都用它，避免各写一份判断

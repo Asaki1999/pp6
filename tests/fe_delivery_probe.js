@@ -10,8 +10,8 @@ const headers={'X-Modules':'["form"]','X-Workflow-All':'1','X-Object-Scope':'all
 await ctx.window.PP6TaskBridge.restore({params:headers},{arrayBuffer:async()=>new ArrayBuffer(0)});
 assert.deepStrictEqual(parsed,headers);assert.equal(mode,'workflow');assert.equal(state.restoredObjectScope,'all');assert.deepStrictEqual([...state.picked],['form']);assert.equal(state.plLinked.test,false);assert.equal(ctx.decisions.test.enabled,false);
 const start=source.indexOf('function projLinkHeader()');const end=source.indexOf('/* AI 生成/导出这条链',start);vm.runInContext(source.slice(start,end),ctx);
-assert.equal(JSON.parse(ctx.projLinkHeader()).objects.test.linked,false);
-state.plLinked.test=true;assert.equal(JSON.parse(ctx.projLinkHeader()).objects.test.linked,true);
+assert.equal(JSON.parse(decodeURIComponent(ctx.projLinkHeader())).objects.test.linked,false);
+state.plLinked.test=true;assert.equal(JSON.parse(decodeURIComponent(ctx.projLinkHeader())).objects.test.linked,true);
 const relations=fs.readFileSync('pp6kit/static/relations.js','utf8');const rc={window:{},document:{querySelectorAll:()=>[]}};vm.createContext(rc);vm.runInContext(relations,rc);rc.window.Relations.restore('parse',{test:{enabled:false}});assert.equal(JSON.parse(rc.window.Relations.decisionsHeader('parse')).decisions.test.enabled,false);
 console.log('恢复模块/流程/scope/项目关联、修改生效、关系显式取消全部通过');
 })().catch(e=>{console.error(e);process.exitCode=1});

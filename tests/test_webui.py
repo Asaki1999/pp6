@@ -1131,6 +1131,10 @@ def _():
     # ③ 关联「合同」+ 没连库：target/snapshot 都要带，服务端才认得出对象
     assert _json.loads(out["con_target"]) == {"name": "合同", "code": "contract"}, out
     assert out["con_snapshot"] == "0123456789abcdef0123", out
+    # 2026-11-26：target.name 是中文，header 必须整体编码——
+    # 不编码浏览器抛 "String contains non ISO-8859-1 code point"，
+    # AI 生成请求根本发不出去（用户截图实测）
+    assert out["con_encoded"] is True, "X-Project-Link 没编码：中文对象名会让 fetch 直接报错"
     # ④ 三个请求真的发了这个头；Content-Type 没被挤掉
     assert out["bo_has_header"] is True, out
     assert out["refine_has_header"] is True, out

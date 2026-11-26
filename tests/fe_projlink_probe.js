@@ -135,25 +135,25 @@ decisionRaw = JSON.stringify({
   version: 1,
   objects: { contract: { linked: true, align: { projectState: true } } },
 });
-out.G_switchWins = ctx.projLinkHeader();
+out.G_switchWins = decodeURIComponent(ctx.projLinkHeader() || "");
 
 // ② 都没有 → 不带头
 st.plLinked = {};
 st.plAlign = {};
 decisionRaw = null;
-out.G_emptyIsNull = ctx.projLinkHeader();
+out.G_emptyIsNull = (function(){const h=ctx.projLinkHeader();return h?decodeURIComponent(h):null;})();
 
 // ③ 只勾了字段、没拨开关：align 单独也要能出去（否则勾选只在预览里生效）
 st.plLinked = { apply: true };
 st.plAlign = { contract: { projectState: true } };
 decisionRaw = JSON.stringify({ version: 1, objects: { contract: { linked: true, align: {} } } });
-out.G_plusUntouched = ctx.projLinkHeader();
+out.G_plusUntouched = decodeURIComponent(ctx.projLinkHeader() || "");
 
 // ④ 多候选：align 的值可以是**项目字段编码**（用户在弹窗下拉里挑的那个），
 //    必须原样发出去；不能把它压成 true（那就变成「按最匹配覆盖」了）
 st.plLinked = { contract: false };
 st.plAlign = { contract: { projectState: "gradeId" } };
-out.G_candPick = ctx.projLinkHeader();
+out.G_candPick = decodeURIComponent(ctx.projLinkHeader() || "");
 
 out.G_plCalls = Object.assign({}, plCalls);
 
@@ -253,7 +253,8 @@ async function main() {
     collectCalls,
     restoreCalls,
     url: sent[0] && sent[0][0],
-    header: sent[0] && sent[0][1] && sent[0][1]["X-Project-Link"],
+    header: sent[0] && sent[0][1] && sent[0][1]["X-Project-Link"]
+      ? decodeURIComponent(sent[0][1]["X-Project-Link"]) : null,
     toast: toasts.slice(),
   };
 
@@ -311,7 +312,8 @@ async function main() {
   input5.checked = false;
   await ctx.toggleProjLink("contract", false, input5);
   out.I_uncheck = {
-    header: sent2[0] && sent2[0][1] && sent2[0][1]["X-Project-Link"],
+    header: sent2[0] && sent2[0][1] && sent2[0][1]["X-Project-Link"]
+      ? decodeURIComponent(sent2[0][1]["X-Project-Link"]) : null,
     plLinked: JSON.parse(JSON.stringify(st.plLinked)),
   };
 

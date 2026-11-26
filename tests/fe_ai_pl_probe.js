@@ -117,7 +117,7 @@ const out = {};
   out.proj_header = proj;
   out.proj_is_null = proj === null;
   if (proj) {
-    const p = JSON.parse(proj);
+    const p = JSON.parse(decodeURIComponent(proj));
     out.proj_version = p.version;
     out.proj_objects_empty = Object.keys(p.objects || {}).length === 0;
     out.proj_has_target = Object.prototype.hasOwnProperty.call(p, "target");
@@ -128,9 +128,19 @@ const out = {};
   st.plTargetKind = "other";
   st.plTarget = { code: "contract", name: "合同", linkLabel: "合同选择" };
   st.plSnapshotToken = "0123456789abcdef0123";
-  const con = JSON.parse(ctx.__aiLinkHeader());
-  out.con_target = JSON.stringify(con.target || null);
-  out.con_snapshot = con.snapshot || "";
+  const conRaw = ctx.__aiLinkHeader();
+  // 2026-11-26：target.name 是中文，header 值只允许 ISO-8859-1——
+  // 必须整段 encodeURIComponent，否则浏览器抛
+  // "String contains non ISO-8859-1 code point"，请求根本发不出去
+  out.con_encoded = !/[^\x21-\x7e]/.test(conRaw) && conRaw.includes("%7B");
+  try {
+    const con = JSON.parse(decodeURIComponent(conRaw));
+    out.con_target = JSON.stringify(con.target || null);
+    out.con_snapshot = con.snapshot || "";
+  } catch (e) {
+    out.con_target = "decode-failed";
+    out.con_snapshot = "";
+  }
 
   // ---- ④ 三个入口真的把它发出去了（apiPost / apiPostBlob / fetch）
   st.plPre = "on";

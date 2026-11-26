@@ -1732,3 +1732,142 @@ def _():
         encoding="utf-8")
     assert "code_taken" not in patch_src, \
         "存量包修订不该做新建编码撞库校验（它修订的就是已有对象）"
+
+
+@case("BO53", "bo", "对话克隆：照上传的对象包快照生成一模一样的新对象",
+      "P0", ["描述点名关联目标 + 克隆词才触发（只点名不算）",
+             "字段编码/名称/类型/长度/候选值/级联/子表列原样复制",
+             "AI 只起新名字，起名失败回退「原名副本」",
+             "dic 字段不带旧字典 key（新对象的 key 由编码重新生成）",
+             "快照不在时提示先上传对象包，退化成从零设计"])
+def _():
+    """2026-11-26 用户要求：导入对象 zip 后，AI 对话说「生成与它完全一样的」，
+    要能克隆。AI 抄几十个字段必丢细节，实现是程序化复制 + AI 起名。"""
+    import json as _json
+
+    from pp6kit import projlink, webui
+    from pp6kit.model import BoField
+
+    # ---- ① 意图识别：点名 + 克隆词
+    target = projlink.target_for("projchange", "项目变更", "pp_projchange", "", "snapshot")
+    assert webui._clone_intent("生成与项目变更完全一样的字段 所有字段都要", target) is True
+    assert webui._clone_intent("帮我设计一个项目变更对象", target) is False, \
+        "只点名不算克隆"
+    assert webui._clone_intent("生成与项目变更完全一样的字段", projlink.target_for(
+        "contract", "合同", "pp_contract", "", "snapshot")) is False, \
+        "克隆词有了但没点名目标"
+    assert webui._clone_intent("生成一个采购申请", target) is False
+
+    # ---- ② 快照字段 → build_bo spec：全要素复制
+    snap = projlink.Snapshot(
+        source="package_upload", generated_at="2026-11-26T16:00:00+08:00",
+        project={"code": "projchange", "name": "项目变更", "tbl": "pp_projchange"},
+        fields=[
+            projlink.ProjectField(
+                code="name", name="变更名称", type_new="varchar", length=200, sn=1),
+            projlink.ProjectField(
+                code="changeType", name="变更类型", type_new="dic", sn=2,
+                choices=["范围变更", "进度变更", "成本变更"]),
+            projlink.ProjectField(
+                code="status", name="状态", type_new="dic", sn=3,
+                dict=projlink.DictMeta(ref="change_status", name="变更状态",
+                                       stru_type="1", scope="GLOBAL",
+                                       items=(projlink.DictItem(key="open", name="待处理", sn=1),
+                                              projlink.DictItem(key="done", name="已完成", sn=2)))),
+            projlink.ProjectField(
+                code="level", name="影响级别", type_new="dic", sn=4,
+                choices=["高", "中", "低"], cascade_parent="changeType",
+                choice_groups={"范围变更": ["高", "中"], "进度变更": ["低"]}),
+            projlink.ProjectField(
+                code="projectId", name="项目选择", type_new="object",
+                object_type="project", sn=5),
+            projlink.ProjectField(
+                code="items", name="变更明细", type_new="table", sn=6,
+                table_columns=[{"name": "内容", "type": "varchar", "precision": 0,
+                                "widthPercent": 60, "required": True, "values": []}]),
+        ])
+    spec = webui._clone_fields_spec(snap)
+    by_code = {f["code"]: f for f in spec}
+    assert by_code["name"]["type"] == "varchar" and by_code["name"]["length"] == 200
+    assert by_code["changeType"]["values"] == ["范围变更", "进度变更", "成本变更"]
+    # dic 不带 objectType（旧字典 key 对新对象是失效引用，新 key 由编码重新生成）
+    assert "objectType" not in by_code["changeType"], by_code["changeType"]
+    # 全局字典字段的候选值从 dict.items 取显示名
+    assert by_code["status"]["values"] == ["待处理", "已完成"]
+    # 级联与分组
+    assert by_code["level"]["cascadeParent"] == "changeType"
+    assert by_code["level"]["choiceGroups"] == {"范围变更": ["高", "中"], "进度变更": ["低"]}
+    # object 保留指向；子表列原样
+    assert by_code["projectId"]["objectType"] == "project"
+    assert by_code["items"]["columns"][0]["name"] == "内容"
+
+    # ---- ③ 克隆结果：AI 起名 mock 成功路径 / 失败回退
+    from pp6kit.nlq import llm as _llm
+    old_chat = _llm.chat_any
+    _llm.chat_any = lambda *a, **k: (
+        _json.dumps({"name": "项目变更二期", "code": "projchange2"},
+                    ensure_ascii=False), {"model": "fake"})
+    try:
+        res = webui._clone_bo_result(snap, target, "生成与项目变更完全一样的字段", {})
+        bo = res["bo"]
+        assert bo.code == "projchange2" and bo.name == "项目变更二期", res
+        # 字段数与快照一致（系统字段除外——那部分 build_bo 自动补）
+        codes = [f.code for f in bo.fields]
+        for need in ("name", "changeType", "status", "level", "projectId", "items"):
+            assert need in codes, codes
+        level = bo.field_by_code("level")
+        assert level.choices == ["高", "中", "低"], level.choices
+        assert level.cascade_parent == "changeType", level.cascade_parent
+        assert level.choice_groups == {"范围变更": ["高", "中"], "进度变更": ["低"]}
+        assert "已照「项目变更」克隆" in res["notices"][0], res["notices"]
+    finally:
+        _llm.chat_any = old_chat
+
+    # 起名失败 → 回退「原名副本」
+    def _no_key(*a, **k):
+        raise RuntimeError("no key")
+    _llm.chat_any = _no_key
+    try:
+        res = webui._clone_bo_result(snap, target, "照项目变更复制一份", {})
+        assert res["bo"].code == "projchange_copy", res["bo"].code
+        assert res["bo"].name == "项目变更副本", res["bo"].name
+        assert any("没起成新名字" in n for n in res["notices"]), res["notices"]
+    finally:
+        _llm.chat_any = old_chat
+
+    # ---- ④ 旧快照（没存候选值）给出重新上传提示
+    old_snap = projlink.Snapshot(
+        source="package_upload", project={"code": "projchange", "name": "项目变更"},
+        fields=[projlink.ProjectField(code="changeType", name="变更类型",
+                                      type_new="dic", sn=1)])
+    hint = webui._clone_missing_values_hint(old_snap)
+    assert "重新上传" in hint, hint
+
+    # ---- ⑤ 生成链路分流：带头 + 点名 + 克隆词 → 走克隆而不是从零设计
+    class _FakeDecisions(dict):
+        pass
+    decisions = {"version": 1, "objects": {}, "snapshot": "0123456789abcdef0123"}
+    old_ready = webui.objects._db_ready
+    webui.objects._db_ready = lambda: None
+    old_load = projlink.load_snapshot
+    old_load_file = projlink.load_snapshot_file
+    projlink.load_snapshot = lambda token=None, target=None, **kw: snap
+    # resolve_target 也会按 token 读快照文件（_ai_link_target 阶段），一并 mock
+    projlink.load_snapshot_file = lambda token=None, force=False, **kw: snap
+    from pp6kit.nlq import llm as _llm2
+    _llm2.chat_any = lambda *a, **k: (
+        _json.dumps({"name": "项目变更二期", "code": "projchange2"},
+                    ensure_ascii=False), {"model": "fake"})
+    try:
+        header = _json.dumps(decisions, ensure_ascii=False)
+        out = webui.ai_generate_bo(
+            {"description": "生成与项目变更完全一样的字段 所有字段都要"},
+            header)
+        codes = [f["code"] for f in out["bo"]["fields"]]
+        assert "changeType" in codes and "level" in codes, codes
+        assert any("已照「项目变更」克隆" in n for n in out["notices"]), out["notices"]
+    finally:
+        webui.objects._db_ready = old_ready
+        projlink.load_snapshot = old_load
+        projlink.load_snapshot_file = old_load_file
+        _llm2.chat_any = old_chat
