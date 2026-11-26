@@ -5434,3 +5434,22 @@ body.v3 .v5a-cand .v5a-warn { display: block; white-space: normal; }
 
 body.v3 .v5a-tpl { gap: 10px; }
 body.v3 .v5a-tpl .linkbtn { font-size: 12px; white-space: nowrap; }
+
+/* 「正在调整」提示条（2026-11-26 AI 对话记忆修复）：
+   首屏已有结果时显示，说明现在的输入是接着改；出口是「从头重新生成」 */
+.ai-resume {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 7px 12px;
+  border: 1px solid var(--border, #eaeef6);
+  border-radius: 8px;
+  background: var(--surface-2, #f7f9fc);
+  font-size: 12.5px;
+  color: var(--muted, #6b7689);
+}
+.ai-resume[hidden] { display: none; }
+.ai-resume .ai-resume-txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-resume .ai-resume-txt b { color: var(--text, #1f1f1f); font-weight: 600; }
+.ai-resume .link { flex: none; }

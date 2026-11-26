@@ -15,7 +15,7 @@ import urllib.parse
 import urllib.request
 
 from pp6kit import spec as S
-from tests._harness import case, field, native_zip, simple_package, xlsx
+from tests._harness import case, field, native_zip, simple_package, skip, xlsx
 
 _SERVER: dict = {}
 
@@ -1460,6 +1460,70 @@ def _():
         assert f'name="{field}"' in env, f"环境表单丢了字段 {field}"
     for button in ("environmentNew", "environmentDelete"):
         assert f'id="{button}"' in env, f"环境卡丢了按钮 {button}"
+
+
+@case("WEB54", "webui", "AI 对话有记忆：回第 1 步继续说走增量修改，不推翻已有结果",
+      "P0", ["有结果时首屏发消息 → /api/ai/refine 且带当前 bo/form/list",
+             "「从头重新生成」清空后 → /api/ai/bo", "冷启动 → /api/ai/bo",
+             "首屏 chips 不再强制 fresh", "提示条与按钮文案随结果显隐",
+             "首屏发起的修改成功后跳到预览页"])
+def _():
+    """2026-11-26 用户报的 bug：生成完 → 返回上一步 → 让 AI 加/删字段，
+    生成的只有那一个字段。根因在前端：首屏输入框永远 fresh 从零生成
+    （/api/ai/bo），无视 state.aiData，服务端 refine 本身没问题。
+
+    node + 最小 DOM stub 跑真实 app.js，断言「首屏这条链路的端点选择」。
+    没装 node 就 skip（refine 服务端行为另有 WEB43 钉着）。"""
+    import json as _json
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    node = shutil.which("node")
+    if not node:
+        skip("没装 node：AI 对话记忆探针跳过（WEB43 的服务端断言仍然生效）")
+    root = Path(__file__).resolve().parents[1]
+    app = root / "pp6kit" / "static" / "app.js"
+    probe = Path(__file__).resolve().parent / "fe_ai_memory_probe.js"
+    assert probe.is_file(), f"缺少前端探针 {probe}"
+    proc = subprocess.run([node, str(probe), str(app)],
+                          capture_output=True, text=True, timeout=180)
+    assert proc.returncode == 0, f"node 探针失败：\n{proc.stderr[-1200:]}"
+    lines = [ln for ln in proc.stdout.strip().splitlines() if ln.strip()]
+    assert lines, "node 探针没有输出"
+    out = _json.loads(lines[-1])
+
+    # ① 有结果：首屏「再加一个金额字段」→ 增量修改，且当前结果随请求带上
+    assert out["resume_shown"] is True, "已有结果时首屏没显示「正在调整」提示条"
+    assert out["send1_label"] == "发送修改", out
+    assert out["refine_called"] is True, \
+        "已有结果时首屏发消息走了从零生成（/api/ai/bo）：AI 又没记忆了"
+    assert out["refine_has_instruction"] is True, out
+    assert out["refine_has_bo"] is True, "refine 请求没带当前字段，增量修改无从谈起"
+    assert out["refine_has_form"] is True and out["refine_has_list"] is True, out
+
+    # ② 「从头重新生成」：显式清空，之后才从零设计
+    assert out["redo_bound"] is True, out
+    assert out["cleared"] is True and out["resume_hidden_after_redo"] is True, out
+    assert out["send1_label_after_redo"] == "开始生成", out
+    assert out["fresh_called"] is True and out["fresh_body_desc"] is True, out
+
+    # ③ 冷启动：没有结果时从零生成（老行为不变）
+    assert out["cold_called"] is True, out
+
+    # ④ 首屏三处入口都不许再强制 fresh（stub 下 chips 绑不到，源码层钉住）
+    assert out["no_forced_fresh"] is True, \
+        "首屏输入又写死 { fresh: true }：回上一步说话会从零生成"
+
+    # ⑤ 首屏发起的修改成功后跳到第 2 步看结果
+    assert out["jumped_to_preview"] is True, out
+
+    # ⑥ 提示条结构件在 HTML 里（文案与按钮不被误删）
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+    assert 'id="aiResumeBar"' in html and 'id="aiRedo1"' in html \
+        and 'id="aiResumeName"' in html, "首屏「正在调整」提示条结构件丢了"
+    css = (root / "pp6kit" / "static" / "style.css").read_text(encoding="utf-8")
+    assert ".ai-resume" in css, "提示条没有样式（会裸成一堆文字）"
 
 
 @case("WEB50", "webui", "首页与静态资源都不留缓存；打开浏览器带构建指纹", "P1",

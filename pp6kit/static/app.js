@@ -2229,6 +2229,7 @@ async function apiPost(path, payload, extraHeaders) {
 function renderAiBo(d) {
   const bo = d.bo;
   state.aiData = d;                   // 编辑时直接改这份，导出用它
+  syncEntryResume();                  // 字段数变了，首屏提示条跟着刷
   closeAiChoicePop();                 // 整表重渲染后旧浮层的行号就失效了
   // 字段层 14 种类型，叫法照系统「添加字段 › 字段类型」下拉
   const types = d.types && d.types.length ? d.types : [
@@ -3614,6 +3615,24 @@ async function applyAiBo(d, { thenBuild = false, workflow = false } = {}) {
   }
 }
 
+/* 首屏「进行中」提示条：已有 AI 结果时，说清楚现在的输入是「接着改」，
+   并给出「从头重新生成」的出口。每次回第 1 步（renderEntry）和结果更新
+   （renderAiBo）后都刷新一次，字段数才不会停留在旧值。 */
+function syncEntryResume() {
+  const bar = $("#aiResumeBar");
+  const d = state.aiData;
+  if (bar) {
+    const n = d && d.bo && d.bo.fields ? d.bo.fields.length : 0;
+    bar.hidden = !d;
+    if (d) {
+      const name = $("#aiResumeName");
+      if (name) name.textContent = `${d.bo.name || "未命名对象"}（${n} 个字段）`;
+    }
+  }
+  const send1 = $("#aiChatSend1");
+  if (send1) send1.textContent = d ? "发送修改" : "开始生成";
+}
+
 /* 第 1 步入口：2026-11-21 起不再「先选 AI / 文件，再展开」。
    首屏直接给输入框（用户最常走的路），文件入口是下面的紧凑卡片；
    两个面板常驻，少一次点击，也不会一进来面对两张不知道选哪个的卡片。 */
@@ -3626,6 +3645,7 @@ function renderEntry() {
   panels.hidden = false;
   if (ai) ai.hidden = false;
   if (excel) excel.hidden = false;
+  syncEntryResume();
 }
 
 /* 步骤切换：1 输入 / 2 预览 / 3 出包 */
@@ -3750,17 +3770,26 @@ async function sendAiChat(text, { fresh = false } = {}) {
     return;
   }
 
-  // 首轮 = 还没有任何结果，或者用户是从第 1 步首屏重新说需求（fresh）。
-  // 只按 state.aiData 判断会把「返回第 1 步改完描述再点开始生成」误当成
-  // 对旧结果的增量修改，于是只调 /api/ai/refine、不 goStep(2)，看起来卡在第 1 步。
+  // 首轮 = 还没有任何结果，或者用户点了「从头重新生成」显式要求重来（fresh）。
+  // 首屏输入不再固定 fresh：生成完返回第 1 步再说话，要在已有结果上继续改
+  // （2026-11-26 用户报：回上一步让 AI 加字段，生成的只有那一个字段）。
   const first = !!fresh || !state.aiData;
+  // 发起时人在第 1 步（首屏对话框）：refine 成功后要跳到第 2 步看结果
+  const fromEntry = !$("#stepInput").hidden;
   const input = $("#aiChatText");
   const btn = $("#aiChatSend");
+  // 两个对话框共用这条链路：首屏按钮同样要禁用，连点会发两条
+  const input1 = $("#aiChatText1");
+  const btn1 = $("#aiChatSend1");
   input.value = "";
   aiChatAppend("user", msg);
   const pending = aiChatAppend("bot pending", first ? "正在设计字段、表单和列表…" : "正在修改…");
   btn.disabled = true;
   btn.textContent = first ? "生成中…" : "修改中…";
+  if (btn1) {
+    btn1.disabled = true;
+    btn1.textContent = first ? "生成中…" : "修改中…";
+  }
 
   const box = $("#aiResult");
   if (first) {
@@ -3793,6 +3822,9 @@ async function sendAiChat(text, { fresh = false } = {}) {
     box.innerHTML = renderAiBo(d);
     renderAiActions(d);
     syncAiNextLabel();
+    syncEntryResume();
+    // 从首屏发起的增量修改：跳到预览页看结果，别让人停在输入框前猜改没改
+    if (!first && fromEntry) goStep(2);
     pending.remove();
     const nf = (d.bo && d.bo.fields ? d.bo.fields.length : 0);
     aiChatAppend("bot", first
@@ -3814,9 +3846,11 @@ async function sendAiChat(text, { fresh = false } = {}) {
     aiChatAppend("bot err", (first ? "没生成出来：" : "没改成：") + err.message);
   } finally {
     btn.disabled = false;
-    // 首屏的按钮永远回到「开始生成」；只有预览页的增量修改才是「发送修改」
+    if (btn1) btn1.disabled = false;
+    // 首屏按钮跟当前状态走：有结果是「发送修改」，没有是「开始生成」
     btn.textContent = first ? "开始生成" : "发送修改";
-    input.focus();
+    if (btn1) btn1.textContent = first ? "开始生成" : "发送修改";
+    (fromEntry && input1 ? input1 : input).focus();
   }
 }
 
@@ -3833,17 +3867,32 @@ function aiChatSendFrom(idText, idLog, { fresh = false } = {}) {
 let aiChatTarget = "aiChatLog";
 
 function bindAiChat() {
-  // 首屏
+  // 首屏：已有结果时（syncEntryResume 同步显隐）是「接着改」；
+  // 想从零就点提示条里的「从头重新生成」（#aiRedo1）。不再强制 fresh——
+  // 否则「生成完 → 返回上一步 → 再让 AI 加字段」会从零生成、只剩新字段。
   const s1 = $("#aiChatSend1");
-  if (s1) s1.onclick = () => aiChatSendFrom("aiChatText1", "aiChatLog1", { fresh: true });
+  if (s1) s1.onclick = () => aiChatSendFrom("aiChatText1", "aiChatLog1");
   const t1 = $("#aiChatText1");
   if (t1) {
     t1.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        aiChatSendFrom("aiChatText1", "aiChatLog1", { fresh: true });
+        aiChatSendFrom("aiChatText1", "aiChatLog1");
       }
     });
+  }
+  const redo1 = $("#aiRedo1");
+  if (redo1) {
+    redo1.onclick = () => {
+      state.aiData = null;
+      $("#aiResult").innerHTML = "";
+      const log = $("#aiChatLog1");
+      if (log) log.innerHTML = "";
+      syncEntryResume();
+      toast("已清空当前结果，输入需求从头生成");
+      const t = $("#aiChatText1");
+      if (t) t.focus();
+    };
   }
   const c1 = $("#aiChatClear1");
   if (c1) {
@@ -3876,13 +3925,14 @@ function bindAiChat() {
     };
   }
 
-  // 首屏快捷 chip：填进输入框再发，用户看得见自己要的是什么
+  // 首屏快捷 chip：填进输入框再发。词是「补必填 / 精简 / 重新分组」这类
+  // 增量语义，有结果时走修改，无结果时由 sendAiChat 判定从零生成
   $$("#aiChatLaunch .chip-btn").forEach((b) => {
     b.onclick = () => {
       const q = b.dataset.q || b.textContent;
       const ta = $("#aiChatText1");
       if (ta) ta.value = q;
-      aiChatSendFrom("aiChatText1", "aiChatLog1", { fresh: true });
+      aiChatSendFrom("aiChatText1", "aiChatLog1");
     };
   });
 

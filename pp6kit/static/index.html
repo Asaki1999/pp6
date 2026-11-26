@@ -353,6 +353,14 @@
 
               <div class="ai-chat-log" id="aiChatLog1"></div>
 
+              <!-- 已有一版结果时显示：回第 1 步继续说话是「增量改」，不是从零生成。
+                   想推倒重来点「从头重新生成」，别让 AI 假装失忆（2026-11-26 用户报） -->
+              <div class="ai-resume" id="aiResumeBar" hidden
+                   title="继续描述会在这个结果上增量修改，已调好的字段不会被推翻">
+                <span class="ai-resume-txt">正在调整：<b id="aiResumeName"></b></span>
+                <button type="button" class="link" id="aiRedo1">从头重新生成</button>
+              </div>
+
               <div class="ai-chat-input">
                 <textarea id="aiChatText1" rows="3"
                   placeholder="例：采购申请单，包含申请单号、申请人、所属项目、物品、数量、单价、总金额、期望到货日期。"></textarea>
