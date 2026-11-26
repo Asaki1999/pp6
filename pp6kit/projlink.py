@@ -98,7 +98,8 @@ RANK = {"E0": 0, "S3": 1, "S4": 2, "S2": 3, "S1": 4, "C": 5}
 
 _SOURCE_LABEL = {
     "target_db": "目标库",
-    "package_snapshot": "随包快照",
+    # 兼容历史快照文件：老版本可能把上传 zip 也标成 package_snapshot
+    "package_snapshot": "上传的项目包",
     "package_upload": "上传的项目包",
     "unavailable": "无",
 }
@@ -874,7 +875,15 @@ def _load_file(path: Path, source: str, force: bool = False) -> Snapshot | None:
 
 
 def clear_cache() -> None:
+    """清掉快照缓存与由它派生的编码白名单。
+
+    白名单（project_field_codes）带模块级缓存，之前没跟着清：刷新对象清单、
+    换库、或者上传新的项目 zip 之后，`stateId` 这类原生编码还会被判成
+    「命名不规范」，直到进程重启。两处必须一起失效。
+    """
+    global _PROJECT_CODES_CACHE
     _CACHE.clear()
+    _PROJECT_CODES_CACHE = None
 
 
 def load_snapshot_file(upload_token: str, force: bool = False) -> Snapshot:
@@ -919,24 +928,16 @@ def load_snapshot(upload_token: str | None = None, force: bool = False,
         bad = _snapshot_mismatch(snap, target)
         if not bad:
             return snap
-    if target.is_project:
-        snap = _load_file(resource_root() / "assets" / "project_fields.json",
-                          "package_snapshot", force)
-        if snap is not None:
-            # 随包那份 JSON 是 `dump_project_fields.py` 从库里导出来的，文件里
-            # "source" 写的是 target_db；但走到这一档就说明它不是「当前连上的库」，
-            # 而是打进包里的冻结副本（_load_file 会把文件里的 source 盖回来）。
-            # 不纠正的话界面会显示「当前快照：目标库 · 51 个字段」，
-            # 同时又要求用户导入项目 zip —— 自相矛盾，用户以为库是连着的。
-            snap.source = "package_snapshot"
-            return snap
+    # 2026-11-27：去掉「随包项目字段快照」这一档。
+    # 它只能补链接字段、不做字段对齐，又让用户以为有第三套来源要理解；
+    # 现在只剩两条路——连库（权威）或导入项目 zip（完整定义）。
     label = "项目" if target.is_project else target.name
     return Snapshot(
         source="unavailable",
         fields=[],
         project={"code": target.code, "name": target.name, "tbl": target.tbl,
                  "tableLabel": target.table_label},
-        warnings=[f"{label}字段快照不可用（未连库刷新、无随包快照、未上传{label}包），"
+        warnings=[f"{label}字段不可用（未连库、未上传{label}包），"
                   f"本次只补「{target.link_label}」链接字段、不做字段对齐"],
         min_fields=1 if not target.is_project else MIN_SNAPSHOT_FIELDS,
     )
@@ -1082,7 +1083,7 @@ def _pick_target_bo(proj, target: TargetObject) -> tuple[Bo | None, str]:
     return None, ""
 
 
-def snapshot_from_zip(path_or_bytes, source: str = "package_snapshot",
+def snapshot_from_zip(path_or_bytes, source: str = "package_upload",
                       target: TargetObject | None = None) -> Snapshot:
     """从一份业务对象导出包解析快照。**纯函数**，供 tools 与测试使用。
 

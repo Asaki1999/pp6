@@ -35,6 +35,7 @@ from pp6kit import spec as S
 from pp6kit import webui
 from pp6kit.reader import read_workbook
 from tests._harness import case, field, texts, xlsx
+from tests._projfields import project_fields
 
 # ---------------------------------------------------------------- 夹具
 
@@ -443,66 +444,67 @@ def vr14():
 @case("VR16", "value_rules", "AI 面板配的规则：进 Excel「过滤规则」列 → 出包真过滤 → 控件指向这份值来源",
       "P0", ["预览=产物", "规则不丢", "控件不被另建的干净值来源顶替"])
 def vr16():
-    """app 面板 → /api/ai/bo → Excel → 出包 这一整条链。
+    with project_fields():
+        """app 面板 → /api/ai/bo → Excel → 出包 这一整条链。
 
-    最怕的一种静默失效：blueprint 给「默认那份值来源」另建了一份**干净**的
-    （`_local_value_dataset` 不把带规则的当默认），而控件被接到新的那份上——
-    用户在面板里配的过滤条件看着在、包里却没生效。这条用例就是钉它。
-    """
-    payload = {
-        "bo": {"code": "hetong_apply", "name": "合同申请", "fields": [
-            {"code": "suoShuXiangMu", "name": "所属项目", "type": "object",
-             "objectType": "project",
-             "sourceConfig": {
-                 "custom": True, "resultFields": ["id", "name"], "linkage": [],
-                 "filterLogic": "AND",
-                 "filterRules": [
-                     {"field": "name_", "operator": "contains",
-                      "source": "fixed", "fieldSource": "formField", "value": "XY"},
-                     {"field": "xiang_mu_lei_xing_", "operator": "equal",
-                      "source": "dynamic", "fieldSource": "formField",
-                      "control": "xiangMuLeiXing"},
-                 ]}},
-            {"code": "xiangMuLeiXing", "name": "项目类型", "type": "object",
-             "objectType": "classification"},
-        ]},
-        "form": {"key": "create_hetong_apply", "name": "新建合同申请", "fields": [
-            {"name": "suoShuXiangMu", "label": "所属项目", "type": "linkdata"},
-            {"name": "xiangMuLeiXing", "label": "项目类型", "type": "linkdata"},
-        ]},
-        "list": {"key": "hetong_apply_list", "name": "列表",
-                 "columns": [{"code": "suoShuXiangMu", "label": "所属项目"}],
-                 "views": ["grid"]},
-    }
-    excel, _name = webui.ai_apply_bo(payload, None)
-    # 跳过模板自带的「# 说明」行（表头下一行是列说明，不是数据）
-    rows = [r for r in _xlsx_rows(excel, S.S_VALUE)
-            if str(r.get("值来源key") or "").strip()
-            and not str(r.get("值来源key")).startswith("#")]
-    assert rows, rows
-    row = rows[0]
-    assert row["过滤规则"] and row["过滤规则"] != "无", row
-    cell_rules = json.loads(row["过滤规则"])["rules"]
-    assert {r["source"] for r in cell_rules} == {"fixed", "dynamic"}, cell_rules
+        最怕的一种静默失效：blueprint 给「默认那份值来源」另建了一份**干净**的
+        （`_local_value_dataset` 不把带规则的当默认），而控件被接到新的那份上——
+        用户在面板里配的过滤条件看着在、包里却没生效。这条用例就是钉它。
+        """
+        payload = {
+            "bo": {"code": "hetong_apply", "name": "合同申请", "fields": [
+                {"code": "suoShuXiangMu", "name": "所属项目", "type": "object",
+                 "objectType": "project",
+                 "sourceConfig": {
+                     "custom": True, "resultFields": ["id", "name"], "linkage": [],
+                     "filterLogic": "AND",
+                     "filterRules": [
+                         {"field": "name_", "operator": "contains",
+                          "source": "fixed", "fieldSource": "formField", "value": "XY"},
+                         {"field": "xiang_mu_lei_xing_", "operator": "equal",
+                          "source": "dynamic", "fieldSource": "formField",
+                          "control": "xiangMuLeiXing"},
+                     ]}},
+                {"code": "xiangMuLeiXing", "name": "项目类型", "type": "object",
+                 "objectType": "classification"},
+            ]},
+            "form": {"key": "create_hetong_apply", "name": "新建合同申请", "fields": [
+                {"name": "suoShuXiangMu", "label": "所属项目", "type": "linkdata"},
+                {"name": "xiangMuLeiXing", "label": "项目类型", "type": "linkdata"},
+            ]},
+            "list": {"key": "hetong_apply_list", "name": "列表",
+                     "columns": [{"code": "suoShuXiangMu", "label": "所属项目"}],
+                     "views": ["grid"]},
+        }
+        excel, _name = webui.ai_apply_bo(payload, None)
+        # 跳过模板自带的「# 说明」行（表头下一行是列说明，不是数据）
+        rows = [r for r in _xlsx_rows(excel, S.S_VALUE)
+                if str(r.get("值来源key") or "").strip()
+                and not str(r.get("值来源key")).startswith("#")]
+        assert rows, rows
+        row = rows[0]
+        assert row["过滤规则"] and row["过滤规则"] != "无", row
+        cell_rules = json.loads(row["过滤规则"])["rules"]
+        assert {r["source"] for r in cell_rules} == {"fixed", "dynamic"}, cell_rules
 
-    body, _ = webui.build_zip(excel, [], {})
-    tpl = form = None
-    for name, text in texts(body).items():
-        if name.startswith("data_template/") and 'type="valueSource"' in text:
-            tpl = text if tpl is None else tpl
-        if name.startswith("form/") and 'key="create_hetong_apply"' in text:
-            form = text
-    assert tpl is not None and form is not None
-    cond, rules = _filters(tpl)
-    assert cond == "AND" and len(rules) == 2, rules
-    lc = _link_condition(form, "suoShuXiangMu")
-    assert len(lc) == 1, lc                       # 只有 dynamic 那条要绑
-    dyn = next(r for r in rules if r["source"] == "dynamic")
-    assert lc[0]["rule_id"] == dyn["rule_id"], (lc, dyn)
-    # 控件必须指向**带规则的那份**值来源（key 与 linkdata 一致），
-    # 不能被 blueprint 另建的「干净那份」顶替——那样面板里配的过滤就白配了
-    opts = _control_opts(form, "suoShuXiangMu")
-    assert opts.get("linkdata") == row["值来源key"], (opts.get("linkdata"), row["值来源key"])
+        body, _ = webui.build_zip(excel, [], {})
+        tpl = form = None
+        for name, text in texts(body).items():
+            if name.startswith("data_template/") and 'type="valueSource"' in text:
+                tpl = text if tpl is None else tpl
+            if name.startswith("form/") and 'key="create_hetong_apply"' in text:
+                form = text
+        assert tpl is not None and form is not None
+        cond, rules = _filters(tpl)
+        assert cond == "AND" and len(rules) == 2, rules
+        lc = _link_condition(form, "suoShuXiangMu")
+        assert len(lc) == 1, lc                       # 只有 dynamic 那条要绑
+        dyn = next(r for r in rules if r["source"] == "dynamic")
+        assert lc[0]["rule_id"] == dyn["rule_id"], (lc, dyn)
+        # 控件必须指向**带规则的那份**值来源（key 与 linkdata 一致），
+        # 不能被 blueprint 另建的「干净那份」顶替——那样面板里配的过滤就白配了
+        opts = _control_opts(form, "suoShuXiangMu")
+        assert opts.get("linkdata") == row["值来源key"], (opts.get("linkdata"), row["值来源key"])
 
 
 def _xlsx_rows(data: bytes, sheet: str) -> list[dict]:

@@ -64,7 +64,7 @@ window.ProjLink = (function () {
    * 要写「上传的合同包」，常量表会在模块加载时把「项目」写死。 */
   function sourceLabel(code) {
     if (code === "package_upload") return `上传的${tName()}包`;
-    return { target_db: "目标库", package_snapshot: "随包快照",
+    return { target_db: "目标库", package_snapshot: "上传的项目包",
       unavailable: "无" }[code] || code || "无";
   }
 

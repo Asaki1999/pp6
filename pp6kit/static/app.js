@@ -301,7 +301,7 @@ async function handleFile(file, { fromAi = false, quiet = false } = {}) {
   if (state.plPre === "on" && !(await ensureLinkTarget())) {
     toast(state.plTargetKind === "other"
       ? "关联对象还没核对通过，文件未解析：请先在第 1 步输入名称并点「核对」"
-      : "项目字段池还没准备好，文件未解析：请先在第 1 步选「使用随包快照」或导入项目 zip", 9000);
+      : "项目字段还没准备好，文件未解析：请先在第 1 步导入项目 zip", 9000);
     return;
   }
   state.restoredObjectScope = null;
@@ -539,8 +539,8 @@ function syncPlTargetUI() {
   if (other) other.hidden = state.plTargetKind !== "other";
   const src = $("#plProjectSrc");
   if (src) {
-    // 已连库 = 来源固定为库（库是权威），没有可选项，按钮直接不出现；
-    // 未连库才露出「项目字段来源」，点开可在随包快照与项目 zip 之间换。
+    // 已连库 = 字段直接取自库，没有可选项，按钮不出现；
+    // 未连库才露出「导入项目 zip」，这是唯一的字段来源入口。
     const dbKnown = !!(state.plSnapshotStatus && state.plSnapshotStatus.dbConfigured);
     src.hidden = state.plTargetKind !== "project" || dbKnown;
   }
@@ -574,7 +574,7 @@ function syncPlTargetUI() {
       : (state.plTargetKind === "project"
         ? (dbKnown
           ? "全部对象关联项目，字段定义取自数据库"
-          : "全部对象关联项目，字段来自随包快照，可换项目 zip")
+          : "全部对象关联项目，需先导入项目 zip 取字段定义")
         : `全部对象关联「${plTargetLabel()}」，同名字段按目标定义对齐`);
   }
   syncAiNextLabel();
@@ -659,7 +659,7 @@ async function resolvePlTarget({ silent = false } = {}) {
   return false;
 }
 
-/* 关联目标的统一入口：项目走原有的项目快照（库/随包/上传 zip），
+/* 关联目标的统一入口：项目走项目字段（库 / 上传 zip），
  * 其他对象走名称核对。任何一条路径没准备好都不允许继续解析。 */
 async function ensureLinkTarget() {
   if (state.plTargetKind === "project") return await ensureProjectSnapshot();
@@ -745,15 +745,14 @@ function bindPlTarget() {
       try {
         const st = await projectSnapshotStatus(true);
         if (st && st.dbConfigured) {
-          // 正常情况按钮已经隐藏（连库时来源固定）；走到这里说明状态刚变，
-          // 刷新一下界面让按钮自己消失，再给一句说明。
+          // 正常情况按钮已经隐藏（连库时字段直接取自库）；走到这里说明状态刚变
           syncPlTargetUI();
-          toast("已连接数据库，项目字段直接取自库中，无需选择来源", 7000);
+          toast("已连接数据库，项目字段直接取自库中，无需导入 zip", 7000);
           return;
         }
         await askProjectZip(st || {});
       } catch (err) {
-        toast(`读取项目字段来源失败：${err.message}`, 7000);
+        toast(`读取项目字段状态失败：${err.message}`, 7000);
       } finally {
         btn.disabled = false;
       }
@@ -1098,12 +1097,12 @@ function jumpToProjectLink() {
   setTimeout(() => box.classList.remove("pl-flash"), 1800);
 }
 
-/* ---------------- 项目字段快照：没连库时的两档来源 ----------------
- * 关联项目要对齐 pp_project 的字段池。有库用库，没库时：
- *   ① 随包快照（assets/project_fields.json）够用就直接用——能补「项目选择」
- *      链接字段，只是不做同名/相似字段对齐；
- *   ② 想完整对齐就导入一份项目 zip（随包快照可能是旧版本的，字段对不上）。
- * 弹窗里两个都摆出来，主按钮是「使用随包快照」，不再逼用户找 zip。
+/* ---------------- 项目字段从哪来 ----------------
+ * 关联项目要对齐 pp_project 的字段池，只有两个来源：
+ *   ① 连库：现查现用（权威）
+ *   ② 项目 zip：用户导入，含完整字段定义
+ * 2026-11-27 去掉了「随包项目字段快照」这一档——它只能补链接字段、
+ * 不做同名对齐，多一套来源只会让人以为字段被偷偷降级。
  * 上传成功后 token 记在 state，parse/build 都会随 X-Project-Link.snapshot 发回。
  */
 async function projectSnapshotStatus(force = false) {
@@ -1116,9 +1115,6 @@ async function projectSnapshotStatus(force = false) {
 }
 
 let psPending = null;
-// 弹窗主按钮是不是「刷新」口径：有可用随包快照时为 true，
-// 上传失败/重试后按钮文案要跟弹窗口径一致，不能自己缩回「选择项目 zip」。
-let psPickRefresh = false;
 
 function closeProjectZipModal(ok) {
   const mask = $("#psMask");
@@ -1129,13 +1125,6 @@ function closeProjectZipModal(ok) {
   if (done) done(!!ok);
 }
 
-/* 项目快照够不够用：与后端 projlink.MIN_SNAPSHOT_FIELDS（30）同一个阈值。
- * 够用就不再拦用户去导 zip —— 随包快照能补「项目选择」链接字段，
- * 只是不做同名/相似字段对齐。 */
-function projectSnapshotUsable(st) {
-  return !!(st && st.status === "ok" && Number(st.fieldCount) >= 30);
-}
-
 function askProjectZip(st, targetName = "") {
   return new Promise((resolve) => {
     const mask = $("#psMask");
@@ -1144,11 +1133,6 @@ function askProjectZip(st, targetName = "") {
     const isProject = state.plTargetKind === "project";
     const name = String(targetName || "").trim() || plTargetLabel();
     const target = isProject ? "项目" : `「${name}」`;
-    // 没连库 + 随包有一份够用的项目字段快照 → 直接让用户「用它继续」，
-    // 不要逼着导 zip（用户手上没有 zip 时只会取消，关联就白选了）。
-    const usable = isProject && projectSnapshotUsable(st);
-    psPickRefresh = usable;
-    const nField = (st && st.fieldCount) ? String(st.fieldCount) : "";
     const at = (st && st.generatedAt) ? String(st.generatedAt).slice(0, 10) : "";
     const title = $("#psTitle");
     const sub = $("#psSub");
@@ -1156,61 +1140,27 @@ function askProjectZip(st, targetName = "") {
     const lead2 = $("#psLead2");
     const pick = $("#psPick");
     const cancel = $("#psCancel");
-    if (title) {
-      // 有可用快照时标题不能还写「导入项目 zip」：用户第一眼会以为必须去找 zip
-      title.textContent = usable
-        ? "关联项目：选择字段来源"
-        : (isProject ? "导入项目 zip" : `导入${target}业务对象 zip`);
-    }
-    if (sub) {
-      sub.textContent = usable
-        ? "未配置数据库：可以直接用随包项目字段快照继续，也可以导入项目 zip 刷新字段"
-        : `关联${target}需要该对象的字段定义`;
-    }
+    if (title) title.textContent = isProject ? "导入项目 zip" : `导入${target}业务对象 zip`;
+    if (sub) sub.textContent = `关联${target}需要该对象的字段定义`;
     if (lead1) {
-      if (usable) {
-        lead1.innerHTML = `当前没有可用的数据库连接，但随包自带项目字段快照`
-          + `（${esc(nField)} 个字段${at ? `，${esc(at)}` : ""}）。`
-          + `直接用它只会补「项目选择」链接字段，不做同名/相似字段对齐；`
-          + `要完整对齐请导入项目 zip。`;
-      } else {
-        lead1.innerHTML = (st && st.dbConfigured)
-          ? `数据库里没有名称完全一致的${esc(target)}业务对象，读不到它的字段定义。`
-          : `当前 App 没有配置数据库连接，读不到系统里${esc(target)}对象的字段。`;
-      }
+      lead1.innerHTML = (st && st.dbConfigured)
+        ? `数据库里没有名称完全一致的${esc(target)}业务对象，读不到它的字段定义。`
+        : `当前 App 没有配置数据库连接，读不到系统里${esc(target)}对象的字段。`;
     }
     if (lead2) {
-      // 有可用快照时这段是「补充选项」，不是唯一出路：加一句说明它的定位
-      const zipLead = usable ? "如需完整对齐：" : "";
       lead2.innerHTML = isProject
-        ? `${zipLead}请导入一份<strong>项目 zip</strong>（包里 <code>bo/*.xml</code> 有 <code>code="project"</code> 的同步包；项目对象、项目列表/表单导出的包都可以）。导入后用它和你的 Excel 对比，找出同名与相似字段。`
+        ? `请导入一份<strong>项目 zip</strong>（包里 <code>bo/*.xml</code> 有 <code>code="project"</code> 的同步包；项目对象、项目列表/表单导出的包都可以）。导入后用它和你的 Excel 对比，找出同名与相似字段。`
         : `请导入一份<strong>${esc(target)}对象 zip</strong>（包里 <code>bo/*.xml</code> 的名称与「${esc(name)}」完全一致）。导入后用它和你的 Excel 对比，找出同名与相似字段。`;
     }
-    if (pick) {
-      pick.textContent = usable
-        ? "导入项目 zip（刷新）"
-        : (isProject ? "选择项目 zip" : `选择${target} zip`);
-    }
-    /* 取消键每次打开都要重设文案与处理器：bindProjectSnapshotModal() 默认绑的是
-     * closeProjectZipModal(false)，上一次的「使用随包快照」不能漏到下一次。 */
+    if (pick) pick.textContent = isProject ? "选择项目 zip" : `选择${target} zip`;
     if (cancel) {
-      if (usable) {
-        cancel.textContent = `使用随包快照（${nField} 个字段）`;
-        cancel.onclick = () => closeProjectZipModal(true);
-      } else {
-        cancel.textContent = "取消";
-        cancel.onclick = () => closeProjectZipModal(false);
-      }
+      cancel.textContent = "取消";
+      cancel.onclick = () => closeProjectZipModal(false);
     }
-    /* 主按钮跟着「推荐动作」走：有可用快照时推荐的是「直接用」，不是「去找 zip」。
-     * 两个按钮每次打开都重设主/次，否则上一次的主按钮会留在那儿误导人。 */
-    if (usable) {
-      if (cancel) { cancel.classList.add("primary"); cancel.classList.remove("ghost"); }
-      if (pick) { pick.classList.add("ghost"); pick.classList.remove("primary"); }
-    } else {
-      if (pick) { pick.classList.add("primary"); pick.classList.remove("ghost"); }
-      if (cancel) { cancel.classList.add("ghost"); cancel.classList.remove("primary"); }
-    }
+    // 只有一条路：主按钮固定是「选 zip」，取消是次按钮
+    if (pick) { pick.classList.add("primary"); pick.classList.remove("ghost"); }
+    if (cancel) { cancel.classList.add("ghost"); cancel.classList.remove("primary"); }
+
     const status = $("#psStatus");
     if (status) {
       status.classList.remove("bad");
@@ -1223,7 +1173,7 @@ function askProjectZip(st, targetName = "") {
       if (at) bits.push(at);
       status.textContent = bits.length
         ? bits.join(" · ")
-        : (isProject ? "当前没有可用的项目字段快照。" : `当前没有「${name}」的字段快照。`);
+        : (isProject ? "当前没有可用的项目字段定义，需要先导入项目 zip。" : `当前没有「${name}」的字段定义，需要先导入该对象的 zip。`);
     }
     mask.hidden = false;
     document.body.classList.add("pl-modal-open");
@@ -1238,7 +1188,7 @@ async function ensureProjectSnapshot() {
     st = await projectSnapshotStatus();
   } catch (err) {
     // 状态接口不可用（老服务端 / 断网 / 探针环境）：不拦主流程，
-    // 让后端按它自己的快照档位降级（随包或 unavailable）。
+    // 让后端按它自己的快照档位降级（可能拿到 unavailable）。
     return true;
   }
   // 没有 dbConfigured 字段 = 不是这个接口的响应（探针/老版本），同样不拦
@@ -1253,11 +1203,9 @@ async function ensureProjectSnapshot() {
     }
     return true;
   }
-  // 没连库：把「字段来源」的选择摆给用户（2026-11-26 用户要求恢复弹窗——
-  // 不弹的话他找不到导入项目 zip 的入口，包里就少了字段对齐）。
-  // 弹窗是 usable 模式：主按钮「使用随包快照」不用找 zip，次按钮才导 zip；
-  // 导过一次 token 记住，之后不再弹。弹窗时机在解析/出包前，档位已选完，
-  // 不会复现 2026-11-24「点关联立刻被弹窗拦住」的问题。
+  // 没连库：只剩「导入项目 zip」一条路，直接弹窗要文件。
+  // 导过一次 token 记住，之后不再弹；取消 = 本次不关联（不拦主流程之外的事）。
+  // 弹窗时机在解析/出包前，档位已选完，不会复现 2026-11-24「点关联立刻被拦住」。
   return await askProjectZip(st);
 }
 
@@ -1314,7 +1262,7 @@ function bindProjectSnapshotModal() {
         if (btn) {
           btn.disabled = false;
           btn.textContent = state.plTargetKind === "project"
-            ? (psPickRefresh ? "导入项目 zip（刷新）" : "选择项目 zip")
+            ? "选择项目 zip"
             : `选择「${plTargetLabel()}」zip`;
         }
       }
@@ -2288,7 +2236,7 @@ function renderAiBo(d) {
   const selfTarget = !!(d.linkTarget && d.linkTarget.code === bo.code);
   if (state.plPre === "on" && !hasLink && !selfTarget) {
     notesList.unshift("⚠ 已选「关联项目」，但这次没有生成「项目选择」字段。"
-      + "常见原因：第 1 步的关联没有真正生效（未连库时需使用随包快照或导入项目 zip），"
+      + "常见原因：第 1 步的关联没有真正生效（未连库时需要先导入项目 zip），"
       + "或关联目标解析失败。请回到第 1 步确认「关联」仍处于选中状态后重新生成。");
   }
   const notes = notesList.length

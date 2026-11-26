@@ -16,6 +16,7 @@ import urllib.request
 
 from pp6kit import spec as S
 from tests._harness import case, field, native_zip, simple_package, skip, xlsx
+from tests._projfields import project_fields
 
 _SERVER: dict = {}
 
@@ -371,33 +372,34 @@ def _():
 @case("WEB24", "webui", "解析接口带回 projectAlign，且预览里的字段编码已是对齐后的（预览=产物）",
       "P0", ["前端零业务规则", "linked/summary/items 三键齐全", "预览即产物"])
 def _():
-    linked = xlsx({
-        S.S_BO: [{"对象名称": "合同", "对象编码": "contract", "物理表名": "pp_contract",
-                  "对象类型": "object", "记录变更日志": "是", "流程驱动": "否",
-                  "关联项目": "是"}],
-        S.S_FIELD: [field("contract", "项目编号", "字符串"),
-                    field("contract", "项目状态", "对象",
-                          **{"关联对象/字典": "project_state"})],
-    })
-    status, _, body = req("/api/parse", linked,
-                          {"Content-Type": "application/octet-stream"})
-    assert status == 200, body[:300]
-    data = json.loads(body)
-    vm = data["projectAlign"]
-    for key in ("status", "snapshotSource", "snapshotSourceLabel", "warnings",
-                "summary", "items"):
-        assert key in vm, key
-    item = vm["items"][0]
-    assert item["linked"] is True
-    assert item["linkField"]["action"] in ("add", "reuse"), item["linkField"]
-    assert "exact" in item and "similar" in item and "conflicts" in item
-    # 页签说的是「会变成 stateId」，对象卡片里就必须已经是 stateId——
-    # 否则用户看到两套编码，而只有出包那份是真的（预览≠产物）
-    codes = {f["code"] for f in data["objects"][0]["fields"]}
-    assert "stateId" in codes, codes
-    assert "code" in codes, codes
-    # 链接字段在预览里也要在（出包时 builder 不会再补第二次）
-    assert "projectId" in codes, codes
+    with project_fields():
+        linked = xlsx({
+            S.S_BO: [{"对象名称": "合同", "对象编码": "contract", "物理表名": "pp_contract",
+                      "对象类型": "object", "记录变更日志": "是", "流程驱动": "否",
+                      "关联项目": "是"}],
+            S.S_FIELD: [field("contract", "项目编号", "字符串"),
+                        field("contract", "项目状态", "对象",
+                              **{"关联对象/字典": "project_state"})],
+        })
+        status, _, body = req("/api/parse", linked,
+                              {"Content-Type": "application/octet-stream"})
+        assert status == 200, body[:300]
+        data = json.loads(body)
+        vm = data["projectAlign"]
+        for key in ("status", "snapshotSource", "snapshotSourceLabel", "warnings",
+                    "summary", "items"):
+            assert key in vm, key
+        item = vm["items"][0]
+        assert item["linked"] is True
+        assert item["linkField"]["action"] in ("add", "reuse"), item["linkField"]
+        assert "exact" in item and "similar" in item and "conflicts" in item
+        # 页签说的是「会变成 stateId」，对象卡片里就必须已经是 stateId——
+        # 否则用户看到两套编码，而只有出包那份是真的（预览≠产物）
+        codes = {f["code"] for f in data["objects"][0]["fields"]}
+        assert "stateId" in codes, codes
+        assert "code" in codes, codes
+        # 链接字段在预览里也要在（出包时 builder 不会再补第二次）
+        assert "projectId" in codes, codes
 
 
 @case("WEB25", "webui", "X-Project-Link 不是合法 JSON → 400，且不产出半份包", "P1",
@@ -848,80 +850,81 @@ def _():
 @case("WEB39", "webui", "界面选的返回/过滤/联动真进产物：6_数据集 行 → linkdata + 联动 + 过滤",
       "P0", ["预览=产物", "需求 3/4", "sourceConfig 往返"])
 def _():
-    from pp6kit import webui
-    from tests._harness import read_xlsx_rows
+    with project_fields():
+        from pp6kit import webui
+        from tests._harness import read_xlsx_rows
 
-    cfg = {"custom": True, "filterField": "xiangMuLeiXing",
-           "resultFields": ["id", "name", "zhuanYe"],
-           "linkage": [{"name": "zhuan_ye_", "field": "zhuanYe", "label": "专业"}]}
-    payload = {
-        "bo": {"code": "qavs", "name": "面板用例", "fields": [
-            {"code": "suoShuXiangMu", "name": "所属项目", "type": "object",
-             "objectType": "project", "sourceConfig": dict(cfg)},
-            {"code": "xiangMuLeiXing", "name": "项目类型", "type": "object",
-             "objectType": "classification"},
-            {"code": "zhuanYe", "name": "专业", "type": "varchar"},
-        ]},
-        "form": {"key": "create_qavs", "name": "新建面板用例", "layout": 2, "fields": [
-            {"name": "suoShuXiangMu", "label": "所属项目", "type": "linkdata"},
-            {"name": "xiangMuLeiXing", "label": "项目类型", "type": "select"},
-            {"name": "zhuanYe", "label": "专业", "type": "text"},
-        ]},
-    }
-    excel, _ = webui.ai_apply_bo(payload)
+        cfg = {"custom": True, "filterField": "xiangMuLeiXing",
+               "resultFields": ["id", "name", "zhuanYe"],
+               "linkage": [{"name": "zhuan_ye_", "field": "zhuanYe", "label": "专业"}]}
+        payload = {
+            "bo": {"code": "qavs", "name": "面板用例", "fields": [
+                {"code": "suoShuXiangMu", "name": "所属项目", "type": "object",
+                 "objectType": "project", "sourceConfig": dict(cfg)},
+                {"code": "xiangMuLeiXing", "name": "项目类型", "type": "object",
+                 "objectType": "classification"},
+                {"code": "zhuanYe", "name": "专业", "type": "varchar"},
+            ]},
+            "form": {"key": "create_qavs", "name": "新建面板用例", "layout": 2, "fields": [
+                {"name": "suoShuXiangMu", "label": "所属项目", "type": "linkdata"},
+                {"name": "xiangMuLeiXing", "label": "项目类型", "type": "select"},
+                {"name": "zhuanYe", "label": "专业", "type": "text"},
+            ]},
+        }
+        excel, _ = webui.ai_apply_bo(payload)
 
-    # ① Excel 里能看到用户选的那一行（不是只活在内存里）。
-    # 2026-11-19 起值来源单独一张 6.1_值来源（不再写 6_数据集），
-    # 列口径也跟着变：目标对象写「对象编码」而不是「主表名」，
-    # 也没有「类型」列（表名本身就说清了是值来源）。
-    rows = [r for r in read_xlsx_rows(excel, S.S_VALUE)
-            if str(r.get("值来源key") or "").strip()
-            and not str(r.get("值来源key")).strip().startswith("#")]
-    assert len(rows) == 1, rows
-    assert rows[0]["对象编码"] == "project", rows[0]
-    assert rows[0]["自动"] == "否", rows[0]
-    assert rows[0]["过滤字段"] == "xiangMuLeiXing", rows[0]
-    assert rows[0]["返回字段"] == "id,name,zhuanYe", rows[0]
-    # ② 联动映射也跟着 Excel 走（否则换台机器就丢）
-    # 只取新建表单那一段：详情表单里同一个字段是 selectObject，混在一起会被覆盖
-    ctrl = {r["字段编码"]: r for r in read_xlsx_rows(excel, S.S_FORMFIELD)
-            if str(r.get("字段编码") or "").strip()
-            and not str(r.get("字段编码")).startswith("#")
-            and r.get("表单key") == "create_qavs"}
-    assert ctrl["suoShuXiangMu"]["控件类型"] == "linkdata", ctrl["suoShuXiangMu"]
-    assert "zhuan_ye_" in str(ctrl["suoShuXiangMu"]["联动字段"]), ctrl["suoShuXiangMu"]
+        # ① Excel 里能看到用户选的那一行（不是只活在内存里）。
+        # 2026-11-19 起值来源单独一张 6.1_值来源（不再写 6_数据集），
+        # 列口径也跟着变：目标对象写「对象编码」而不是「主表名」，
+        # 也没有「类型」列（表名本身就说清了是值来源）。
+        rows = [r for r in read_xlsx_rows(excel, S.S_VALUE)
+                if str(r.get("值来源key") or "").strip()
+                and not str(r.get("值来源key")).strip().startswith("#")]
+        assert len(rows) == 1, rows
+        assert rows[0]["对象编码"] == "project", rows[0]
+        assert rows[0]["自动"] == "否", rows[0]
+        assert rows[0]["过滤字段"] == "xiangMuLeiXing", rows[0]
+        assert rows[0]["返回字段"] == "id,name,zhuanYe", rows[0]
+        # ② 联动映射也跟着 Excel 走（否则换台机器就丢）
+        # 只取新建表单那一段：详情表单里同一个字段是 selectObject，混在一起会被覆盖
+        ctrl = {r["字段编码"]: r for r in read_xlsx_rows(excel, S.S_FORMFIELD)
+                if str(r.get("字段编码") or "").strip()
+                and not str(r.get("字段编码")).startswith("#")
+                and r.get("表单key") == "create_qavs"}
+        assert ctrl["suoShuXiangMu"]["控件类型"] == "linkdata", ctrl["suoShuXiangMu"]
+        assert "zhuan_ye_" in str(ctrl["suoShuXiangMu"]["联动字段"]), ctrl["suoShuXiangMu"]
 
-    # ③ 再出包：这些配置要真的落到 XML（预览=产物）
-    import io
-    import re
-    import zipfile
+        # ③ 再出包：这些配置要真的落到 XML（预览=产物）
+        import io
+        import re
+        import zipfile
 
-    body, _ = webui.build_zip(excel)
-    zf = zipfile.ZipFile(io.BytesIO(body))
-    xmls = {n: zf.read(n).decode() for n in zf.namelist() if n.endswith(".xml")}
-    form = next(t for n, t in xmls.items()
-                if n.startswith("form/") and 'key="create_qavs"' in t)
-    frag = next(f for f in re.findall(r"<formField\b[^>]*>", form)
-                if 'name="suoShuXiangMu"' in f)
-    opts = json.loads(re.search(r'fieldOptions="([^"]*)"', frag).group(1)
-                      .replace("&quot;", '"').replace("&amp;", "&"))
-    assert opts["linkdata"] == "project_value", opts.get("linkdata")
-    by_name = {it["name"]: it["field"] for it in opts["link_linkage"]}
-    assert by_name.get("zhuan_ye_") == "zhuanYe", by_name
-    assert by_name.get("id_") == "" and by_name.get("name_") == "", by_name
-    cond = (opts.get("link_condition") or [None])[0]
-    assert cond and cond["value"] == "xiangMuLeiXing", opts.get("link_condition")
+        body, _ = webui.build_zip(excel)
+        zf = zipfile.ZipFile(io.BytesIO(body))
+        xmls = {n: zf.read(n).decode() for n in zf.namelist() if n.endswith(".xml")}
+        form = next(t for n, t in xmls.items()
+                    if n.startswith("form/") and 'key="create_qavs"' in t)
+        frag = next(f for f in re.findall(r"<formField\b[^>]*>", form)
+                    if 'name="suoShuXiangMu"' in f)
+        opts = json.loads(re.search(r'fieldOptions="([^"]*)"', frag).group(1)
+                          .replace("&quot;", '"').replace("&amp;", "&"))
+        assert opts["linkdata"] == "project_value", opts.get("linkdata")
+        by_name = {it["name"]: it["field"] for it in opts["link_linkage"]}
+        assert by_name.get("zhuan_ye_") == "zhuanYe", by_name
+        assert by_name.get("id_") == "" and by_name.get("name_") == "", by_name
+        cond = (opts.get("link_condition") or [None])[0]
+        assert cond and cond["value"] == "xiangMuLeiXing", opts.get("link_condition")
 
-    ds = next(t for n, t in xmls.items()
-              if n.startswith("data_template/") and 'key="project_value"' in t)
-    jesc = lambda s: s.replace("&quot;", '"')      # noqa: E731
-    cols = [c["name"] for c in json.loads(
-        jesc(re.search(r'resultColumns="([^"]*)"', ds).group(1)))]
-    assert "id_" in cols and "zhuan_ye_" in cols, cols
-    rules = json.loads(jesc(re.search(r'filterConditions="([^"]*)"', ds).group(1)))
-    rule = rules[0]["filter"]["rules"][0]
-    assert rule["field"] == "classification_id_", rule
-    assert rule["rule_id"] == cond["rule_id"], (rule, cond)
+        ds = next(t for n, t in xmls.items()
+                  if n.startswith("data_template/") and 'key="project_value"' in t)
+        jesc = lambda s: s.replace("&quot;", '"')      # noqa: E731
+        cols = [c["name"] for c in json.loads(
+            jesc(re.search(r'resultColumns="([^"]*)"', ds).group(1)))]
+        assert "id_" in cols and "zhuan_ye_" in cols, cols
+        rules = json.loads(jesc(re.search(r'filterConditions="([^"]*)"', ds).group(1)))
+        rule = rules[0]["filter"]["rules"][0]
+        assert rule["field"] == "classification_id_", rule
+        assert rule["rule_id"] == cond["rule_id"], (rule, cond)
 
 
 @case("WEB40", "webui", "面板默认态不当用户配置；custom+空返回列按「只返回主键/名称」兜底",

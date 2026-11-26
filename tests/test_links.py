@@ -23,6 +23,7 @@ from pp6kit import projlink
 from pp6kit import spec as S
 from pp6kit import webui
 from tests._harness import case, field, pick, skip, texts, xlsx
+from tests._projfields import project_fields
 
 
 def build(sheets: dict) -> bytes:
@@ -645,83 +646,86 @@ def _only_system_dataset_key(code: str):
 @case("LNK17", "links", "编辑态按「有没有值来源」分流：关联XX=linkdata，普通关联字段=selectObject",
       "P0", ["样本 suoShuXiangMu=linkdata / xiangMuLeiXing=selectObject"])
 def lnk17():
-    restore = _only_system_dataset_key("classification")
-    try:
-        data = build(other_link_sheets(with_type_field=True))
-    finally:
-        restore()
+    with project_fields():
+        restore = _only_system_dataset_key("classification")
+        try:
+            data = build(other_link_sheets(with_type_field=True))
+        finally:
+            restore()
 
-    create = _form_xml(data, "create_fuKuan")
-    # ① 「所属项目」建了随包值来源 → linkdata
-    proj = _field_options(create, "projectId")
-    assert str(proj.get("linkdata") or "").startswith("project_value"), proj
-    _ds_xml(data, proj["linkdata"])
+        create = _form_xml(data, "create_fuKuan")
+        # ① 「所属项目」建了随包值来源 → linkdata
+        proj = _field_options(create, "projectId")
+        assert str(proj.get("linkdata") or "").startswith("project_value"), proj
+        _ds_xml(data, proj["linkdata"])
 
-    # ② 「项目类型」只有系统 dataSet 的 key（包里没有同名 dataTemplate）→
-    #    出成系统原本的对象选择器，而不是指向空 key 的 linkdata
-    cls = _field_options(create, "classificationId")
-    assert cls.get("boCode") == "classification", cls
-    assert cls.get("store") == "id", cls
-    assert cls.get("linkdata") is None, cls
-    assert "value_source" not in cls and "datasource" not in cls, cls
+        # ② 「项目类型」只有系统 dataSet 的 key（包里没有同名 dataTemplate）→
+        #    出成系统原本的对象选择器，而不是指向空 key 的 linkdata
+        cls = _field_options(create, "classificationId")
+        assert cls.get("boCode") == "classification", cls
+        assert cls.get("store") == "id", cls
+        assert cls.get("linkdata") is None, cls
+        assert "value_source" not in cls and "datasource" not in cls, cls
 
-    # ③ 详情/条件专用两张都是 selectObject
-    for key in ("detail_fuKuan", "fetch_basic_fuKuan_information"):
-        det = _field_options(_form_xml(data, key), "classificationId")
-        assert det.get("boCode") == "classification" and det.get("store") == "id", det
-        assert det.get("linkdata") is None, det
+        # ③ 详情/条件专用两张都是 selectObject
+        for key in ("detail_fuKuan", "fetch_basic_fuKuan_information"):
+            det = _field_options(_form_xml(data, key), "classificationId")
+            assert det.get("boCode") == "classification" and det.get("store") == "id", det
+            assert det.get("linkdata") is None, det
 
-    # ④ 降级要说明原因：用户填了值来源就能拿回 linkdata。
-    # 提示里的表名 2026-11-19 起改成「6.1_值来源 或 6_数据集」：值来源单独成表了，
-    # 老工作簿写在 6_数据集 里的行仍然认，所以两个都提。
-    note = zipfile.ZipFile(io.BytesIO(data)).comment.decode("utf-8", "replace")
-    assert "控件「项目类型」改用对象选择器（该字段没有值来源；" \
-           "需要联动/过滤请在 6.1_值来源 或 6_数据集 里建值来源）" in note, note[-800:]
+        # ④ 降级要说明原因：用户填了值来源就能拿回 linkdata。
+        # 提示里的表名 2026-11-19 起改成「6.1_值来源 或 6_数据集」：值来源单独成表了，
+        # 老工作簿写在 6_数据集 里的行仍然认，所以两个都提。
+        note = zipfile.ZipFile(io.BytesIO(data)).comment.decode("utf-8", "replace")
+        assert "控件「项目类型」改用对象选择器（该字段没有值来源；" \
+               "需要联动/过滤请在 6.1_值来源 或 6_数据集 里建值来源）" in note, note[-800:]
 
 
 @case("LNK18", "links", "值来源的表名只有一个真相：dataSet.from 与首条 dataTemplateField 都是物理表",
       "P0", ["样本 <dataSet key=project from=pp_project>", "FROM 编码 = FROM 不存在的表"])
 def lnk18():
-    data = build(other_link_sheets())
-    xml = _ds_xml(data, "project_value")
-    frag = re.search(r"<dataSet\b[^>]*>", xml)
-    assert frag, xml[:600]
-    tag = frag.group(0)
-    assert 'from="pp_project"' in tag, tag
-    # 写对象编码的话，值来源取数时 FROM 的是一张不存在的表
-    assert 'from="project"' not in tag, tag
-    # 反解来的包可能已经带 pp_ 前缀：不要给人家再套一层
-    assert 'from="pp_pp_project"' not in tag, tag
+    with project_fields():
+        data = build(other_link_sheets())
+        xml = _ds_xml(data, "project_value")
+        frag = re.search(r"<dataSet\b[^>]*>", xml)
+        assert frag, xml[:600]
+        tag = frag.group(0)
+        assert 'from="pp_project"' in tag, tag
+        # 写对象编码的话，值来源取数时 FROM 的是一张不存在的表
+        assert 'from="project"' not in tag, tag
+        # 反解来的包可能已经带 pp_ 前缀：不要给人家再套一层
+        assert 'from="pp_pp_project"' not in tag, tag
 
-    # 首条 dataTemplateField = 表名行，必须与 dataSet.from 同一个值；
-    # label 是**目标对象显示名**（样本「项目」），不是值来源名
-    #「项目值来源」——写成对象编码 + 值来源名的话，同一份 XML 里 dataSet 说
-    # pp_project、表名行说 project，设计器按表名对数时对不上。
-    first = re.search(r"<dataTemplateField\b[^>]*>", xml).group(0)
-    assert 'name="pp_project"' in first, first
-    assert 'objName="pp_project"' in first, first
-    assert 'label="项目"' in first, first
-    assert 'name="project"' not in first.replace('name="pp_project"', ""), first
+        # 首条 dataTemplateField = 表名行，必须与 dataSet.from 同一个值；
+        # label 是**目标对象显示名**（样本「项目」），不是值来源名
+        #「项目值来源」——写成对象编码 + 值来源名的话，同一份 XML 里 dataSet 说
+        # pp_project、表名行说 project，设计器按表名对数时对不上。
+        first = re.search(r"<dataTemplateField\b[^>]*>", xml).group(0)
+        assert 'name="pp_project"' in first, first
+        assert 'objName="pp_project"' in first, first
+        assert 'label="项目"' in first, first
+        assert 'name="project"' not in first.replace('name="pp_project"', ""), first
 
 
 @case("LNK19", "links", "显式配了 6_数据集值来源的关联字段保持 linkdata，不被降级成对象选择器",
       "P0", ["6_数据集 = 用户明确要的值来源", "别把配好的降级"])
 def lnk19():
-    sheets = other_link_sheets(with_type_field=True)
-    sheets[S.S_DATASET] = [{
-        "数据集key": "classification_value", "数据集名称": "项目类型值来源",
-        "主表名": "classification", "类型": "valueSource", "返回字段": "id,name"}]
-    data = build(sheets)
+    with project_fields():
+        sheets = other_link_sheets(with_type_field=True)
+        sheets[S.S_DATASET] = [{
+            "数据集key": "classification_value", "数据集名称": "项目类型值来源",
+            "主表名": "classification", "类型": "valueSource", "返回字段": "id,name"}]
+        data = build(sheets)
 
-    opts = _field_options(_form_xml(data, "create_fuKuan"), "classificationId")
-    assert opts.get("linkdata") == "classification_value", opts
-    assert (opts.get("link_config") or {}).get("id") == "id_", opts
-    # 这份值来源必须随包走（否则 linkdata 又是一个包外 key）
-    ds = _ds_xml(data, "classification_value")
-    assert 'from="pp_classification"' in re.search(r"<dataSet\b[^>]*>", ds).group(0)
-    # 降级提示不该出现在这条路径上
-    note = zipfile.ZipFile(io.BytesIO(data)).comment.decode("utf-8", "replace")
-    assert "控件「项目类型」改用对象选择器" not in note, note[-400:]
+        opts = _field_options(_form_xml(data, "create_fuKuan"), "classificationId")
+        assert opts.get("linkdata") == "classification_value", opts
+        assert (opts.get("link_config") or {}).get("id") == "id_", opts
+        # 这份值来源必须随包走（否则 linkdata 又是一个包外 key）
+        ds = _ds_xml(data, "classification_value")
+        assert 'from="pp_classification"' in re.search(r"<dataSet\b[^>]*>", ds).group(0)
+        # 降级提示不该出现在这条路径上
+        note = zipfile.ZipFile(io.BytesIO(data)).comment.decode("utf-8", "replace")
+        assert "控件「项目类型」改用对象选择器" not in note, note[-400:]
 
 
 # ---------------------------------------------------------------- LNK20–LNK24
@@ -1217,34 +1221,35 @@ def lnk26():
        "数字字段即使文案同名也不绑（不把字符串塞进数字控件）",
        "一个控件只承接一列（多列文案相同时先到先得）"])
 def _():
-    excel, _ = webui.ai_apply_bo({
-        "bo": {"code": "purchase_apply", "name": "采购申请", "fields": [
-            {"code": "projectId", "name": "项目选择", "type": "object",
-             "objectType": "project"},
-            {"code": "projectName", "name": "项目名称", "type": "varchar",
-             "length": 200},
-            {"code": "code", "name": "项目编号", "type": "varchar", "length": 50},
-            {"code": "amount", "name": "项目名称", "type": "number"},
-        ]},
-        "form": {"key": "create_purchase_apply", "name": "新建采购申请", "fields": [
-            {"name": "projectId", "label": "项目选择", "type": "linkdata"},
-            {"name": "projectName", "label": "项目名称", "type": "text"},
-            {"name": "code", "label": "项目编号", "type": "text"},
-            {"name": "amount", "label": "项目名称", "type": "number"},
-        ]},
-    })
-    body, _ = webui.build_zip(excel)
-    opts = _field_options(_form_xml(body, "create_purchase_apply"), "projectId")
-    by_name = {it["name"]: it["field"] for it in opts["link_linkage"]}
+    with project_fields():
+        excel, _ = webui.ai_apply_bo({
+            "bo": {"code": "purchase_apply", "name": "采购申请", "fields": [
+                {"code": "projectId", "name": "项目选择", "type": "object",
+                 "objectType": "project"},
+                {"code": "projectName", "name": "项目名称", "type": "varchar",
+                 "length": 200},
+                {"code": "code", "name": "项目编号", "type": "varchar", "length": 50},
+                {"code": "amount", "name": "项目名称", "type": "number"},
+            ]},
+            "form": {"key": "create_purchase_apply", "name": "新建采购申请", "fields": [
+                {"name": "projectId", "label": "项目选择", "type": "linkdata"},
+                {"name": "projectName", "label": "项目名称", "type": "text"},
+                {"name": "code", "label": "项目编号", "type": "text"},
+                {"name": "amount", "label": "项目名称", "type": "number"},
+            ]},
+        })
+        body, _ = webui.build_zip(excel)
+        opts = _field_options(_form_xml(body, "create_purchase_apply"), "projectId")
+        by_name = {it["name"]: it["field"] for it in opts["link_linkage"]}
 
-    # ① 文案同名：项目对象的 name_ 显示名是「项目名称」，本对象的 projectName
-    #    也叫「项目名称」、物理列却不同（name_ vs project_name_）→ 必须带上。
-    assert by_name["name_"] == "projectName", by_name
-    # ② 老口径：物理列名同名的照样绑（code_ 与本对象 code）
-    assert by_name["code_"] == "code", by_name
-    # ③ 数字字段文案也叫「项目名称」，但类型不是文本 → 不许绑
-    assert by_name.get("amount_", "") != "amount", by_name
-    # ④ 一个控件不能同时接两列：name_ 已占用 projectName，没有第二列再绑它
-    assert [k for k, v in by_name.items() if v == "projectName"] == ["name_"], by_name
-    # ⑤ id_ 是主键，永远只回显
-    assert by_name["id_"] == "", by_name
+        # ① 文案同名：项目对象的 name_ 显示名是「项目名称」，本对象的 projectName
+        #    也叫「项目名称」、物理列却不同（name_ vs project_name_）→ 必须带上。
+        assert by_name["name_"] == "projectName", by_name
+        # ② 老口径：物理列名同名的照样绑（code_ 与本对象 code）
+        assert by_name["code_"] == "code", by_name
+        # ③ 数字字段文案也叫「项目名称」，但类型不是文本 → 不许绑
+        assert by_name.get("amount_", "") != "amount", by_name
+        # ④ 一个控件不能同时接两列：name_ 已占用 projectName，没有第二列再绑它
+        assert [k for k, v in by_name.items() if v == "projectName"] == ["name_"], by_name
+        # ⑤ id_ 是主键，永远只回显
+        assert by_name["id_"] == "", by_name

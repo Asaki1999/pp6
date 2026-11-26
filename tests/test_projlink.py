@@ -27,6 +27,7 @@ from pp6kit.model import Bo, BoField
 from pp6kit.reader import read_workbook
 from tests._harness import (all_tags, attrs, case, field, pick, read_xlsx_rows,
                             skip, texts, unzip, xlsx)
+from tests._projfields import project_fields
 
 # ---------------------------------------------------------------- 固定样本
 
@@ -746,17 +747,18 @@ def _():
 @case("PL21", "projlink", "对齐带来的 stateId/projectId 不再报「建议去掉 Id 后缀」，自建 contractId 照报",
       "P1", ["命名白名单", "报告不再自相矛盾"])
 def _():
-    data = sheets([field("contract", "项目状态", "对象",
-                         **{"关联对象/字典": "project_state"}),
-                   field("contract", "合同ID", "字符串", **{"字段编码": "contractId"})],
-                  bos=[bo_row(关联项目="是")])
-    with using():
-        result = webui.parse_excel(xlsx(data))
-    msgs = [i["message"] for i in result["issues"]]
-    assert not any("stateId 建议去掉 Id 后缀" in m for m in msgs), msgs
-    assert not any("projectId 建议去掉" in m for m in msgs), msgs
-    # 用户自建的 contractId 仍然该提醒（规则本身没被废掉）
-    assert any("contractId 建议去掉 Id 后缀" in m for m in msgs), msgs
+    with project_fields():
+        data = sheets([field("contract", "项目状态", "对象",
+                             **{"关联对象/字典": "project_state"}),
+                       field("contract", "合同ID", "字符串", **{"字段编码": "contractId"})],
+                      bos=[bo_row(关联项目="是")])
+        with using():
+            result = webui.parse_excel(xlsx(data))
+        msgs = [i["message"] for i in result["issues"]]
+        assert not any("stateId 建议去掉 Id 后缀" in m for m in msgs), msgs
+        assert not any("projectId 建议去掉" in m for m in msgs), msgs
+        # 用户自建的 contractId 仍然该提醒（规则本身没被废掉）
+        assert any("contractId 建议去掉 Id 后缀" in m for m in msgs), msgs
 
 
 @case("PL22", "projlink", "复用已有链接字段时也要补表单控件，且重复出包不重复 append",
@@ -3480,56 +3482,57 @@ def _():
              "值来源 = 主键 + 全部业务字段", "默认不带过滤条件",
              "联动列不悬空（都在返回列里）"])
 def _():
-    from pp6kit import links
+    with project_fields():
+        from pp6kit import links
 
-    body, _n = webui.ai_apply_bo(
-        {"bo": {"code": "caigou", "name": "采购申请", "fields": [
-            {"code": "shenQingDanHao", "name": "申请单号", "type": "varchar", "length": 64},
-            {"code": "zhuanYe", "name": "专业", "type": "varchar", "length": 200},
-        ]}}, None, None, pl_header({}))
-    zip_body, _c = webui.build_zip(body, [], projlink_header=pl_header({}))
-    ts = texts(zip_body)
+        body, _n = webui.ai_apply_bo(
+            {"bo": {"code": "caigou", "name": "采购申请", "fields": [
+                {"code": "shenQingDanHao", "name": "申请单号", "type": "varchar", "length": 64},
+                {"code": "zhuanYe", "name": "专业", "type": "varchar", "length": 200},
+            ]}}, None, None, pl_header({}))
+        zip_body, _c = webui.build_zip(body, [], projlink_header=pl_header({}))
+        ts = texts(zip_body)
 
-    def form_order(kind: str):
-        xml = _entry(zip_body, "form/", kind).replace("&quot;", '"')
-        seq = re.findall(r'<formField[^>]*name="([^"]+)"[^>]*fieldType="([^"]+)"', xml)
-        # 去掉容器（分组/表格布局），剩下的第一个就是控件顺序的第一位
-        return [(n, t) for n, t in seq if t not in
-                ("fieldset", "grid_layout", "card", "tabs", "tablelayout")]
+        def form_order(kind: str):
+            xml = _entry(zip_body, "form/", kind).replace("&quot;", '"')
+            seq = re.findall(r'<formField[^>]*name="([^"]+)"[^>]*fieldType="([^"]+)"', xml)
+            # 去掉容器（分组/表格布局），剩下的第一个就是控件顺序的第一位
+            return [(n, t) for n, t in seq if t not in
+                    ("fieldset", "grid_layout", "card", "tabs", "tablelayout")]
 
-    create = form_order("create_")
-    assert create[0] == ("projectId", "linkdata"), f"新建表单没置顶/不是 linkdata：{create}"
-    for kind in ("detail_", "fetch_basic_"):
-        got = form_order(kind)
-        assert got[0] == ("projectId", "selectObject"), \
-            f"{kind} 表单里的关联字段不是 selectObject 且置顶：{got}"
-    # 详情/条件表单里不许出现 linkdata（那是新建页的控件类型）
-    for kind in ("detail_", "fetch_basic_"):
-        assert '"linkdata"' not in _entry(zip_body, "form/", kind).replace(
-            "&quot;", '"'), f"{kind} 里出现了 linkdata 控件"
+        create = form_order("create_")
+        assert create[0] == ("projectId", "linkdata"), f"新建表单没置顶/不是 linkdata：{create}"
+        for kind in ("detail_", "fetch_basic_"):
+            got = form_order(kind)
+            assert got[0] == ("projectId", "selectObject"), \
+                f"{kind} 表单里的关联字段不是 selectObject 且置顶：{got}"
+        # 详情/条件表单里不许出现 linkdata（那是新建页的控件类型）
+        for kind in ("detail_", "fetch_basic_"):
+            assert '"linkdata"' not in _entry(zip_body, "form/", kind).replace(
+                "&quot;", '"'), f"{kind} 里出现了 linkdata 控件"
 
-    # 值来源：主键 + 全部业务字段，且默认不带过滤
-    dt = next(t for n, t in ts.items()
-              if n.startswith("data_template/") and 'key="project_value"' in t)
-    cols = [c["name"] for c in json.loads(
-        re.search(r'resultColumns="([^"]*)"', dt).group(1)
-        .replace("&quot;", '"').replace("&amp;", "&"))]
-    want, _picked = links.LinkPlan(None).target("project").result_list(
-        None, all_fields=True)
-    assert cols == [f.column for f in want], (len(cols), len(want))
-    assert cols[0] == "id_", f"主键不在第一列：{cols[:3]}"
-    assert "filterConditions" not in dt, "默认不该带过滤条件"
+        # 值来源：主键 + 全部业务字段，且默认不带过滤
+        dt = next(t for n, t in ts.items()
+                  if n.startswith("data_template/") and 'key="project_value"' in t)
+        cols = [c["name"] for c in json.loads(
+            re.search(r'resultColumns="([^"]*)"', dt).group(1)
+            .replace("&quot;", '"').replace("&amp;", "&"))]
+        want, _picked = links.LinkPlan(None).target("project").result_list(
+            None, all_fields=True)
+        assert cols == [f.column for f in want], (len(cols), len(want))
+        assert cols[0] == "id_", f"主键不在第一列：{cols[:3]}"
+        assert "filterConditions" not in dt, "默认不该带过滤条件"
 
-    # 联动列必须都能在返回列里找到（悬空 = 点上没反应，且界面上看不出来）
-    create_xml = _entry(zip_body, "form/", "create_").replace("&quot;", '"')
-    m = re.search(r'"link_linkage":(\[.*?\]),"read_rights"', create_xml)
-    assert m, "新建表单里没有 link_linkage"
-    linkage = json.loads(m.group(1))
-    assert linkage, "link_linkage 是空的"
-    dangling = [it["name"] for it in linkage if it["name"] not in cols]
-    assert not dangling, f"联动列不在值来源返回列里：{dangling}"
-    assert any(it.get("field") == "zhuanYe" for it in linkage), \
-        "同名业务列（专业 → zhuan_ye_）没有自动联动"
+        # 联动列必须都能在返回列里找到（悬空 = 点上没反应，且界面上看不出来）
+        create_xml = _entry(zip_body, "form/", "create_").replace("&quot;", '"')
+        m = re.search(r'"link_linkage":(\[.*?\]),"read_rights"', create_xml)
+        assert m, "新建表单里没有 link_linkage"
+        linkage = json.loads(m.group(1))
+        assert linkage, "link_linkage 是空的"
+        dangling = [it["name"] for it in linkage if it["name"] not in cols]
+        assert not dangling, f"联动列不在值来源返回列里：{dangling}"
+        assert any(it.get("field") == "zhuanYe" for it in linkage), \
+            "同名业务列（专业 → zhuan_ye_）没有自动联动"
 
 
 @case("PL81", "projlink", "两条 AI 入口同口径：一句话生成与上传表格的「项目选择」完全一致",
@@ -3659,22 +3662,23 @@ def _():
 # 以及万一关联还是没生效，预览里必须醒目说出来。
 
 
-@case("PL83", "projlink", "没连库也没本地缓存：随包快照的来源标成 package_snapshot，不是 target_db",
-      "P0", ["assets/project_fields.json 里的 source=target_db 不许冒充「目标库」",
-             "sourceLabel 变「随包快照」，UI 才不会让人以为库是连着的",
-             "字段数仍 ≥ 30、status 仍是 ok（判档不许被改坏）"])
+@case("PL83", "projlink", "没连库也没本地缓存：快照标成 unavailable，不再有随包兜底", "P0",
+      ["assets/project_fields.json 已移除（2026-11-27 用户要求去掉随包快照）",
+       "load_snapshot 只剩 上传 token → 目标库缓存 → unavailable",
+       "不可用时字段为空、status=unavailable"])
 def _():
-    """随包那份 JSON 是 `dump_project_fields.py` 从库里导的，文件里 source 写的是
-    `target_db`；`_load_file` 会照文件覆盖传入的档位。不显式纠正的话
-    `/api/project-snapshot` 在干净环境返回 `source=target_db`，界面显示
-    「当前快照：目标库」却又要求导入项目 zip —— 自相矛盾。
-    """
-    asset = Path(projlink.resource_root()) / "assets" / "project_fields.json"
-    if not asset.is_file():
-        skip("没有 assets/project_fields.json：随包快照用例跳过")
+    """随包快照只补链接字段、不做同名对齐，却是第三套来源：用户以为字段被
+    偷偷降级。现在没连库就只有「导入项目 zip」一条路，读不到就是读不到。"""
+    root = Path(__file__).resolve().parents[1]
+    assert not (root / "assets" / "project_fields.json").exists(), \
+        "assets/project_fields.json 还在：随包快照没删干净"
+    # 缓存文件名还叫 project_fields.json（~/.pp6kit 下那份是连库刷回的），
+    # 要断言的是「不再读 assets/ 里打进包的那份」
+    src = (root / "pp6kit" / "projlink.py").read_text(encoding="utf-8")
+    assert '"assets" / "project_fields.json"' not in src, \
+        "projlink 里还在读随包快照"
 
     real = projlink.snapshot_cache_path
-    # 指到一个不存在的临时路径 = 干净环境（没有连库刷过的缓存），不碰真实用户目录
     tmp = Path(tempfile.mkdtemp()) / "no-such-dir" / "project_fields.json"
     projlink.snapshot_cache_path = lambda: tmp
     projlink.clear_cache()
@@ -3684,61 +3688,52 @@ def _():
         projlink.snapshot_cache_path = real
         projlink.clear_cache()
 
-    assert snap.source == "package_snapshot", \
-        f"随包快照被标成了 {snap.source}（会显示成「目标库」）"
-    assert snap.label() == "随包快照", snap.label()
-    assert snap.project.get("code") == "project", snap.project
-    assert len(snap.fields) >= projlink.MIN_SNAPSHOT_FIELDS, len(snap.fields)
-    assert snap.status == "ok", f"{snap.status}（{len(snap.fields)} 字段）"
-    assert not any(snap.source == s for s in ("target_db", "unavailable")), snap.source
+    assert snap.source == "unavailable", snap.source
+    assert snap.label() == "无", snap.label()
+    assert snap.fields == [], len(snap.fields)
+    assert snap.status == "unavailable", snap.status
+    assert any("未上传" in w for w in snap.warnings), snap.warnings
+
+    # 编码白名单是另一层模块缓存：刷新快照 / 换库后必须一起失效，
+    # 否则 stateId 这类原生编码会一直被当成「命名不规范」（PL21 踩过）
+    assert "clear_cache" in src and "_PROJECT_CODES_CACHE = None" in src, \
+        "clear_cache 没有连编码白名单一起清"
 
 
-@case("PL84", "projlink", "没连库但随包快照够用：弹窗给「使用随包快照」并 resolve true，不再逼导 zip",
-      "P0", ["#psCancel 文案是「使用随包快照（51 个字段）」且点击 resolve true",
-             "主按钮是「使用随包快照」（primary），「导入 zip（刷新）」降为次按钮——别把「去找 zip」做成主推",
-             "标题不再写「导入项目 zip」，改成「关联项目：选择字段来源」",
-             "快照不可用时退回「取消」→ resolve false，主/次按钮还原",
-             "每次打开显式重设处理器：上一次的「使用随包快照」不漏到下一次"])
+@case("PL84", "projlink", "没连库时弹窗只给「导入项目 zip」，取消即不关联", "P0",
+      ["#psPick 是主按钮，文案「选择项目 zip」；取消是次按钮",
+       "标题就是「导入项目 zip」，不再出现「使用随包快照」",
+       "取消 resolve false（本次不关联），不是静默放行",
+       "连库但对象名没命中 → 首段文案说明读不到该对象字段",
+       "上传过 zip → 状态行显示来源与字段数"])
 def _():
-    """用户「没有 zip」时点取消就丢掉了关联，这是本次 bug 的断点。
-    探针真跑 app.js（node + 最小 DOM stub），不是 grep 字符串。
-    """
+    """用户「没有 zip」时点取消就丢掉了关联；现在把这条唯一路径写清楚，
+    而不是再给一个「用随包快照凑合」的半吊子选项。探针真跑 app.js。"""
     out = _probe_frontend("fe_projlink_snapshot_probe.js")
-    ok = out["E_usable"]
-    assert ok["maskHidden"] is False, "弹窗没打开"
-    assert ok["cancelText"].startswith("使用随包快照"), ok["cancelText"]
-    assert "51" in ok["cancelText"], ok["cancelText"]
-    assert ok["cancelIsFn"] is True, "#psCancel 没有挂处理器"
-    assert out["E_usableResolve"] is True, out["E_usableResolve"]
-    assert "刷新" in ok["pickText"], ok["pickText"]
-    # 主/次不能反：推荐动作是「直接用随包快照」，去找 zip 是补充选项
-    assert ok["cancelPrimary"] is True and ok["cancelGhost"] is False, \
-        f"「使用随包快照」不是主按钮：{ok}"
-    assert ok["pickPrimary"] is False and ok["pickGhost"] is True, \
-        f"「导入项目 zip（刷新）」还占着主按钮：{ok}"
-    assert ok["title"] == "关联项目：选择字段来源", ok["title"]
-    assert "未配置数据库" in ok["sub"] and "随包" in ok["sub"], ok["sub"]
-    assert "不做同名/相似字段对齐" in ok["lead1"], ok["lead1"]
-    assert "如需完整对齐" in ok["lead2"], ok["lead2"]
-    assert "随包快照" in ok["status"], ok["status"]
-    assert "目标库" not in ok["status"], f"还在冒充目标库：{ok['status']}"
+    a = out["E_zipOnly"]
+    assert a["maskHidden"] is False, "弹窗没打开"
+    assert a["title"] == "导入项目 zip", a["title"]
+    assert a["pickText"] == "选择项目 zip", a["pickText"]
+    assert a["pickPrimary"] is True and a["pickGhost"] is False, \
+        f"「选择项目 zip」不是主按钮：{a}"
+    assert a["cancelText"] == "取消", a["cancelText"]
+    assert a["cancelPrimary"] is False and a["cancelGhost"] is True, a
+    assert a["cancelIsFn"] is True, "#psCancel 没有挂处理器"
+    assert out["E_zipOnlyResolve"] is False, out["E_zipOnlyResolve"]
+    assert "随包" not in a["sub"] + a["lead1"] + a["lead2"] + a["status"], a
 
-    bad = out["E_unavailable"]
-    assert bad["cancelText"] == "取消", bad["cancelText"]
-    assert out["E_unavailableResolve"] is False, out["E_unavailableResolve"]
-    assert bad["pickText"] == "选择项目 zip", bad["pickText"]
-    assert bad["title"] == "导入项目 zip", bad["title"]
-    # 不可用时主/次必须还原，否则上一次的主按钮会留在那儿
-    assert bad["pickPrimary"] is True and bad["pickGhost"] is False, bad
-    assert bad["cancelPrimary"] is False and bad["cancelGhost"] is True, bad
-    assert "当前没有可用的项目字段快照" in bad["status"], bad["status"]
+    b = out["E_dbNoMatch"]
+    assert "数据库里没有名称完全一致" in b["lead1"], b["lead1"]
 
-    # A→B→A：两个方向都验证「每次打开显式重设」，否则旧处理器/旧主按钮会漏过来
+    # A→B→A：每次打开都重设，主按钮不会漏到下一次
     again = out["E_reopen"]
-    assert "使用随包快照" in again["cancelText"], again["cancelText"]
-    assert out["E_reopenResolve"] is True, out["E_reopenResolve"]
-    assert again["cancelPrimary"] is True and again["pickGhost"] is True, again
-    assert again["title"] == "关联项目：选择字段来源", again["title"]
+    assert again["pickPrimary"] is True and again["cancelGhost"] is True, again
+    assert again["title"] == "导入项目 zip", again["title"]
+    assert out["E_reopenResolve"] is False, out["E_reopenResolve"]
+
+    up = out["E_uploaded"]
+    assert "上传的项目包" in up["status"] and "42" in up["status"], up["status"]
+    assert up["pickPrimary"] is True, up
 
 
 @case("PL85", "projlink", "选了关联却没生成「项目选择」：预览里必须醒目提示（三种正常情况不提示）",
@@ -3759,11 +3754,10 @@ def _():
     assert out["F_offSilent"] is True, "关掉关联时不该提示"
 
 
-@case("PL86", "projlink", "字段来源：连库 toast 只提示一次；没连库弹「字段来源」选择",
+@case("PL86", "projlink", "字段来源：连库 toast 只提示一次；没连库必弹「导入项目 zip」",
       "P0", ["dbConfigured=true → resolve true 且不弹 #psMask",
              "toast 同时点明「已连接数据库」「字段取自库中」「无需再选项目文件」",
-             "没连库（随包快照够用）→ 弹窗主推「使用随包快照」，次选导入 zip",
-             "随包快照不可用 → 仍然弹窗拦住，取消即不继续",
+             "没连库 → 弹窗只给「选择项目 zip」，取消即不继续",
              "已有 token 的快速返回不提示"])
 def _():
     """没连库的口径有两轮用户反馈：
@@ -3787,25 +3781,22 @@ def _():
     assert len(out["G_afterNewFile"]) == 1, "换文件后提示没有重新出现"
     assert len(out["G_afterNewFile"][0]) <= 40, out["G_afterNewFile"]
 
-    # 没连库（快照够用）：弹「字段来源」选择，主推快照、次选 zip（2026-11-26 口径）
+    # 没连库：只剩导入项目 zip，弹窗拦住，取消 = 不关联
     assert out["G_noDbMaskHidden"] is False, \
-        "没连库没弹字段来源弹窗：用户找不到导入项目 zip 的入口"
-    assert "字段来源" in out["G_noDbTitle"], out["G_noDbTitle"]
-    assert "使用随包快照" in out["G_noDbCancelLabel"], out["G_noDbCancelLabel"]
-    assert "导入项目 zip" in out["G_noDbPickLabel"], out["G_noDbPickLabel"]
+        "没连库没弹 zip 弹窗：用户找不到字段定义的入口"
+    assert out["G_noDbTitle"] == "导入项目 zip", out["G_noDbTitle"]
+    assert out["G_noDbPickLabel"] == "选择项目 zip", out["G_noDbPickLabel"]
+    assert out["G_noDbCancelLabel"] == "取消", out["G_noDbCancelLabel"]
     assert out["G_noDbToasts"] == [], "弹窗之外又发 toast，两条提示打架"
-    assert out["G_noDbResolve"] is True, "选了「使用随包快照」却没继续主流程"
-    # 随包快照不可用：仍弹窗拦住，取消就不继续
-    assert out["G_noDbUnavailable"]["maskHidden"] is False, "快照不可用时没拦住"
-    assert out["G_noDbUnavailableResolve"] is False, out["G_noDbUnavailableResolve"]
+    assert out["G_noDbResolve"] is False, "取消居然继续了主流程"
     assert out["G_tokenResolve"] is True, "已有 token 的快速返回被改坏"
     assert out["G_tokenToasts"] == [], "已有 token 时不该提示"
 
 
-@case("PL87", "projlink", "点「关联」只切档不弹窗；项目字段来源改成显式入口", "P0",
+@case("PL87", "projlink", "点「关联」只切档不弹窗；导入 zip 改成显式入口", "P0",
       ["bindPlPre 切档不再调 ensureLinkTarget（弹窗就是从那儿来的）",
        "目标行有 #plProjectSrc，只在目标为项目时显示",
-       "ensureProjectSnapshot 未连库必弹字段来源选择（主推快照）"])
+       "ensureProjectSnapshot 未连库必弹 zip 弹窗"])
 def _():
     from pathlib import Path
 
@@ -3818,25 +3809,23 @@ def _():
     assert "await ensureLinkTarget()" not in seg, \
         "点关联又去做目标校验，会把项目 zip 弹窗带回来"
 
-    assert 'id="plProjectSrc"' in html, "目标行没有「项目字段来源」入口"
+    assert 'id="plProjectSrc"' in html, "目标行没有「导入项目 zip」入口"
     assert 'src.hidden = state.plTargetKind !== "project" || dbKnown' in app, \
         "入口没有按目标类型 / 连库状态显示"
 
     start = app.index("async function ensureProjectSnapshot()")
     seg = app[start:app.index("\n}\n", start)]
-    # 没连库最终都要走弹窗（2026-11-26：不弹用户找不到导 zip 的入口）；
-    # projectSnapshotUsable 的判断在弹窗内部（askProjectZip）按可用性分主次按钮
-    assert "askProjectZip(st)" in seg, \
-        "没连库没有弹「字段来源」选择弹窗"
+    # 没连库最终都要走弹窗：现在只剩导入 zip 一条路
+    assert "askProjectZip(st)" in seg, "没连库没有弹 zip 弹窗"
     assert "未连数据库" not in seg, \
         "没连库的路径又改成 toast 静默带过：用户会找不到导 zip 的入口"
     # 连库的「字段取自库中」toast 保留（那边的静默是对的）
     assert "已连接数据库" in seg, "连库时的字段来源提示被误删"
 
 
-@case("PL88", "projlink", "已连库时「项目字段来源」不出现；来源写在提示里", "P0",
-      ["连库 = 字段固定来自库，没有可选项 → 按钮不该出现（点了只会弹远处 toast）",
-       "未连库才露出按钮，点开在随包快照与项目 zip 之间换",
+@case("PL88", "projlink", "已连库不显示「导入项目 zip」；来源写在提示里", "P0",
+      ["连库 = 字段直接来自库，没有可选项 → 按钮不该出现",
+       "未连库才露出按钮，点开只做一件事：导入项目 zip",
        "提示文案直接写明当前来源，用户不必点按钮去猜",
        "探针失败不能回调渲染（会 render→probe→失败→render 空转）"])
 def _():
@@ -3847,16 +3836,16 @@ def _():
     html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
 
     assert 'id="plProjectSrc"' in html
-    assert ">项目字段来源<" in html, "按钮文案没说清是「项目」的字段来源"
+    assert ">导入项目 zip<" in html, "按钮文案没有说清点它做什么"
 
     start = app.index("function syncPlTargetUI()")
     seg = app[start:app.index("function ", start + 10)]
     assert "state.plSnapshotStatus && state.plSnapshotStatus.dbConfigured" in seg
     assert "src.hidden = state.plTargetKind !== \"project\" || dbKnown" in seg
 
-    # 提示文案：连库/未连库两种来源各一句
+    # 提示文案：连库 / 未连库各一句
     assert "字段定义取自数据库" in app
-    assert "字段来自随包快照，可换项目 zip" in app
+    assert "需先导入项目 zip 取字段定义" in app
 
     # 探针：只在成功时重渲染
     start = app.index("function probeSnapshotStatus()")

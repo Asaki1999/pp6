@@ -12,6 +12,7 @@ from pp6kit import spec as S
 from pp6kit import webui
 from tests._harness import (all_tags, attrs, attr_of, case, field, pick,
                             project_of, sample_zip, texts, unzip, xlsx, xml_ok)
+from tests._projfields import project_fields
 
 
 def build(sheets: dict) -> bytes:
@@ -1288,29 +1289,30 @@ def _vs_payload(value_sources=None) -> dict:
        "关闭后不出 data_template XML，控件 fieldType 变 selectObject",
        "经 Excel 往返（build_zip 直接读这份 Excel）关闭状态仍生效"])
 def _():
-    import io as _io
-    import zipfile as _zf
+    with project_fields():
+        import io as _io
+        import zipfile as _zf
 
-    from pp6kit import webui as W
+        from pp6kit import webui as W
 
-    got = W.ai_value_sources(_vs_payload())
-    items = got["valueSources"]
-    filtered = [it for it in items if it["origin"] == "filtered"]
-    assert filtered, [(it["key"], it["origin"]) for it in items]
-    target = filtered[0]
-    assert target["toggleable"] is True and target["enabled"] is True
-    auto = [it for it in items if it["origin"] == "auto"]
-    assert auto and not any(it["toggleable"] for it in auto), \
-        [(it["key"], it["origin"], it["toggleable"]) for it in items]
+        got = W.ai_value_sources(_vs_payload())
+        items = got["valueSources"]
+        filtered = [it for it in items if it["origin"] == "filtered"]
+        assert filtered, [(it["key"], it["origin"]) for it in items]
+        target = filtered[0]
+        assert target["toggleable"] is True and target["enabled"] is True
+        auto = [it for it in items if it["origin"] == "auto"]
+        assert auto and not any(it["toggleable"] for it in auto), \
+            [(it["key"], it["origin"], it["toggleable"]) for it in items]
 
-    body, _ = W.ai_apply_bo(_vs_payload([{"key": target["key"], "enabled": False}]))
-    zb, _ = W.build_zip(body, [], {})
-    z = _zf.ZipFile(_io.BytesIO(zb))
-    names = z.namelist()
-    assert not any(n.endswith(f"{target['key']}.xml") for n in names), names
-    form_xml = z.read(next(n for n in names if n.startswith("form/"))).decode()
-    seg = form_xml.split('name="projectId"', 1)[1][:240]
-    assert 'fieldType="selectObject"' in seg, seg
+        body, _ = W.ai_apply_bo(_vs_payload([{"key": target["key"], "enabled": False}]))
+        zb, _ = W.build_zip(body, [], {})
+        z = _zf.ZipFile(_io.BytesIO(zb))
+        names = z.namelist()
+        assert not any(n.endswith(f"{target['key']}.xml") for n in names), names
+        form_xml = z.read(next(n for n in names if n.startswith("form/"))).decode()
+        seg = form_xml.split('name="projectId"', 1)[1][:240]
+        assert 'fieldType="selectObject"' in seg, seg
 
 
 @case("BO47", "bo", "值来源只有三类用途：自定义新增已移除，传进来也不出包", "P1",
@@ -1435,13 +1437,14 @@ def _():
       ["关闭 project_value", "列表那列从 linkdata 变成 selectObject",
        "field_options 里不再有 linkdata key"])
 def _():
-    cols, _ = _list_cols([{"key": "project_value", "enabled": False}])
-    by = {c["name"]: c for c in cols}
-    proj = by["project_id_"]
-    assert proj["field_type"] == "selectObject", proj["field_type"]
-    assert "linkdata" not in proj["field_options"], proj["field_options"]
-    assert proj["field_options"]["boCode"] == "project"
-    assert proj.get("displayName") == "project_name", proj.get("displayName")
+    with project_fields():
+        cols, _ = _list_cols([{"key": "project_value", "enabled": False}])
+        by = {c["name"]: c for c in cols}
+        proj = by["project_id_"]
+        assert proj["field_type"] == "selectObject", proj["field_type"]
+        assert "linkdata" not in proj["field_options"], proj["field_options"]
+        assert proj["field_options"]["boCode"] == "project"
+        assert proj.get("displayName") == "project_name", proj.get("displayName")
 
 
 @case("BO50", "bo", "详情表单的关联对象一律 selectObject，不再挂着值来源（AI 路径）", "P0",

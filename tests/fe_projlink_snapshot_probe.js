@@ -113,21 +113,25 @@ vm.runInContext(src + "\n;globalThis.__state = state;", ctx, { filename: FILE })
 const st = ctx.__state;
 const out = {};
 
-/* ---------------- E · 「使用随包快照」真的能 resolve true ---------------- */
+/* ---------------- E · 没连库时只能导 zip（随包快照已移除） ---------------- */
 
 // 让 vm 里的微任务跑完（ensureProjectSnapshot 是 async，弹窗渲染发生在 await 之后）
 function flush() {
   return new Promise((r) => setImmediate(r));
 }
 
-const USABLE = {
-  ok: true, dbConfigured: false, source: "package_snapshot",
-  sourceLabel: "随包快照", fieldCount: 51,
-  generatedAt: "2026-11-14T17:52:44+08:00", status: "ok",
-};
 const UNAVAILABLE = {
   ok: true, dbConfigured: false, source: "unavailable",
   sourceLabel: "无", fieldCount: 0, generatedAt: "", status: "unavailable",
+};
+const DB_NO_MATCH = {
+  ok: true, dbConfigured: true, source: "unavailable",
+  sourceLabel: "无", fieldCount: 0, generatedAt: "", status: "unavailable",
+};
+const UPLOADED = {
+  ok: true, dbConfigured: false, source: "package_upload",
+  sourceLabel: "上传的项目包", fieldCount: 42,
+  generatedAt: "2026-11-20T10:00:00+08:00", status: "ok",
 };
 
 function resetSnapshotState() {
@@ -151,9 +155,7 @@ async function openModalWith(status) {
   q("#psSub").textContent = "";
   q("#psLead2").innerHTML = "";
   ctx.fetch = async () => ({ ok: true, json: async () => status });
-  // 直接调 askProjectZip：ensureProjectSnapshot 在「随包快照够用」时会静默放行，
-  // 不再打开弹窗（2026-11-24 用户反馈「点关联就跳项目弹窗」）。弹窗自身的
-  // 文案/主次按钮/处理器仍要逐条验证，所以从这里进。
+  // 直接调 askProjectZip：弹窗自身的文案 / 主次按钮 / 处理器要逐条验证。
   const pending = ctx.askProjectZip(status);
   for (let i = 0; i < 40 && q("#psMask").hidden; i += 1) await flush();
   return { pending };
@@ -212,28 +214,32 @@ function linkField() {
 }
 
 async function main() {
-  /* 场景 A：随包快照可用 → 取消键就是「使用随包快照」，点了 resolve true */
-  let { pending: p } = await openModalWith(USABLE);
+  /* 场景 A：没连库、也没有任何字段定义 → 只能导 zip；取消 = 本次不关联 */
+  let { pending: p } = await openModalWith(UNAVAILABLE);
   const a = modalSnapshot();
-  out.E_usable = a;
+  out.E_zipOnly = a;
   if (a.cancelIsFn) q("#psCancel").onclick();
-  out.E_usableResolve = await p;
+  out.E_zipOnlyResolve = await p;
 
-  /* 场景 B：快照不可用 → 退回「取消」，点了 resolve false
-   * （同时证明上一次的「使用随包快照」处理器没有漏过来） */
-  p = (await openModalWith(UNAVAILABLE)).pending;
+  /* 场景 B：连库但对象名没命中 → 说明读不到该对象字段（不是「没连库」） */
+  p = (await openModalWith(DB_NO_MATCH)).pending;
   const b = modalSnapshot();
-  out.E_unavailable = b;
+  out.E_dbNoMatch = b;
   if (b.cancelIsFn) q("#psCancel").onclick();
-  out.E_unavailableResolve = await p;
+  out.E_dbNoMatchResolve = await p;
 
-  /* 场景 C：再打开一次可用的 → 文案与处理器必须回到「使用随包快照」
-   *（顺序 A→B→A：两个方向都测了一遍「每次打开显式重设」） */
-  p = (await openModalWith(USABLE)).pending;
+  /* 场景 C：再打开一次 → 文案 / 主次 / 处理器必须重置（A→B→A） */
+  p = (await openModalWith(UNAVAILABLE)).pending;
   const c = modalSnapshot();
   out.E_reopen = c;
   if (c.cancelIsFn) q("#psCancel").onclick();
   out.E_reopenResolve = await p;
+
+  /* 场景 D：上传过项目 zip（有字段）→ 状态行显示来源与字段数 */
+  p = (await openModalWith(UPLOADED)).pending;
+  out.E_uploaded = modalSnapshot();
+  if (out.E_uploaded.cancelIsFn) q("#psCancel").onclick();
+  out.E_uploadedResolve = await p;
 
   /* ---------------- G · 连库时：非阻塞提示（真跑 ensureProjectSnapshot） ----------------
    * 用户把「连库静默跳过 zip 弹窗」误认成弹窗被删了。这里验证：
@@ -282,45 +288,27 @@ async function main() {
   await callWithDb();
   out.G_afterNewFile = toasts.slice();
 
-  /* 没连库（随包快照够用）：弹「字段来源」选择弹窗——主按钮「使用随包快照」，
-   * 次按钮「导入项目 zip」。2026-11-26 用户要求恢复弹窗：不弹他找不到导 zip
-   * 的入口。导过 zip 有 token 后不再弹（G_token 场景管）。 */
-  const NO_DB_OK = {
-    ok: true, dbConfigured: false, source: "package_snapshot",
-    sourceLabel: "随包快照", fieldCount: 51, status: "ok",
+  /* 没连库：只剩「导入项目 zip」一条路（随包快照 2026-11-27 已移除）。
+     ensureProjectSnapshot 必须弹窗拦住：没有字段定义就没法对齐，
+     取消 = 本次不关联（返回 false）。 */
+  const NO_DB_EMPTY = {
+    ok: true, dbConfigured: false, source: "unavailable",
+    sourceLabel: "无", fieldCount: 0, status: "unavailable",
   };
   toasts.length = 0;               // 清掉 G_db 段遗留，别让它混进本段断言
   resetSnapshotState();
   st.plDbHintShown = false;
   q("#psMask").hidden = true;
-  ctx.fetch = async () => ({ ok: true, json: async () => NO_DB_OK });
-  const okPending = ctx.ensureProjectSnapshot();
+  ctx.fetch = async () => ({ ok: true, json: async () => NO_DB_EMPTY });
+  const noDbPending = ctx.ensureProjectSnapshot();
   for (let i = 0; i < 40 && q("#psMask").hidden; i += 1) await flush();
   out.G_noDbMaskHidden = q("#psMask").hidden;          // false = 弹了
   out.G_noDbTitle = q("#psTitle").textContent;
-  out.G_noDbCancelLabel = q("#psCancel").textContent;  // 主按钮：使用随包快照
-  out.G_noDbPickLabel = q("#psPick").textContent;      // 次按钮：导入项目 zip（刷新）
-  out.G_noDbToasts = toasts.slice();                   // 提示靠弹窗本身，不用 toast
-  if (q("#psCancel").onclick) q("#psCancel").onclick(); // 选「使用随包快照」
-  out.G_noDbResolve = await okPending;
-
-  // 快照不可用：仍然必须拦住（这里才该弹窗，取消即不继续）
-  const NO_DB_BAD = {
-    ok: true, dbConfigured: false, source: "unavailable",
-    fieldCount: 0, status: "unavailable",
-  };
-  const badPending = (await (async () => {
-    resetSnapshotState();
-    st.plDbHintShown = false;
-    q("#psMask").hidden = true;
-    ctx.fetch = async () => ({ ok: true, json: async () => NO_DB_BAD });
-    const pending = ctx.ensureProjectSnapshot();
-    for (let i = 0; i < 40 && q("#psMask").hidden; i += 1) await flush();
-    return { pending };
-  })()).pending;
-  out.G_noDbUnavailable = { maskHidden: q("#psMask").hidden, title: q("#psTitle").textContent };
-  if (q("#psCancel").onclick) q("#psCancel").onclick();
-  out.G_noDbUnavailableResolve = await badPending;
+  out.G_noDbCancelLabel = q("#psCancel").textContent;  // 次按钮：取消
+  out.G_noDbPickLabel = q("#psPick").textContent;      // 主按钮：选择项目 zip
+  out.G_noDbToasts = toasts.slice();                   // 说明在弹窗里，不另发 toast
+  if (q("#psCancel").onclick) q("#psCancel").onclick(); // 取消 = 不关联
+  out.G_noDbResolve = await noDbPending;
 
   // 已有上传 token：快速返回，不读状态接口、不提示
   resetSnapshotState();
