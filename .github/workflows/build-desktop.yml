@@ -1,12 +1,12 @@
 name: build-desktop
 
-# 打包 Windows + macOS 并发布到 Release（公开附件可匿名下载，不必登录）：
-#   - push 到 main（含每日定时提交）→ 滚动更新 nightly prerelease，同事永远从同一链接拿最新版
-#   - 推 v* tag → 正式版 Release，设为 Latest、保留版本号
-#   - 推 test* tag（test0.01、test0.02…）→ 测试发版 Release，设为 Latest、按 tag 名保留版本
-# 三条路径共用 build + release 两段；build 之前先过 regress（回归不过不发版）。
-# release 单独成 job：两个平台不再各自写同一个 Release（2026-11-27 并发更新 nightly
-# 时 macOS 拿到 "Server Error"），而是等两边产物都就绪后一次性上传。
+# 打包 Windows + macOS；只有推 test* tag 才发布到 Release：
+#   - push 到 main（含每日定时提交）→ 只跑 regress + 打包，不发布任何 Release
+#   - 推 test* tag（test0.01、test0.02…）→ 测试发版 Release，设为 Latest
+# 不再滚动更新 nightly prerelease（2026-11-27 用户决定：以后只打 test release）。
+# build 之前先过 regress（回归不过不发版）。
+# release 单独成 job：两个平台不再各自写同一个 Release（并发更新 nightly 时
+# macOS 拿到 "Server Error"），而是等两边产物都就绪后一次性上传。
 on:
   workflow_dispatch:
   push:
@@ -15,7 +15,6 @@ on:
     branches:
       - main
     tags:
-      - "v*"
       - "test*"
 
 permissions:
@@ -117,17 +116,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-desktop.txt
 
-      # 版本号必须来自「这次构建实际是什么」：tag 用 tag 名，main 用日期。
+      # 版本号必须来自「这次构建实际是什么」：test tag 用 tag 名，main 只是 dev 构建。
       # 关于页、更新检查、日志排查都读这份指纹；写死常量会三处对不上。
       - name: 写入构建版本
         shell: bash
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/test* ]]; then
             VERSION="$GITHUB_REF_NAME"
             CHANNEL="release"
           else
-            VERSION="nightly-$(date -u +%Y%m%d)"
-            CHANNEL="nightly"
+            VERSION="dev-$(date -u +%Y%m%d)"
+            CHANNEL="dev"
           fi
           python tools/stamp_version.py --version "$VERSION" \
             --commit "${GITHUB_SHA:0:7}" --channel "$CHANNEL" \
@@ -262,17 +261,13 @@ jobs:
 
   # 公开仓库的 Release 附件可匿名下载，所以把包挂在 Release 上，
   # 不依赖登录态去翻 Actions 的 Artifacts。
-  # main 与 tag 都发：分支用固定的 nightly tag 滚动更新（标为 prerelease，
-  # 不占 Latest）；tag 推送（v* 正式版本 / test* 测试发版）用自身 tag 名、
-  # 设为 Latest。两者互不干扰。
+  # 只有推 test* tag 才发：用 tag 名作版本，设为 Latest、非 prerelease。
+  # main push 不进这里，只做构建验证；不再有 nightly。
   # 必须等 build 全绿：少一边就别发半套包。
   release:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/test')
     runs-on: ubuntu-latest
-    if: >-
-      github.ref == 'refs/heads/main' ||
-      startsWith(github.ref, 'refs/tags/v') ||
-      startsWith(github.ref, 'refs/tags/test')
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -282,10 +277,10 @@ jobs:
       - name: 发布到 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/test')) && github.ref_name || 'nightly' }}
+          tag_name: ${{ github.ref_name }}
           target_commitish: ${{ github.sha }}
-          prerelease: ${{ !(startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/test')) }}
-          make_latest: ${{ startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/test') }}
+          prerelease: false
+          make_latest: true
           files: |
             release-artifacts/PP6ImportBuilder-windows.zip
             release-artifacts/PP6-Studio-macos.zip

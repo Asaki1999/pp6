@@ -1191,8 +1191,8 @@ Windows 上双击 exe 是「再开一个进程」，旧进程不退出时仍占�
 
 改这块之前先读 `pp6kit/updater.py` 顶部注释，几条硬约束：
 
-- 只查 GitHub `releases/latest`；`nightly` 是 prerelease，不会被当成最新。
-  发版要把 `test*` / `v*` 设为 Latest（workflow 已处理）；
+- 只查 GitHub `releases/latest`；现在只有推 `test*` tag 才发 Release 并设为 Latest，
+  main push 只构建验证、不再滚动更新 `nightly`（workflow 已处理）；
 - 附件名必须保持 `PP6-Studio-macos.zip` / `PP6ImportBuilder-windows.zip`，
   改名要同步 `updater.ASSETS`；
 - Python 的 TLS 被公司网络拦截时自动改用系统 `curl`（仍走 HTTPS，不降级明文）；
