@@ -230,9 +230,34 @@ def _schema_block(pack: SchemaPack, tables: list[str],
     return "\n".join(lines)
 
 
+def context_block(context: dict | None) -> list[str]:
+    """上一轮的问答，拼进提示词的一段。
+
+    追问是这个工具里最常发生的事：「只看执行中的」「按项目分组」「再按时间排」。
+    不把上一轮的 SQL 给模型，它只能从头猜一遍，等于每句话都要重说完整需求。
+
+    最后那句「无关就忽略」是必须的：用户也可能突然换话题，硬套上一轮的
+    WHERE 会得到一条看起来合理、其实答的是上一题的 SQL。
+    """
+    if not isinstance(context, dict):
+        return []
+    sql = str(context.get("sql") or "").strip()
+    if not sql:
+        return []
+    q = str(context.get("question") or "").strip()
+    return [
+        "", "=== 上一轮查询（用户这次是接着问） ===",
+        f"上一轮问题：{q or '（未记录）'}",
+        f"上一轮 SQL：{sql}",
+        "新要求是在这条 SQL 基础上的调整：只改需要改的部分，其余保持不变。",
+        "如果新问题与上一轮完全无关，就忽略这段，按新问题重新生成。",
+    ]
+
+
 def build_messages(pack: SchemaPack, question: str, examples: list[dict] | None = None,
                    pinned: list[str] | None = None,
-                   instructions: str = "") -> list[dict]:
+                   instructions: str = "",
+                   context: dict | None = None) -> list[dict]:
     tables = select_tables(pack, question, pinned=pinned)
     parts = [SYSTEM]
     if instructions:
@@ -253,6 +278,7 @@ def build_messages(pack: SchemaPack, question: str, examples: list[dict] | None 
         for ex in examples[:6]:
             tag = "【已验证】" if ex.get("verified") or ex.get("source") == "corrected" else ""
             parts.append(f"{tag}问题：{ex['question']}\nSQL：{ex['sql']}")
+    parts += context_block(context)
     parts += ["", "=== 待回答 ===", f"问题：{question}", "SQL："]
     return [
         {"role": "system", "content": "\n".join(parts)},
@@ -307,7 +333,8 @@ def ask(conn, pack: SchemaPack, question: str, cfg: dict,
         examples: list[dict] | None = None,
         pinned: list[str] | None = None,
         instructions: str = "",
-        on_delta=None) -> dict:
+        on_delta=None,
+        context: dict | None = None) -> dict:
     """生成 + 执行；失败时把错误回灌给模型重试一次。
 
     多平台：cfg 里有多个渠道时，按顺序尝试，限流/失败自动切下一家。
@@ -323,7 +350,7 @@ def ask(conn, pack: SchemaPack, question: str, cfg: dict,
 
     allowed = set(pack.tables) | guard.PARTY_TABLES | {"iform_cat_dic", "iform_cat_type"}
     messages = build_messages(pack, question, examples, pinned=pinned,
-                              instructions=instructions)
+                              instructions=instructions, context=context)
 
     # on_delta 非空 = 调用方要流式：把首字尽早吐出去，别让用户盯着黑屏。
     # 重试路径（下面两处）仍走非流式——第一版 SQL 已经显示在用户眼前了，

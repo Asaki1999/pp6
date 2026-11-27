@@ -1149,6 +1149,26 @@ def _schema():
     return pack
 
 
+def nlq_actions() -> dict:
+    """助手动作清单：前端菜单只认这一份，后端 assist 也只认这一份。
+
+    以前菜单写在前端、动作校验写在后端，两边各改一次必然漂移；
+    现在清单由后端下发，加一个动作只改 assist.ACTIONS。
+    """
+    from .nlq import assist as nlq_assist
+
+    out = nlq_assist.catalog()
+    db = _db_conf()
+    out.update({
+        "ok": True,
+        "ready": {
+            "llm": bool(nlq_llm.active_channels(_llm_conf())),
+            "db": bool(db.get("database")),
+        },
+    })
+    return out
+
+
 def nlq_config() -> dict:
     db = dict(_db_conf())
     llm = _llm_conf()
@@ -2771,6 +2791,74 @@ def nlq_test() -> dict:
     }
 
 
+def _nlq_assist(payload: dict, mode: str, action: str, question: str,
+                sql_in: str, on_delta=None, on_event=None) -> dict:
+    """助手动作入口：DBX 那套 Ask / Agent 菜单（见 nlq/assist.py）。
+
+    与老的 engine 分支有两点不同，都是为了「不执行也能用」：
+      1. 问句闸只拦**会执行**的动作。解释一条 DELETE 不碰库，不该被当成注入。
+      2. Ask 里的解释/改写/方言/通用问答不连库也能跑，只是看不到表结构。
+    """
+    from .nlq import assist as nlq_assist
+
+    spec = nlq_assist.find_action(mode, action)
+    sql = nlq_assist._pick_sql(sql_in, question)
+    concrete = nlq_assist.resolve(mode, action, bool(sql))
+    executes = bool(spec["executes"]) or concrete in ("generate", "query")
+
+    if executes:
+        nlq_guard.screen_question(question)
+
+    cfg = _llm_conf()
+    conn = None
+    try:
+        try:
+            conn = _connect()
+            pack = _schema()
+        except Exception:
+            # 没连库时只有「读文本」的动作能继续，别的都该如实报错
+            if executes or nlq_assist.needs_db(concrete) or mode == "agent":
+                raise
+            pack = nlq_introspect.SchemaPack("", "")
+            conn = None
+
+        allowed = set(pack.tables) | nlq_guard.PARTY_TABLES | {"iform_cat_dic", "iform_cat_type"}
+
+        from .nlq import mentions as nlq_mentions
+        pinned, question = nlq_mentions.parse(pack, question)
+
+        if executes and not payload.get("clarified"):
+            from .nlq import clarify as nlq_clarify
+            clar = nlq_clarify.check(question)
+            if clar:
+                return {"sql": "", "columns": [], "rows": [],
+                        "clarify": clar,
+                        "source": "需要确认时间范围",
+                        "origin": "clarify", "origin_label": "待确认",
+                        "question": question}
+
+        body = dict(payload)
+        body.update({"mode": mode, "action": action, "question": question,
+                     "sql": sql, "pinned": pinned,
+                     "instructions": nlq_store.load_instructions()})
+        try:
+            want = nlq_engine.select_tables(pack, question or sql, pinned=pinned)
+        except Exception:
+            want = pinned
+        try:
+            body["examples"] = nlq_store.pick_examples(question or sql, tables=want)
+        except Exception:
+            body["examples"] = []
+        return nlq_assist.run(conn, pack, body, cfg, allowed,
+                              on_delta=on_delta, on_event=on_event)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _nlq_ask_impl(payload: dict, on_delta=None, on_event=None) -> dict:
     """engine: hybrid（默认）/ local / llm / auto / agent
 
@@ -2782,6 +2870,25 @@ def _nlq_ask_impl(payload: dict, on_delta=None, on_event=None) -> dict:
     on_event 是 agent 模式的工具进度（正在查哪张表），与 delta 分开走。
     """
     question = (payload.get("question") or "").strip()
+    action = (payload.get("action") or "").strip().lower()
+    mode = (payload.get("mode") or "").strip().lower()
+    # 追问上下文：上一轮的问句与 SQL。前端在结果出来后挂上，用户点 × 就清掉。
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else None
+
+    # 新版前端发 mode=ask|agent + action=<动作名>，走助手动作体系。
+    # 老前端（含回归里的直接调用）仍发 engine=...，下面原样保留。
+    #
+    # Ask·自动走 engine="auto"：**配了 Key 就直接交给大模型**，模型全挂或没配
+    # Key 才回退本地规则。2026-11-27 用户明确否掉了原来的「规则优先」——
+    # 规则引擎（local.py 那套打分选表）覆盖有限，让它先跑等于让一个猜得不准的
+    # 东西决定答案，猜错才叫 AI 补救。规则现在只在没得选时才上。
+    if mode == "ask" and action == "auto":
+        payload = dict(payload, engine="auto")
+    elif mode in ("ask", "agent") and action:
+        return _nlq_assist(payload, mode, action, question,
+                           (payload.get("sql") or "").strip(),
+                           on_delta=on_delta, on_event=on_event)
+
     if not question:
         raise ValueError("问题不能为空")
     # 第一道闸：问句层。破坏性意图/注入片段在这里就拒，**不产生任何 SQL**，
@@ -2824,11 +2931,12 @@ def _nlq_ask_impl(payload: dict, on_delta=None, on_event=None) -> dict:
                     tables=nlq_engine.select_tables(pack, question, pinned=pinned)),
                 pinned=pinned,
                 instructions=nlq_store.load_instructions(),
-                on_event=on_event)
+                on_event=on_event,
+                context=context)
 
         if mode == "llm":
             return _ask_ai(conn, pack, question, cfg, learn=True, pinned=pinned,
-                           on_delta=on_delta)
+                           on_delta=on_delta, context=context)
 
         if mode in ("local", "auto") and not has_key:
             return _ask_local(conn, pack, question, allowed, pinned=pinned)
@@ -2836,10 +2944,10 @@ def _nlq_ask_impl(payload: dict, on_delta=None, on_event=None) -> dict:
         if mode == "local":
             return _ask_local(conn, pack, question, allowed, pinned=pinned)
 
-        if mode == "auto":       # 旧行为：有 key 就直接用 AI
+        if mode == "auto":       # 有 key 就直接用 AI，模型不可用才回退规则
             try:
                 return _ask_ai(conn, pack, question, cfg, learn=True, pinned=pinned,
-                           on_delta=on_delta)
+                           on_delta=on_delta, context=context)
             except Exception as exc:
                 res = _ask_local(conn, pack, question, allowed, pinned=pinned)
                 res["source"] = f"本地规则（大模型不可用：{str(exc)[:60]}）"
@@ -2887,7 +2995,7 @@ def _nlq_ask_impl(payload: dict, on_delta=None, on_event=None) -> dict:
             ai = _ask_ai(conn, pack, question, cfg, learn=True,
                          rule_sql=res.get("sql", ""),
                          rule_rows=len(res.get("rows") or []),
-                         pinned=pinned, on_delta=on_delta)
+                         pinned=pinned, on_delta=on_delta, context=context)
         except Exception as exc:
             res["source"] += f"（AI 也失败：{str(exc)[:50]}）"
             res["ai_error"] = str(exc)[:120]
@@ -2954,7 +3062,7 @@ def _expected_tables(pack, question: str) -> list[str]:
 def _ask_ai(conn, pack, question: str, cfg: dict, learn: bool = True,
             rule_sql: str = "", rule_rows: int = 0,
             pinned: list[str] | None = None,
-            on_delta=None) -> dict:
+            on_delta=None, context: dict | None = None) -> dict:
     """走大模型；答对了就沉淀成示例，下次同类问题规则能直接命中。
 
     rule_sql / rule_rows 是规则引擎当时的结论：如果 AI 和规则**明显冲突**，
@@ -2971,7 +3079,7 @@ def _ask_ai(conn, pack, question: str, cfg: dict, learn: bool = True,
                          nlq_store.pick_examples(question, tables=want_tables),
                          pinned=pinned,
                          instructions=nlq_store.load_instructions(),
-                         on_delta=on_delta)
+                         on_delta=on_delta, context=context)
     res["source"] = "大模型生成" + (f"（{res['channel']}）" if res.get("channel") else "")
     res["origin"] = "ai"                      # 大模型生成
     res["origin_label"] = "AI 生成"
@@ -3082,14 +3190,50 @@ def _ask_local(conn, pack, question: str, allowed: set, allowed_extra: bool = Fa
     return out
 
 
+def _remember(payload: dict, res: dict, ms: int = 0) -> None:
+    """把这次查询记进「最近查询」。
+
+    只记真的给出了 SQL 的：澄清卡片和纯文字问答没有可回填的东西。
+    历史读写失败一律吞掉——记不上历史是小事，不能让它把查询结果弄丢。
+    """
+    try:
+        from .nlq import history as nlq_history
+        if not res.get("sql") or res.get("clarify"):
+            return
+        nlq_history.add(
+            question=(payload.get("question") or res.get("question") or ""),
+            sql=res["sql"],
+            mode=(payload.get("mode") or payload.get("engine") or ""),
+            action=(payload.get("action") or ""),
+            rows=len(res.get("rows") or []),
+            ms=ms,
+            origin=res.get("origin") or "",
+        )
+    except Exception:
+        pass
+
+
+def nlq_history() -> dict:
+    from .nlq import history as nlq_history_mod
+    return {"ok": True, "items": nlq_history_mod.load()}
+
+
+def nlq_history_clear() -> dict:
+    from .nlq import history as nlq_history_mod
+    nlq_history_mod.clear()
+    return {"ok": True, "items": []}
+
+
 def nlq_ask(payload: dict) -> dict:
     """对外入口：在结果上补一句「查询理解」，前端直接展示。"""
+    t0 = time.time()
     res = _nlq_ask_impl(payload)
     try:
         if res.get("sql"):
             res["summary"] = nlq_engine.explain_sql(res["sql"], _schema())
     except Exception:
         pass
+    _remember(payload, res, int((time.time() - t0) * 1000))
     return explain_result(res)
 
 
@@ -3113,11 +3257,13 @@ def nlq_ask_stream(payload: dict):
     box: _queue.Queue = _queue.Queue()
 
     def _worker() -> None:
+        t0 = time.time()
         try:
             res = _nlq_ask_impl(
                 payload,
                 on_delta=lambda piece: box.put({"stage": "delta", "delta": piece}),
                 on_event=lambda ev: box.put(ev))
+            _remember(payload, res, int((time.time() - t0) * 1000))
             box.put({"stage": "done", "result": explain_result(res)})
         except Exception as exc:      # 闸门拒绝 / 未配 Key / 所有渠道失败
             box.put({"stage": "error", "error": str(exc)})
@@ -3655,6 +3801,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "任务记录不存在或无法读取"}, 404)
         elif path == "/api/nlq/config":
             self._json(nlq_config())
+        elif path == "/api/nlq/actions":
+            self._json(nlq_actions())
+        elif path == "/api/nlq/history":
+            self._json(nlq_history())
         elif path == "/api/nlq/test":
             try:
                 self._json({"ok": True, **nlq_test()})
@@ -3811,6 +3961,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._sse(nlq_ask_stream(json.loads(self._body())))
             elif self.path == "/api/nlq/run":
                 self._json({"ok": True, **nlq_run(json.loads(self._body()))})
+            elif self.path == "/api/nlq/history/clear":
+                self._json(nlq_history_clear())
             elif self.path == "/api/nlq/verify":
                 self._json(nlq_verify(json.loads(self._body())))
             elif self.path == "/api/nlq/example":

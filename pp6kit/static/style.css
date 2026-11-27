@@ -5880,3 +5880,201 @@ body.v3 .btn.primary:disabled:hover {
 
 /* 起名中：借用编码校验那一行显示状态，避免再加一个会跳动的元素 */
 #pcCodeCheck.pc-suggesting { color: var(--muted, #6b7689); }
+
+/* ============================================================
+   SQL 助手动作菜单（DBX 的 Ask / Agent 落地层）
+   删掉这一段即回退成原来的「智能 / 查证」两个按钮；后端
+   /api/nlq/actions 与 nlq/assist.py 不受影响。
+   本层自带 @media，避免盖掉上面各层的断点。
+   ============================================================ */
+
+.q-act { position: relative; display: inline-flex; }
+
+.q-act-btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 34px; padding: 0 12px;
+  border: 1px solid var(--border-strong, #d8dee9); border-radius: 9px;
+  background: var(--surface, #fff); color: var(--text-2, #4a5568);
+  font-size: 12.5px; font-weight: 500; cursor: pointer;
+  transition: border-color .15s, background .15s, color .15s;
+}
+.q-act-btn:hover { border-color: var(--accent, #126efa); color: var(--text, #1f2430); }
+.q-act-btn[aria-expanded="true"] {
+  border-color: var(--accent, #126efa);
+  background: var(--accent-soft, #eaf2ff); color: var(--accent, #126efa);
+}
+.q-act-btn .i { width: 15px; height: 15px; }
+.q-act-chev { width: 14px; height: 14px; opacity: .55; }
+
+.q-act-menu {
+  /* 向下弹：查询页的输入框在页面顶部，向上弹会直接顶出视口 */
+  position: absolute; left: 0; top: calc(100% + 8px); z-index: 40;
+  width: 302px; padding: 6px;
+  background: #fff; border: 1px solid var(--border, #e5e8ef);
+  border-radius: 14px; box-shadow: 0 18px 48px rgba(20, 30, 50, .16);
+}
+
+.q-act-tabs {
+  display: flex; gap: 4px; padding: 4px; margin-bottom: 4px;
+  background: var(--surface-3, #f2f4f8); border-radius: 10px;
+}
+.q-act-tabs button {
+  flex: 1; height: 30px; border: none; border-radius: 8px; background: transparent;
+  color: var(--text-2, #4a5568); font-size: 12.5px; font-weight: 500; cursor: pointer;
+}
+.q-act-tabs button.on {
+  background: #fff; color: var(--text, #1f2430);
+  box-shadow: 0 1px 3px rgba(20, 30, 50, .10);
+}
+
+.q-act-list { max-height: 470px; overflow: auto; }
+
+.q-act-item {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 8px 9px; border: none; border-radius: 9px;
+  background: transparent; color: var(--text, #1f2430);
+  text-align: left; cursor: pointer; font: inherit;
+}
+.q-act-item:hover { background: var(--surface-2, #f6f8fb); }
+.q-act-item.on { background: var(--accent-soft, #eaf2ff); }
+.q-act-i {
+  width: 15px; height: 15px; flex: 0 0 15px;
+  fill: none; stroke: currentColor; stroke-width: 1.4;
+  stroke-linecap: round; stroke-linejoin: round;
+  color: var(--text-2, #4a5568);
+}
+.q-act-item.on .q-act-i { color: var(--accent, #126efa); }
+.q-act-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.q-act-text b { font-size: 12.5px; font-weight: 500; }
+.q-act-text small {
+  font-size: 11px; color: var(--muted, #6b7689);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.q-act-need {
+  flex: 0 0 auto; font-size: 10.5px; line-height: 16px; padding: 0 5px;
+  color: #b54708; background: #fff6e5; border: 1px solid #ffe1a8; border-radius: 5px;
+}
+.q-act-check {
+  width: 14px; height: 14px; flex: 0 0 14px;
+  fill: none; stroke: var(--accent, #126efa); stroke-width: 1.8;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+
+.q-dialect {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--muted, #6b7689);
+}
+.q-dialect select {
+  height: 30px; padding: 0 8px; border: 1px solid var(--border, #e5e8ef);
+  border-radius: 7px; background: #fff; color: var(--text, #1f2430); font-size: 12px;
+}
+
+/* 回答区：模型输出的是 Markdown（表格 / 列表 / 代码块），给一套克制的排版 */
+.q-answer { padding: 2px 2px 6px; font-size: 13px; line-height: 1.75; color: var(--text, #1f2430); }
+.q-answer p { margin: 0 0 8px; }
+.q-answer p:last-child { margin-bottom: 0; }
+.q-answer ul, .q-answer ol { margin: 0 0 8px; padding-left: 20px; }
+.q-answer li { margin: 2px 0; }
+.q-answer h4 { margin: 12px 0 6px; font-size: 13px; font-weight: 600; }
+.q-answer h4:first-child { margin-top: 0; }
+.q-answer code {
+  padding: 1px 4px; border-radius: 4px; background: var(--surface-3, #f2f4f8);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+}
+.q-answer .q-code {
+  margin: 8px 0; padding: 10px 12px; border-radius: 8px;
+  background: #0f172a; color: #e6edf7; overflow: auto;
+  font-size: 12px; line-height: 1.6;
+}
+.q-answer .q-code code { padding: 0; background: transparent; color: inherit; font-size: 12px; }
+.q-tbl { margin: 8px 0; overflow: auto; }
+.q-tbl table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.q-tbl th, .q-tbl td {
+  border: 1px solid var(--border, #e5e8ef); padding: 5px 8px;
+  text-align: left; vertical-align: top;
+}
+.q-tbl th { background: var(--surface-2, #f6f8fb); font-weight: 600; white-space: nowrap; }
+
+/* 未执行提示：与红色错误条分开，别让「只是没跑」看起来像「跑挂了」 */
+.q-warn {
+  margin: 8px 0 0; padding: 7px 11px; border-radius: 7px;
+  background: #fff8e8; border: 1px solid #ffe1a8; color: #8a5a00; font-size: 12px;
+}
+
+.q-err .btn { margin-top: 8px; }
+.q-err-text { white-space: pre-wrap; }
+
+@media (max-width: 720px) {
+  .q-act-menu { width: min(302px, calc(100vw - 32px)); }
+  .q-act-btn { height: 32px; padding: 0 10px; }
+  .q-act-text small { display: none; }
+  .q-dialect { display: none; }
+}
+
+/* 动作菜单要溢出卡片：.card 默认 overflow:hidden 会把下拉菜单裁成一条缝 */
+.qbox { overflow: visible; }
+
+/* ============================================================
+   连续查询：追问上下文 / 最近查询 / 结果内筛选排序
+   删掉这一段只是少三个便利入口，查询链路本身不受影响。
+   本层自带 @media，不盖上面各层的断点。
+   ============================================================ */
+
+.q-thread {
+  display: flex; align-items: center; gap: 8px;
+  margin: 8px 0 0; padding: 6px 10px; border-radius: 8px;
+  background: var(--accent-soft, #eaf2ff); border: 1px solid #d6e6ff;
+  font-size: 12px; color: var(--btn-text, #0958d9);
+}
+.q-thread-label { flex: none; opacity: .75; }
+.q-thread b {
+  font-weight: 500; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.q-thread button {
+  flex: none; margin-left: auto; width: 20px; height: 20px; line-height: 1;
+  border: none; border-radius: 5px; background: transparent;
+  color: inherit; font-size: 15px; cursor: pointer; opacity: .7;
+}
+.q-thread button:hover { background: rgba(9, 88, 217, .12); opacity: 1; }
+
+.q-hist { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; min-width: 0; }
+.q-hist-label { flex: none; font-size: 11.5px; color: var(--muted, #6b7689); }
+.q-hist-list {
+  display: flex; gap: 6px; overflow-x: auto; min-width: 0; padding-bottom: 2px;
+}
+.q-hist-item {
+  flex: none; max-width: 190px; height: 26px; padding: 0 10px;
+  border: 1px solid var(--border, #e5e8ef); border-radius: 13px;
+  background: var(--surface, #fff); color: var(--text-2, #4a5568);
+  font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer; transition: border-color .15s, color .15s;
+}
+.q-hist-item:hover {
+  border-color: var(--btn-primary, #126efa); color: var(--btn-text, #0958d9);
+}
+.q-hist-clear { flex: none; font-size: 11.5px; }
+
+/* 与 .q-meta-row 同一套内边距，工具条才不会比上面的元信息更靠边 */
+.q-tools { display: flex; align-items: center; gap: 8px; padding: 0 20px 8px; }
+.q-tools input[type="search"] {
+  width: 220px; height: 30px; padding: 0 10px;
+  border: 1px solid var(--border, #e5e8ef); border-radius: 7px;
+  font-size: 12px; background: #fff; color: var(--text, #1f2430);
+}
+.q-tools input[type="search"]:focus {
+  outline: none; border-color: var(--btn-primary, #126efa);
+}
+
+/* 可排序表头：给点视觉提示，不然没人知道能点 */
+.q-result th.q-th { cursor: pointer; user-select: none; white-space: nowrap; }
+.q-result th.q-th:hover { color: var(--btn-text, #0958d9); }
+.q-result th.q-th.on {
+  color: var(--btn-text, #0958d9); background: var(--accent-soft, #eaf2ff);
+}
+
+@media (max-width: 720px) {
+  .q-tools { flex-wrap: wrap; padding: 0 16px 8px; }
+  .q-tools input[type="search"] { width: 100%; }
+  .q-hist-item { max-width: 130px; }
+}

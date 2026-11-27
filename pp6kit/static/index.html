@@ -903,20 +903,46 @@
 
     <section class="card qbox" aria-label="描述查询需求">
       <textarea id="qQuestion" rows="3" placeholder="例如：列出执行中的项目，按创建时间倒序"></textarea>
+      <!-- 追问上下文：上一轮的 SQL 决定「只看执行中的」这类话能不能听懂 -->
+      <div class="q-thread" id="qThread" hidden>
+        <span class="q-thread-label">接着问</span>
+        <b id="qThreadQ"></b>
+        <button type="button" id="qThreadClear" title="清除上下文，当新问题处理">×</button>
+      </div>
+      <!-- 最近查询：问过的不用重打，点一下回填 SQL -->
+      <div class="q-hist" id="qHistBar" hidden>
+        <span class="q-hist-label">最近</span>
+        <div class="q-hist-list" id="qHistList"></div>
+        <button type="button" class="linkbtn q-hist-clear" id="qHistClear" title="清空历史">清空</button>
+      </div>
       <div class="composer-f">
         <div class="cf-l">
-          <div class="q-mode seg" id="qMode" role="group" aria-label="生成方式">
-            <button type="button" data-mode="ask" class="on"
-                    title="规则优先：简单问题直接生成，规则无法覆盖时调用大模型">智能</button>
-            <button type="button" data-mode="agent"
-                    title="查证：先核对表结构与实际取值并试运行，再给出 SQL；结果更准确，模型调用次数更多">查证</button>
+          <!-- 工作方式 + 动作：Ask 只生成/改写，Agent 会查库。
+               菜单由后端 /api/nlq/actions 下发，前端只负责画。 -->
+          <div class="q-act" id="qMode">
+            <button type="button" class="q-act-btn" id="qActBtn"
+                    aria-haspopup="true" aria-expanded="false" title="选择工作方式与动作">
+              <svg class="i"><use href="#i-spark"/></svg>
+              <span id="qActLabel">Ask · 自动</span>
+              <svg class="i q-act-chev"><use href="#i-chev"/></svg>
+            </button>
+            <div class="q-act-menu" id="qActMenu" hidden role="menu">
+              <div class="q-act-tabs" id="qActTabs" role="tablist">
+                <button type="button" data-tab="ask" class="on" role="tab">Ask</button>
+                <button type="button" data-tab="agent" role="tab">Agent</button>
+              </div>
+              <div class="q-act-list" id="qActList"></div>
+            </div>
           </div>
-          <span class="hint" id="qModeHint">规则优先，简单问题直接出结果</span>
+          <label class="q-dialect" id="qDialectWrap" hidden>转为
+            <select id="qDialect"></select>
+          </label>
+          <span class="hint" id="qModeHint">大模型直接生成，不可用时回退本地</span>
         </div>
         <div class="cf-r">
           <span class="hint">⌘Enter</span>
           <button class="btn primary lg" id="qAsk">
-            <svg class="i"><use href="#i-db"/></svg>生成 SQL 并执行
+            <svg class="i"><use href="#i-db"/></svg><span id="qAskLabel">生成 SQL 并执行</span>
           </button>
         </div>
       </div>
@@ -933,7 +959,26 @@
       </div>
       <div class="q-meta-row"><span class="hint" id="qResultMeta"></span></div>
       <div class="q-origin" id="qOrigin" hidden></div>
+      <!-- 结果内加工：几百行里找一行，比重新写一条 WHERE 快得多 -->
+      <div class="q-tools" id="qTools" hidden>
+        <input id="qFilter" type="search" placeholder="筛选当前结果…" autocomplete="off">
+        <span class="hint" id="qFilterCount"></span>
+        <span class="grow"></span>
+        <button class="btn ghost sm" id="qClearFilter" hidden>清空筛选</button>
+      </div>
       <div class="tbl-wrap q-result" id="qResult"></div>
+    </div>
+
+    <!-- 文字类动作的回答（通用问答 / 解释 SQL / 查看表结构 / 结果说明）。
+         放在结果之后、SQL 之前：先看数据，再看解释，最后才是那条 SQL。 -->
+    <div class="card" id="qAnswerCard" hidden>
+      <div class="card-head">
+        <div><h3 id="qAnswerTitle">回答</h3><div class="sub" id="qAnswerMeta"></div></div>
+        <div class="q-sql-actions">
+          <button class="btn ghost sm" id="qCopyAnswer">复制</button>
+        </div>
+      </div>
+      <div class="q-answer" id="qAnswer"></div>
     </div>
 
     <div class="card" id="qSqlCard" hidden>
@@ -945,7 +990,9 @@
           <button class="btn ghost sm" id="qRun">重新执行</button>
         </div>
       </div>
-      <textarea id="qSql" rows="7" spellcheck="false"></textarea>
+      <textarea id="qSql" rows="7" spellcheck="false"
+                placeholder="这里显示生成的 SQL，也可以直接粘贴或改写"></textarea>
+      <div class="q-warn" id="qSqlWarn" hidden></div>
       <div class="q-fixbar" id="qFixBar" hidden>
         <input id="qFixNote" type="text" maxlength="200"
                placeholder="为什么这么改？（可选，比如「我们只看未关闭的」）">

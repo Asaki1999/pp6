@@ -48,7 +48,8 @@ def run(conn, pack: SchemaPack, question: str, cfg: dict, allowed: set,
         pinned: list[str] | None = None,
         instructions: str = "",
         on_event=None,
-        max_turns: int = MAX_TURNS) -> dict:
+        max_turns: int = MAX_TURNS,
+        context: dict | None = None) -> dict:
     """跑一次 Agent 对话，返回结构与 engine.ask 一致。
 
     on_event 用来给前端推进度（{"stage": "tool", "tool": ..., "args": ...}）。
@@ -68,7 +69,8 @@ def run(conn, pack: SchemaPack, question: str, cfg: dict, allowed: set,
                 pass          # 前端断了不该拖垮查询
 
     messages = [
-        {"role": "system", "content": _system(pack, instructions, pinned, examples)},
+        {"role": "system", "content": _system(pack, instructions, pinned, examples,
+                                              context)},
         {"role": "user", "content": question},
     ]
     trace: list[dict] = []
@@ -141,7 +143,7 @@ def run(conn, pack: SchemaPack, question: str, cfg: dict, allowed: set,
 # ---------------------------------------------------------------- 内部
 
 def _system(pack: SchemaPack, instructions: str, pinned: list[str] | None,
-            examples: list[dict] | None) -> str:
+            examples: list[dict] | None, context: dict | None = None) -> str:
     parts = [
         _RULES, "",
         "=== 查证模式 ===",
@@ -162,6 +164,7 @@ def _system(pack: SchemaPack, instructions: str, pinned: list[str] | None,
         parts += ["", "=== 同库已验证的问答（照这个写法） ==="]
         for ex in examples[:4]:
             parts.append(f"问题：{ex['question']}\nSQL：{ex['sql']}")
+    parts += engine.context_block(context)
     return "\n".join(parts)
 
 

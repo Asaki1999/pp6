@@ -468,13 +468,17 @@ const ORIGIN = {
                tip: "你手工改过的 SQL，已记下并优先使用" },
   clarify: { icon: "?", label: "待确认", cls: "src-warn",
              tip: "缺关键条件，先确认再查，避免把全量历史算进去" },
+  assist: { icon: "✦", label: "AI 助手", cls: "src-ai",
+            tip: "按你选的动作（Ask / Agent）由大模型生成或解释" },
 };
 
 function originBadge(d) {
   const o = ORIGIN[d.origin] || ORIGIN.rule;
+  // 具体动作名（解释 SQL / 生成样例…）比笼统的「AI 助手」有用，优先用它
+  const label = d.origin_label || o.label;
   const model = d.origin === "ai" && d.model ? ` · ${qEsc(d.model)}` : "";
   return `<span class="src-badge ${o.cls}" title="${qEsc(o.tip)}">` +
-         `<i>${o.icon}</i>${o.label}${model}</span>`;
+         `<i>${o.icon}</i>${qEsc(label)}${model}</span>`;
 }
 
 /* 这一条是怎么来的（放 SQL 卡片标题下） */
@@ -508,6 +512,10 @@ function renderOrigin(d) {
   }
   if (d.uncertain) {
     html += `<span class="src-warn" title="${qEsc(d.uncertain)}">结果待核对</span>`;
+  }
+  // 没执行的动作必须标明：用户看到一条 SQL 很容易以为它已经跑过了
+  if (d.warning && d.sql && d.executed === false) {
+    html += `<span class="src-warn" title="${qEsc(d.warning)}">未执行</span>`;
   }
   if (d.verified) {
     html += `<span class="src-verified" title="人工确认过，已进已验证库，下次优先复用">✓ 已验证</span>`;
@@ -559,6 +567,100 @@ function renderTemplates() {
   });
 }
 
+/* ---------------- 追问上下文 ----------------
+   上一轮的 SQL 是最有用的上下文：用户说「只看执行中的」「再按项目分组」时，
+   没有它模型只能从头猜一遍，等于每句话都要重说完整需求。 */
+Q.thread = null;
+
+function paintThread() {
+  const bar = Q.get("qThread");
+  if (!bar) return;
+  const t = Q.thread;
+  bar.hidden = !t;
+  if (t) {
+    const q = (t.question || "上一轮查询").trim();
+    const el = Q.get("qThreadQ");
+    el.textContent = q.length > 28 ? q.slice(0, 28) + "…" : q;
+    el.title = q;
+  }
+}
+
+function setThread(question, sql) {
+  if (!sql) return;
+  Q.thread = { question: (question || "").trim(), sql: String(sql).trim() };
+  paintThread();
+}
+
+Q.get("qThreadClear").onclick = () => {
+  Q.thread = null;
+  paintThread();
+  toast("已清除上下文，下一句当新问题");
+};
+
+/* ---------------- 最近查询 ----------------
+   问过的不用重打。历史只存问句与 SQL，不存结果行。 */
+Q.hist = [];
+
+function shortQ(q, n) {
+  const text = String(q || "").replace(/\s+/g, " ").trim();
+  const max = n || 14;
+  return text.length > max ? text.slice(0, max) + "…" : text;
+}
+
+function paintHistory() {
+  const bar = Q.get("qHistBar");
+  const list = Q.get("qHistList");
+  if (!bar || !list) return;
+  const items = (Q.hist || []).slice(0, 6);
+  bar.hidden = !items.length;
+  list.innerHTML = items.map((h, i) =>
+    `<button type="button" class="q-hist-item" data-h="${i}"
+       title="${qEsc(h.ts + " · " + (h.rows || 0) + " 行")}">${qEsc(shortQ(h.question))}</button>`
+  ).join("");
+  list.querySelectorAll("[data-h]").forEach((btn) => {
+    btn.onclick = () => {
+      const h = Q.hist[Number(btn.dataset.h)];
+      if (!h) return;
+      Q.get("qQuestion").value = h.question || "";
+      showSql(h.sql, h.question || "", true);
+      Q.get("qErr").hidden = true;
+      Q.get("qSqlWarn").hidden = true;
+      renderOrigin({ origin: "assist", origin_label: "历史查询",
+                     source: "来自 " + h.ts });
+      setThread(h.question, h.sql);
+      clearEmpty();
+    };
+  });
+}
+
+async function loadHistory() {
+  try {
+    const d = await qApi("/api/nlq/history");
+    Q.hist = d.items || [];
+    paintHistory();
+  } catch (e) {
+    /* 后端还没有这个接口时静默：历史是加分项，不该让页面报错 */
+  }
+}
+
+Q.get("qHistClear").onclick = async () => {
+  if (!confirm("清空最近查询记录？")) return;
+  try {
+    await qApi("/api/nlq/history/clear", {});
+    Q.hist = [];
+    paintHistory();
+    toast("已清空");
+  } catch (e) { toast("清空失败：" + e.message); }
+};
+
+/* 结果表筛选 / 排序的入口 */
+Q.get("qFilter").addEventListener("input", paintTable);
+Q.get("qClearFilter").onclick = () => {
+  Q.sort = null;
+  Q.get("qFilter").value = "";
+  paintTable();
+};
+
 /* ---------------- 生成 / 执行 ---------------- */
 /* 空状态只在「这次会话第一次出结果之前」出现，一旦有 SQL 或结果就撤掉 */
 function clearEmpty() {
@@ -577,10 +679,118 @@ function showSql(sql, question, generated) {
   if (Q.get("qSaveCorrect")) syncCorrectBtn();
 }
 
+/* 极简 Markdown：只支持模型真会用的几种（代码块 / 表格 / 列表 / 小标题 / 行内代码与粗体）。
+   不引第三方库——桌面包里多一个依赖就多一份体积与升级成本。 */
+function mdLite(src) {
+  const fences = [];
+  let text = String(src || "").replace(/\r\n/g, "\n");
+  text = text.replace(/```[ \t]*[A-Za-z]*[ \t]*\n([\s\S]*?)```/g, (_, code) => {
+    fences.push(code.replace(/\n+$/, ""));
+    return `\u0000F${fences.length - 1}\u0000`;
+  });
+
+  const inline = (s) => qEsc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+
+  const cells = (row) => row.trim().replace(/^\|/, "").replace(/\|$/, "")
+    .split("|").map((c) => c.trim());
+
+  const out = [];
+  const lines = text.split("\n");
+  let list = null;
+  const flush = () => { if (list) { out.push(`</${list}>`); list = null; } };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // 表格：本行以 | 开头、下一行是 |---|--- 分隔行
+    if (/^\s*\|/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+      flush();
+      const head = cells(line);
+      i += 2;
+      const body = [];
+      while (i < lines.length && /^\s*\|/.test(lines[i])) { body.push(cells(lines[i])); i++; }
+      i--;
+      out.push('<div class="q-tbl"><table><thead><tr>' +
+        head.map((c) => `<th>${inline(c)}</th>`).join("") + "</tr></thead><tbody>" +
+        body.map((r) => "<tr>" + r.map((c) => `<td>${inline(c)}</td>`).join("") + "</tr>").join("") +
+        "</tbody></table></div>");
+      continue;
+    }
+
+    const fence = line.match(/^\u0000F(\d+)\u0000$/);
+    if (fence) {
+      flush();
+      out.push(`<pre class="q-code"><code>${qEsc(fences[Number(fence[1])] || "")}</code></pre>`);
+      continue;
+    }
+
+    const head = line.match(/^(#{1,4})\s+(.*)$/);
+    if (head) { flush(); out.push(`<h4>${inline(head[2])}</h4>`); continue; }
+
+    const ul = line.match(/^\s*[-*•]\s+(.*)$/);
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (ul || ol) {
+      const want = ul ? "ul" : "ol";
+      if (list !== want) { flush(); out.push(`<${want}>`); list = want; }
+      out.push(`<li>${inline((ul || ol)[1])}</li>`);
+      continue;
+    }
+
+    if (!line.trim()) { flush(); continue; }
+
+    flush();
+    out.push(`<p>${inline(line)}</p>`);
+  }
+  flush();
+  return out.join("");
+}
+
+/* 文字类动作的标题：同一段回答，叫「SQL 解释」还是「问题在哪」，用户一眼就知道在说什么 */
+const ANSWER_TITLE = {
+  chat: "回答", explain: "SQL 解释", optimize: "改了什么", fix: "问题在哪",
+  dialect: "转换说明", sample: "样例说明", schema: "表结构",
+  run_explain: "结果说明", dryrun: "说明",
+};
+
+function renderAnswer(d) {
+  const card = Q.get("qAnswerCard");
+  if (!card) return;
+  const text = (d.answer || "").trim();
+  if (!text) { card.hidden = true; return; }
+  card.hidden = false;
+  Q.get("qAnswerTitle").textContent = ANSWER_TITLE[d.action] || "回答";
+  Q.get("qAnswerMeta").textContent = d.source || "";
+  Q.get("qAnswer").innerHTML = mdLite(text);
+}
+
+function renderSqlWarn(d) {
+  const box = Q.get("qSqlWarn");
+  if (!box) return;
+  // 执行过的不用警告；只生成 / 改写的才需要「这条还没跑」
+  const show = !!(d.sql && d.executed === false && d.warning);
+  box.hidden = !show;
+  if (show) box.textContent = d.warning;
+}
+
 function renderResult(d, ms) {
   clearEmpty();
   window.PP6QueryExplanation(d);
   if (d.clarify) return renderClarify(d);
+
+  renderAnswer(d);
+  renderSqlWarn(d);
+
+  // 只有真执行出一批列，才谈得上「结果」。解释 / 问答 / 只生成都没有结果集，
+  // 硬塞一张空结果卡会让人以为「查询成功但 0 行」。
+  const hasResult = !!(d.columns && d.columns.length);
+  if (!hasResult) {
+    Q.get("qResultCard").hidden = true;
+    Q.last = d;
+    return;
+  }
+
   Q.get("qResultCard").hidden = false;
   // 规则/记忆答的都可以一键让 AI 重答；已经是 AI 的就不用了
   const retry = Q.get("qRetryAi");
@@ -593,25 +803,90 @@ function renderResult(d, ms) {
   }
   const meta = Q.get("qResultMeta");
   const o = ORIGIN[d.origin] || ORIGIN.rule;
-  meta.innerHTML = `${d.rows.length} 行${ms ? " · " + ms + " ms" : ""}` +
-    ` <span class="src-badge ${o.cls} sm" title="${qEsc(o.tip)}">${o.icon}${o.label}</span>`;
+  const oLabel = d.origin_label || o.label;
+  // 500 行是硬上限。不标出来，用户会拿「前 500 行」当全量去汇报
+  const trunc = d.rows.length >= 500
+    ? ' <span class="src-warn" title="单次最多返回 500 行，结果可能没取全；要全量请用聚合或加筛选">可能被截断</span>'
+    : "";
+  const slow = ms && ms > 5000
+    ? ` <span class="src-warn" title="超过 5 秒，可加时间范围或索引">较慢</span>`
+    : "";
+  meta.innerHTML = `${d.rows.length} 行${ms ? " · " + ms + " ms" : ""}${trunc}${slow}` +
+    ` <span class="src-badge ${o.cls} sm" title="${qEsc(o.tip)}">${o.icon}${qEsc(oLabel)}</span>`;
+  Q.last = d;
   if (!d.rows.length) {
     // 0 行时给出诊断（表空？条件太严？取值写错？），别只丢一句"没有数据"
     const hint = d.hint
       ? `<div class="empty"><b>查询成功，无匹配结果</b><div class="empty-hint">${qEsc(d.hint)}</div></div>`
       : '<div class="empty">查询成功，无匹配数据。</div>';
     Q.get("qResult").innerHTML = hint;
-    Q.last = d;
+    if (Q.get("qTools")) Q.get("qTools").hidden = true;
     return;
   }
-  const head = d.columns.map((c) => `<th>${qEsc(c)}</th>`).join("");
-  const body = d.rows.map((r) => `<tr>${r.map((v) =>
+  // 每次换结果都重置筛选与排序，否则上一轮的排序会「莫名」套在新结果上
+  Q.sort = null;
+  if (Q.get("qFilter")) Q.get("qFilter").value = "";
+  if (Q.get("qTools")) Q.get("qTools").hidden = false;
+  paintTable();
+}
+
+/* 结果表：前端筛选 + 点表头排序。
+   几百行里找一行，比回头改 SQL 加 WHERE 快得多；也避免为了多看一眼再花一次模型调用。 */
+function paintTable() {
+  const d = Q.last;
+  if (!d || !d.columns || !d.rows) return;
+  const kw = (Q.get("qFilter") ? Q.get("qFilter").value : "").trim().toLowerCase();
+  let rows = d.rows;
+  if (kw) {
+    rows = rows.filter((r) => r.some((v) => v !== null && String(v).toLowerCase().includes(kw)));
+  }
+
+  const sort = Q.sort;
+  if (sort) {
+    rows = rows.slice().sort((a, b) => {
+      const x = a[sort.col], y = b[sort.col];
+      let cmp;
+      if (x === null || x === "") cmp = 1;
+      else if (y === null || y === "") cmp = -1;
+      else if (x !== null && y !== null && !isNaN(Number(x)) && !isNaN(Number(y))) {
+        cmp = Number(x) - Number(y);
+      } else {
+        cmp = String(x).localeCompare(String(y), "zh-CN");
+      }
+      return sort.dir === "desc" ? -cmp : cmp;
+    });
+  }
+
+  const head = d.columns.map((c, i) => {
+    const on = sort && sort.col === i;
+    const mark = on ? (sort.dir === "desc" ? " ↓" : " ↑") : "";
+    return `<th data-col="${i}" class="q-th${on ? " on" : ""}" title="点击排序">${qEsc(c)}${mark}</th>`;
+  }).join("");
+  const body = rows.map((r) => `<tr>${r.map((v) =>
     v === null || v === ""
       ? '<td class="null">—</td>'
       : `<td>${qEsc(String(v).length > 80 ? String(v).slice(0, 80) + "…" : v)}</td>`
   ).join("")}</tr>`).join("");
-  Q.get("qResult").innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
-  Q.last = d;
+
+  Q.get("qResult").innerHTML = rows.length
+    ? `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`
+    : `<div class="empty">没有匹配「${qEsc(kw)}」的行</div>`;
+
+  Q.get("qResult").querySelectorAll("th[data-col]").forEach((th) => {
+    th.onclick = () => {
+      const col = Number(th.dataset.col);
+      // 升序 → 降序 → 取消，三下回到默认顺序
+      Q.sort = (!Q.sort || Q.sort.col !== col) ? { col, dir: "asc" }
+        : (Q.sort.dir === "asc" ? { col, dir: "desc" } : null);
+      paintTable();
+    };
+  });
+
+  const cnt = Q.get("qFilterCount");
+  if (cnt) cnt.textContent = (kw || sort)
+    ? `${rows.length} / ${d.rows.length} 行` : "";
+  const clear = Q.get("qClearFilter");
+  if (clear) clear.hidden = !(kw || sort);
 }
 
 /* 缺时间范围时只问一句，点选项补进问题里再查；不打断别的查询 */
@@ -636,8 +911,8 @@ function renderClarify(d) {
     btn.onclick = () => {
       const q = Q.get("qQuestion");
       q.value = q.value.trim() + `（时间范围：${btn.dataset.opt}）`;
-      // 补完条件直接交给 AI：规则对「新增 + 时间 + 分组」这类组合容易过度解释
-      ask("llm", true);
+      // 补完条件用当前菜单的动作重跑：Ask·自动直接交给大模型，Agent 会查证
+      ask({ clarified: true });
     };
   });
   Q.last = d;
@@ -654,8 +929,8 @@ async function runSql(sql) {
     Q.get("qResultCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
   } catch (e) {
     window.PP6QueryExplanation(null);
-    Q.get("qErr").hidden = false;
-    Q.get("qErr").textContent = "执行失败：" + e.message;
+    // 执行报错把原文带上：模型拿到报错基本一次就能改对
+    renderErr("执行失败：" + e.message, { sql, error: String(e.message) });
     Q.get("qResultCard").hidden = true;
   }
 }
@@ -710,44 +985,121 @@ function toolLabel(ev) {
   return ev.tool || "调用工具";
 }
 
-async function ask(engine, clarified) {
+/* 哪些动作的回答是文字（进回答卡），其余是 SQL（进 SQL 框） */
+const TEXT_ACTIONS = new Set(["chat", "explain", "schema"]);
+
+/* 错误条：除了原因，还给一个「用 AI 修复」——把报错原样交给模型，
+   比自己盯着 MySQL 错误码猜快得多。 */
+function renderErr(msg, fix) {
+  const box = Q.get("qErr");
+  if (!box) return;
+  box.hidden = false;
+  box.innerHTML = '<div class="q-err-text"></div>' +
+    (fix ? '<button class="btn ghost sm" id="qFixWithAi">用 AI 修复这条 SQL</button>' : "");
+  box.querySelector(".q-err-text").textContent = msg;
+  const btn = document.getElementById("qFixWithAi");
+  if (btn) {
+    btn.onclick = () => ask({ mode: "ask", action: "fix", sql: fix.sql, error: fix.error });
+  }
+}
+
+/* 统一入口。opts 可覆盖 mode / action / question / sql / error，
+   「用 AI 修复」就是把当前 SQL 和报错一起带进来重跑。 */
+async function ask(opts = {}) {
+  const mode = opts.mode || ACT.mode;
+  const action = opts.action || ACT.picked[mode] || "auto";
+  const spec = actSpec(mode, action);
+  const question = (opts.question !== undefined ? opts.question : Q.get("qQuestion").value).trim();
+  const sqlText = (opts.sql !== undefined ? opts.sql : Q.get("qSql").value).trim();
+  const errText = opts.error || "";
+
+  if (!question && !sqlText) { toast("请先输入查询需求"); return; }
+  if (spec.needs_sql && !sqlText) {
+    Q.get("qSqlCard").hidden = false;
+    Q.get("qSql").focus();
+    toast("这个动作需要一条 SQL：先用「生成 SQL」，或把 SQL 贴进下面的框");
+    return;
+  }
+
   Q.get("qRuleBox").hidden = true;
-  const question = Q.get("qQuestion").value.trim();
-  if (!question) { toast("请先输入查询需求"); return; }
+  Q.get("qErr").hidden = true;
   const btn = Q.get("qAsk");
-  btn.disabled = true; btn.textContent = "生成中…";
+  const labelEl = Q.get("qAskLabel");
+  btn.disabled = true;
+  if (labelEl) labelEl.textContent = "处理中…";
+
+  const isText = TEXT_ACTIONS.has(action);
   const t0 = performance.now();
   let acc = "";
+
+  const paintDelta = (piece) => {
+    acc += piece;
+    if (isText) {
+      Q.get("qAnswerCard").hidden = false;
+      Q.get("qAnswerTitle").textContent = ANSWER_TITLE[action] || "回答";
+      Q.get("qAnswerMeta").textContent = "生成中…";
+      // 流的中间态按纯文本铺，等 done 再用 mdLite 整体渲染（半张表没法解析）
+      Q.get("qAnswer").textContent = acc;
+    } else {
+      const ta = Q.get("qSql");
+      ta.value = acc;
+      ta.scrollTop = ta.scrollHeight;   // 跟着最新写出来的字往下滚
+    }
+  };
+
   try {
-    // 流式优先：能一边生成一边看 SQL，长 SQL 也不用干等
-    Q.get("qSqlCard").hidden = false;
-    Q.get("qSql").value = "";
-    Q.get("qSqlMeta").textContent = "";
+    // 先清场：上一次的 SQL / 结果留着，很容易被当成这一次的产物
+    if (isText) {
+      Q.get("qAnswerCard").hidden = false;
+      Q.get("qAnswerTitle").textContent = ANSWER_TITLE[action] || "回答";
+      Q.get("qAnswerMeta").textContent = "生成中…";
+      Q.get("qAnswer").textContent = "";
+      Q.get("qResultCard").hidden = true;
+    } else {
+      Q.get("qSqlCard").hidden = false;
+      Q.get("qSql").value = "";
+      Q.get("qSqlMeta").textContent = "";
+      Q.get("qAnswerCard").hidden = true;
+      Q.get("qResultCard").hidden = true;
+    }
+
+    const payload = {
+      mode, action, question,
+      sql: sqlText || undefined,
+      error: errText || undefined,
+      target: Q.get("qDialect") ? Q.get("qDialect").value : undefined,
+      clarified: !!opts.clarified,
+      // 追问：把上一轮的问句与 SQL 交给模型，它才知道「改哪条」
+      context: Q.thread ? { question: Q.thread.question, sql: Q.thread.sql } : undefined,
+    };
+
     let d;
     try {
-      d = await askStream({ question, engine, clarified: !!clarified }, (piece) => {
-        acc += piece;
-        // 生成中先显示原始输出，done 之后 showSql 会用校验过的版本覆盖
-        const ta = Q.get("qSql");
-        ta.value = acc;
-        ta.scrollTop = ta.scrollHeight;   // 跟着最新写出来的字往下滚
-      }, (ev) => {
-        // 查证模式：工具调用没有 delta，进度就靠这行字告诉用户
-        Q.get("qSqlMeta").textContent = "查证中：" + toolLabel(ev);
+      d = await askStream(payload, paintDelta, (ev) => {
+        // 查证模式没 delta，进度就靠这行字告诉用户
+        const line = "查证中：" + toolLabel(ev);
+        if (isText) Q.get("qAnswerMeta").textContent = line;
+        else Q.get("qSqlMeta").textContent = line;
       });
     } catch (e) {
       if (String(e.message) !== "stream-unavailable") throw e;
-      d = await qApi("/api/nlq/ask", { question, engine, clarified: !!clarified });
+      d = await qApi("/api/nlq/ask", payload);
     }
+
     if (d.sql) {
       showSql(d.sql, question, true);
-      renderOrigin(d);
     } else {
-      Q.get("qSqlCard").hidden = true;
-      Q.get("qOrigin").hidden = true;
+      Q.get("qSqlWarn").hidden = true;
+      if (!isText) {
+        Q.get("qSqlCard").hidden = true;
+        Q.get("qOrigin").hidden = true;
+      }
     }
-    Q.get("qSqlMeta").textContent = (question ? "来自：" + question : "") +
-      (d.note ? "　✎ " + d.note : "");   // 复用人工修正时带上他自己写的原因
+    if (d.sql || d.answer) renderOrigin(d);
+    if (d.sql) {
+      Q.get("qSqlMeta").textContent = (question ? "来自：" + question : "") +
+        (d.note ? "　✎ " + d.note : "");   // 复用人工修正时带上他自己写的原因
+    }
     if (d.retried) toast("SQL 执行报错，已自动修正");
     if (d.learned) toast("已记录，同类问题将优先使用规则");
     const ruleBox = Q.get("qRuleBox");
@@ -758,32 +1110,40 @@ async function ask(engine, clarified) {
       ruleBox.hidden = true;
     }
     renderResult(d, Math.round(performance.now() - t0));
-    // 结果在 SQL 卡片下面，长 SQL 会把它挤出视野；直接带用户过去
-    Q.get("qResultCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    if (d.sql) setThread(question, d.sql);
+    loadHistory();          // 历史是异步的，不挡结果展示
+    const target = isText ? Q.get("qAnswerCard") : Q.get("qResultCard");
+    if (target && !target.hidden) {
+      target.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
   } catch (e) {
-    Q.get("qSqlCard").hidden = false;
     // 清空旧的 SQL：被安全闸拒掉时如果还留着上一次的结果，
     // 很容易被当成「这次生成的」，真的复制去库里跑就麻烦了。
     // 流式吐了一半再失败也算：半截 SQL 比没有更危险。
-    Q.get("qSql").value = "";
+    if (!isText) Q.get("qSql").value = "";
     Q.get("qRuleBox").hidden = true;
+    Q.get("qSqlWarn").hidden = true;
     window.PP6QueryExplanation(null);
-    Q.get("qErr").hidden = false;
-    Q.get("qErr").textContent = e.message +
+    const msg = e.message +
       (String(e.message).includes("API Key")
         ? "\n\n不配模型也能用：换成像「项目的名称和项目经理」这样带上对象名和字段名的说法，会走本地规则解析。"
         : "");
+    // 只有「SQL 跑不通」才值得修；缺 Key / 被安全闸拒绝，修 SQL 解决不了
+    const fixable = !!sqlText && !/API Key|未配置大模型|需要大模型|拒绝|不是纯只读/.test(String(e.message));
+    renderErr(msg, fixable ? { sql: sqlText, error: String(e.message) } : null);
     Q.get("qResultCard").hidden = true;
+    if (isText && !acc) Q.get("qAnswerCard").hidden = true;
   } finally {
-    btn.disabled = false; btn.textContent = "生成 SQL 并执行";
+    btn.disabled = false;
+    applyAction();       // 按菜单当前选择恢复按钮文案，别停在「处理中…」
   }
 }
 
-/* 复制 SQL：桌面 WebView 里 navigator.clipboard 不一定可用，退回 execCommand */
-async function copySql() {
-  const ta = Q.get("qSql");
-  const text = ta.value;
-  if (!text.trim()) { toast("暂无 SQL 可复制"); return; }
+/* 复制文本：桌面 WebView 里 navigator.clipboard 不一定可用，退回 execCommand。
+   SQL 和回答共用一份，省得两处各写一遍三档降级。 */
+async function copyText(text, okMsg) {
+  const t = String(text || "");
+  if (!t.trim()) { toast("没有可复制的内容"); return false; }
 
   let done = false;
 
@@ -791,37 +1151,48 @@ async function copySql() {
   const api = window.pywebview && window.pywebview.api;
   if (api && api.copy_text) {
     try {
-      const r = await api.copy_text(text);
+      const r = await api.copy_text(t);
       done = !!(r && r.ok);
     } catch (_) { done = false; }
   }
 
   if (!done && navigator.clipboard && window.isSecureContext) {
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(t);
       done = true;
     } catch (_) { done = false; }
   }
   if (!done) {
+    // 临时 textarea：回答区不是可选中控件，只能借一个能 select 的元素
+    const ta = document.createElement("textarea");
+    ta.value = t;
+    ta.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+    document.body.appendChild(ta);
     ta.focus();
     ta.select();
-    ta.setSelectionRange(0, text.length);
     try { done = document.execCommand("copy"); } catch (_) { done = false; }
-    ta.setSelectionRange(text.length, text.length);
+    document.body.removeChild(ta);
   }
+  toast(done ? (okMsg || "已复制到剪贴板") : "复制失败，请手动选择后按 ⌘C / Ctrl+C");
+  return done;
+}
+
+async function copySql() {
+  const text = Q.get("qSql").value;
+  if (!text.trim()) { toast("暂无 SQL 可复制"); return; }
+  const done = await copyText(text, "SQL 已复制到剪贴板");
   if (done) {
-    toast("SQL 已复制到剪贴板");
     const btn = Q.get("qCopySql");
     const old = btn.textContent;
     btn.textContent = "已复制 ✓";
     setTimeout(() => { btn.textContent = old; }, 1400);
-  } else {
-    toast("复制失败，请手动选择后按 ⌘C / Ctrl+C");
   }
 }
 
 Q.get("qCopySql").onclick = copySql;
-Q.get("qRetryAi").onclick = () => ask("llm");
+Q.get("qCopyAnswer").onclick = () => copyText(Q.get("qAnswer").innerText || "",
+                                              "回答已复制到剪贴板");
+Q.get("qRetryAi").onclick = () => ask({ mode: "agent", action: "query" });
 Q.get("qVerify").onclick = async () => {
   const question = Q.get("qQuestion").value.trim();
   const sql = Q.get("qSql").value.trim();
@@ -855,31 +1226,230 @@ Q.get("qLlmForget").onclick = async () => {
   } catch (e) { toast("清除失败：" + e.message); }
 };
 
-/* 生成方式：照 DBX 的 Ask / Agent 双模式。
-   ask   = 规则优先，规则没把握才调大模型（pp6 原有的 hybrid，也是默认）
-   agent = 查证：先 list/describe/sample/试跑，再落笔
-   模式是切换器而不是第三个按钮——DBX 也是这么分层的。 */
-let ASK_MODE = "ask";
-try {
-  if (localStorage.getItem("pp6.askMode") === "agent") ASK_MODE = "agent";
-} catch (e) { /* 桌面壳里 localStorage 可能被禁，忽略即可 */ }
+/* ---------------- 工作方式与动作：照 DBX 的 Ask / Agent ----------------
+   Ask   = 只生成 / 解释 / 改写，不碰库（解释 SQL 没配 Key 也能给语法层摘要）
+   Agent = 可以先查表结构、看取值、试跑，证据够了再落笔
+   Ask·自动 = 直接交给大模型；没配 Key 或模型全挂才回退本地规则
+   （规则引擎是离线兜底，不是主路径——2026-11-27 用户明确要求）。
+   动作清单由 /api/nlq/actions 下发，前端不写死。 */
+const ACT = {
+  actions: { ask: [], agent: [] },
+  targets: [],
+  ready: { llm: false, db: false },
+  mode: "ask",
+  picked: { ask: "auto", agent: "auto" },
+};
 
-(function initAskMode() {
-  const box = Q.get("qMode");
-  if (!box) return;
-  box.querySelectorAll("button").forEach((b) => {
-    b.classList.toggle("on", b.dataset.mode === ASK_MODE);
-    b.onclick = () => {
-      ASK_MODE = b.dataset.mode === "agent" ? "agent" : "ask";
-      try { localStorage.setItem("pp6.askMode", ASK_MODE); } catch (e) { /* 同上 */ }
-      box.querySelectorAll("button").forEach((x) => {
-        x.classList.toggle("on", x === b);
-      });
-    };
+try {
+  if (localStorage.getItem("pp6.assistMode") === "agent") ACT.mode = "agent";
+  const a = localStorage.getItem("pp6.assistAction.ask");
+  const g = localStorage.getItem("pp6.assistAction.agent");
+  if (a) ACT.picked.ask = a;
+  if (g) ACT.picked.agent = g;
+} catch (e) { /* 桌面壳里 localStorage 可能被禁，用默认值 */ }
+
+/* 后端拿不到时的兜底清单：空菜单等于功能不存在 */
+const ACT_FALLBACK = {
+  ask: [
+    { id: "auto", label: "自动", icon: "sparkle", hint: "大模型直接生成，不可用时回退本地", needs_sql: false },
+    { id: "chat", label: "通用问答", icon: "chat", hint: "问业务概念与数据口径，不生成 SQL", needs_sql: false },
+    { id: "generate", label: "生成 SQL", icon: "wand", hint: "只生成不执行，可以先改再跑", needs_sql: false },
+    { id: "explain", label: "解释 SQL", icon: "help", hint: "逐段讲清这条 SQL 在查什么", needs_sql: true },
+    { id: "optimize", label: "优化 SQL", icon: "bolt", hint: "改写为更快更稳的写法", needs_sql: true },
+    { id: "fix", label: "修复错误", icon: "wrench", hint: "按报错信息修正 SQL", needs_sql: true },
+    { id: "dialect", label: "转换方言", icon: "swap", hint: "MySQL 转成其它数据库方言", needs_sql: true },
+    { id: "sample", label: "生成样例", icon: "rows", hint: "生成测试数据语句，绝不执行", needs_sql: false },
+  ],
+  agent: [
+    { id: "auto", label: "自动", icon: "sparkle", hint: "有 SQL 就执行并解释，没有就查数据", needs_sql: false },
+    { id: "chat", label: "通用问答", icon: "chat", hint: "先查证再回答，不生成 SQL", needs_sql: false },
+    { id: "query", label: "查询数据", icon: "play", hint: "生成 SQL 并执行", needs_sql: false },
+    { id: "schema", label: "查看表结构", icon: "table", hint: "字段含义、类型、外键与空列", needs_sql: false },
+    { id: "run_explain", label: "执行并解释", icon: "play-help", hint: "跑完再用人话讲结果", needs_sql: false },
+    { id: "dryrun", label: "生成但不执行", icon: "pause", hint: "只给 SQL，不碰库", needs_sql: false },
+  ],
+};
+
+ACT.actions = ACT_FALLBACK;
+
+/* 线性小图标，观感对齐 DBX 那套菜单 */
+const ACT_ICONS = {
+  sparkle: '<path d="M8 1.8l1.35 3.45L12.8 6.6l-3.45 1.35L8 11.4 6.65 7.95 3.2 6.6l3.45-1.35z"/>',
+  chat: '<path d="M3.1 2.9h9.8v7.2H6.6L3.1 12.7v-2.6h0z"/>',
+  wand: '<path d="M3.2 12.2l6.2-6.2"/><path d="M10.2 1.9l.5 1.2 1.2.5-1.2.5-.5 1.2-.5-1.2-1.2-.5 1.2-.5z"/>',
+  help: '<circle cx="8" cy="8" r="5.7"/><path d="M6.3 6.1a1.75 1.75 0 011.7-1.15c1.02 0 1.72.6 1.72 1.42 0 1.32-1.6 1.18-1.6 2.5"/><circle cx="8" cy="11.2" r=".65" fill="currentColor" stroke="none"/>',
+  bolt: '<path d="M9.3 1.9L4 8.7h3.2L6.6 14l5.3-6.9H8.6z"/>',
+  wrench: '<path d="M10.8 2.2a3.25 3.25 0 00-3.1 4.25l-4 4a1.55 1.55 0 002.15 2.15l4-4A3.25 3.25 0 0014 5.5l-1.95 1.95-1.4-.4-.4-1.4z"/>',
+  swap: '<path d="M2.6 5.5h9.1M9.3 3.3l2.4 2.2-2.4 2.2M13.4 10.5H4.3M6.7 8.3l-2.4 2.2 2.4 2.2"/>',
+  rows: '<rect x="2.7" y="2.9" width="10.6" height="10.2" rx="1.4"/><path d="M2.7 6.3h10.6M2.7 9.7h10.6M6.2 6.3v6.8"/>',
+  play: '<path d="M5.1 3.3l6.9 4.7-6.9 4.7z"/>',
+  table: '<rect x="2.7" y="2.9" width="10.6" height="10.2" rx="1.4"/><path d="M2.7 6.3h10.6M6.8 6.3v6.8"/>',
+  "play-help": '<path d="M4.6 3.3l6.4 4.4-6.4 4.4z"/><path d="M12.5 9.4a2.1 2.1 0 11-1.7 3.35"/>',
+  pause: '<rect x="4.5" y="3.3" width="2.5" height="9.4" rx=".6"/><rect x="9" y="3.3" width="2.5" height="9.4" rx=".6"/>',
+};
+
+function actIcon(id) {
+  const d = ACT_ICONS[id] || ACT_ICONS.sparkle;
+  return `<svg class="q-act-i" viewBox="0 0 16 16" aria-hidden="true">${d}</svg>`;
+}
+
+/* 主按钮说什么、左下提示什么。
+   按钮文案写错比没按钮更糟：按「生成」的预期点了「执行」，就真的跑了库。 */
+const ACTION_META = {
+  auto:        { btn: "生成 SQL 并执行", hint: "大模型直接生成，不可用时回退本地" },
+  chat:        { btn: "提问",             hint: "只回答，不生成 SQL" },
+  generate:    { btn: "生成 SQL",         hint: "只生成，不执行" },
+  explain:     { btn: "解释这条 SQL",     hint: "逐段讲清在查什么，不执行" },
+  optimize:    { btn: "优化这条 SQL",     hint: "改写为更快更稳，不执行" },
+  fix:         { btn: "修复这条 SQL",     hint: "按报错信息修正，不执行" },
+  dialect:     { btn: "转换方言",         hint: "只换写法，不执行" },
+  sample:      { btn: "生成样例数据",     hint: "只生成，绝不执行" },
+  query:       { btn: "生成 SQL 并执行", hint: "先查证再落笔，直接出结果" },
+  schema:      { btn: "查看表结构",       hint: "字段、类型、外键与空列" },
+  run_explain: { btn: "执行并解释",       hint: "跑完再用人话讲结果" },
+  dryrun:      { btn: "生成但不执行",     hint: "查证后给 SQL，不碰库" },
+};
+
+function actSpec(mode, id) {
+  return (ACT.actions[mode] || []).find((a) => a.id === id) || {};
+}
+
+function currentAction() {
+  return ACT.picked[ACT.mode] || "auto";
+}
+
+function modeLabel(mode) {
+  return mode === "agent" ? "Agent" : "Ask";
+}
+
+function renderActList() {
+  const list = Q.get("qActList");
+  if (!list) return;
+  const acts = ACT.actions[ACT.mode] || [];
+  list.innerHTML = acts.map((a) => {
+    const on = a.id === (ACT.picked[ACT.mode] || "auto");
+    const need = a.needs_llm && !ACT.ready.llm;
+    return `<button type="button" class="q-act-item${on ? " on" : ""}" data-act="${a.id}"
+              role="menuitemradio" aria-checked="${on}">
+      ${actIcon(a.icon)}
+      <span class="q-act-text"><b>${qEsc(a.label)}</b><small>${qEsc(a.hint || "")}</small></span>
+      ${need ? '<span class="q-act-need" title="在「系统设置」里填 API Key 后可用">需配 Key</span>' : ""}
+      ${on ? '<svg class="q-act-check" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 8.4l3.2 3.2 6.4-6.6"/></svg>' : ""}
+    </button>`;
+  }).join("");
+  list.querySelectorAll("[data-act]").forEach((btn) => {
+    btn.onclick = () => pickAction(btn.dataset.act);
   });
+}
+
+/* 界面上所有跟动作有关的东西，一处改完 */
+function applyAction() {
+  const act = currentAction();
+  const meta = ACTION_META[act] || ACTION_META.auto;
+  const label = Q.get("qActLabel");
+  if (label) label.textContent = `${modeLabel(ACT.mode)} · ${actSpec(ACT.mode, act).label || "自动"}`;
+  const btnLabel = Q.get("qAskLabel");
+  if (btnLabel) btnLabel.textContent = meta.btn;
+  const hint = Q.get("qModeHint");
+  if (hint) hint.textContent = meta.hint;
+
+  document.querySelectorAll("#qActTabs button").forEach((b) => {
+    b.classList.toggle("on", b.dataset.tab === ACT.mode);
+  });
+  const dw = Q.get("qDialectWrap");
+  if (dw) dw.hidden = !(ACT.mode === "ask" && act === "dialect");
+
+  // 需要 SQL 的动作：把 SQL 卡亮出来，否则用户不知道要处理的 SQL 该贴哪儿
+  const spec = actSpec(ACT.mode, act);
+  if (spec.needs_sql && !Q.get("qSql").value.trim()) {
+    Q.get("qSqlCard").hidden = false;
+    Q.get("qSql").placeholder = `把要${spec.label || "处理"}的 SQL 贴在这里，或在问题框里描述需求`;
+  }
+
+  renderActList();
+}
+
+function pickAction(id) {
+  ACT.picked[ACT.mode] = id;
+  try { localStorage.setItem("pp6.assistAction." + ACT.mode, id); } catch (e) { /* 同上 */ }
+  closeActMenu();
+  applyAction();
+}
+
+function switchActTab(mode) {
+  ACT.mode = mode === "agent" ? "agent" : "ask";
+  try { localStorage.setItem("pp6.assistMode", ACT.mode); } catch (e) { /* 同上 */ }
+  applyAction();
+}
+
+function openActMenu() {
+  const menu = Q.get("qActMenu");
+  const btn = Q.get("qActBtn");
+  if (!menu) return;
+  menu.hidden = false;
+  if (btn) btn.setAttribute("aria-expanded", "true");
+  renderActList();
+}
+
+function closeActMenu() {
+  const menu = Q.get("qActMenu");
+  const btn = Q.get("qActBtn");
+  if (menu) menu.hidden = true;
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+
+function fillDialects() {
+  const sel = Q.get("qDialect");
+  if (!sel || sel.dataset.filled) return;
+  const list = ACT.targets.length ? ACT.targets : ["PostgreSQL", "SQL Server", "Oracle", "SQLite"];
+  sel.innerHTML = list.map((t) => `<option>${qEsc(t)}</option>`).join("");
+  sel.dataset.filled = "1";
+}
+
+async function loadActions() {
+  try {
+    const d = await qApi("/api/nlq/actions");
+    if (d && d.actions && d.actions.ask && d.actions.ask.length) {
+      ACT.actions = d.actions;
+      ACT.targets = d.targets || [];
+      ACT.ready = d.ready || ACT.ready;
+      // 版本升级后动作可能改名或删除，存过的值要回落到自动
+      for (const m of ["ask", "agent"]) {
+        if (!(ACT.actions[m] || []).some((a) => a.id === ACT.picked[m])) ACT.picked[m] = "auto";
+      }
+      fillDialects();
+      applyAction();
+    }
+  } catch (e) {
+    /* 后端还没升级也别让菜单空着：继续用内置清单 */
+  }
+}
+
+(function initActMenu() {
+  const btn = Q.get("qActBtn");
+  if (btn) {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      if (Q.get("qActMenu").hidden) openActMenu(); else closeActMenu();
+    };
+  }
+  document.querySelectorAll("#qActTabs button").forEach((b) => {
+    b.onclick = (e) => { e.stopPropagation(); switchActTab(b.dataset.tab); };
+  });
+  // 点空白关菜单；菜单内部不关
+  document.addEventListener("click", (e) => {
+    const menu = Q.get("qActMenu");
+    if (!menu || menu.hidden) return;
+    if (!menu.contains(e.target) && !e.target.closest("#qActBtn")) closeActMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeActMenu();
+  });
+  fillDialects();
+  applyAction();
 })();
 
-Q.get("qAsk").onclick = () => ask(ASK_MODE === "agent" ? "agent" : "hybrid");
+Q.get("qAsk").onclick = () => ask();
 
 Q.get("qRun").onclick = () => runSql(Q.get("qSql").value);
 
@@ -941,6 +1511,8 @@ Q.get("qExport").onclick = () => {
    不能等用户切到查询页才加载——否则第一眼看到的永远是「未配置」。 */
 renderTemplates();      // 先用本地兜底问法把空状态填满，连库后会被真实模板替换
 loadConfig();
+loadActions();          // 动作菜单：拿到后端清单后替换内置兜底
+loadHistory();          // 最近查询：问过的不用重打
 
 /* 首屏把光标放进输入框：打开就能打字，省掉「先点一下」这一步。
    preventScroll 防止长页面被浏览器拽到输入框位置。 */

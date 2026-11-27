@@ -647,7 +647,10 @@ def _():
     assert 'id="qOrigin"' in html
     assert "ensureQueryReady" in js and "qApi(\"/api/nlq/test\")" in js
     assert "q-understood" in js and ".q-understood" in css
-    assert 'ask("llm")' in js
+    # 结果不对可一键 AI 重答：Ask / Agent 菜单之后走 Agent·查询数据
+    assert 'ask({ mode: "agent", action: "query" })' in js
+    # 动作菜单由后端下发，前端自带兜底清单（后端没升级也不能是空菜单）
+    assert "/api/nlq/actions" in js and "ACT_FALLBACK" in js
 
 
 @case("WEB33", "webui", "查数据页：语义口径可见、缺条件先澄清、结果可入库验证", "P0",

@@ -24,7 +24,7 @@
 """
 from __future__ import annotations
 
-from pp6kit.nlq import engine, graph, guard, hybrid, local, select
+from pp6kit.nlq import assist, engine, graph, guard, hybrid, local, select
 from pp6kit.nlq.introspect import Column, SchemaPack, Table
 from tests._harness import case
 
@@ -2001,3 +2001,392 @@ def _():
 
     ch = select.choose(pack, "计划完成时间在2026年的项目", local._label_variants)
     assert ch.table.name == "pp_project", f"选成了 {ch.table.name}（{ch.table.label}）"
+
+
+# ================================================================ 九、助手动作（DBX 的 Ask / Agent）
+# 这组守的是「菜单点了会发生什么」：动作存不存在、自动该解析成哪个、哪些动作
+# 必须有 SQL、哪些会真的执行、只读标注对不对。全是纯函数，不连库、不调模型。
+#
+# 一条硬约束贯穿全组：Ask 的任何动作都不许执行 SQL。「生成样例」会产出 INSERT，
+# 一旦这条被改坏，用户点一下就能往生产库里插测试数据。
+
+def _assist_system(action: str, **kw) -> str:
+    pack = kw.pop("pack", None) or _pack()
+    question = kw.pop("question", "项目有多少")
+    msgs = assist.build_messages(action, pack, question, **kw)
+    return msgs[0]["content"]
+
+
+@case("NLQA01", "nlq", "助手动作与 DBX 菜单一一对应（Ask 8 项 / Agent 6 项）", "P0",
+      ["两屏菜单是用户直接看到的东西，少一项就是功能没交付",
+       "不测会怎样：前端菜单项被误删或改名，用户找不到「优化 SQL」"])
+def _():
+    ask_ids = [a["id"] for a in assist.ACTIONS["ask"]]
+    assert ask_ids == ["auto", "chat", "generate", "explain", "optimize", "fix",
+                       "dialect", "sample"], ask_ids
+    agent_ids = [a["id"] for a in assist.ACTIONS["agent"]]
+    assert agent_ids == ["auto", "chat", "query", "schema", "run_explain",
+                         "dryrun"], agent_ids
+    # 每一项都得有中文标题和一句话说明，菜单里不能出现空白行
+    for mode in ("ask", "agent"):
+        for a in assist.ACTIONS[mode]:
+            assert a["label"] and a["hint"] and a["icon"], a
+
+
+@case("NLQA02", "nlq", "动作不跨模式：Ask 下没有「查询数据」，Agent 下没有「优化 SQL」", "P0",
+      ["同一个动作名在两个模式下的行为完全不同，混用等于让用户以为会执行",
+       "不测会怎样：拼错的 action 被静默当成 auto，用户点了「优化」却在生成"])
+def _():
+    for mode, bad in (("ask", "query"), ("ask", "run_explain"), ("ask", "dryrun"),
+                      ("agent", "optimize"), ("agent", "dialect"), ("ask", "nope")):
+        try:
+            assist.find_action(mode, bad)
+        except ValueError as exc:
+            # 拒绝理由要能把可选项列出来，否则用户不知道改成什么
+            assert bad in str(exc) and "可选" in str(exc), str(exc)
+        else:
+            raise AssertionError(f"{mode} 模式不该接受动作 {bad}")
+
+
+@case("NLQA03", "nlq", "自动动作的解析：有 SQL 就解释，没有就生成", "P0",
+      ["「自动」是默认选项，解析错了等于所有默认操作都错",
+       "不测会怎样：用户贴了一条 SQL 点自动，结果被重新生成覆盖掉"])
+def _():
+    assert assist.resolve("ask", "auto", False) == "generate"
+    assert assist.resolve("ask", "auto", True) == "explain"
+    assert assist.resolve("agent", "auto", False) == "query"
+    assert assist.resolve("agent", "auto", True) == "run_explain"
+    # 显式选的动作不能被「自动」逻辑改写
+    assert assist.resolve("ask", "optimize", False) == "optimize"
+    assert assist.resolve("agent", "dryrun", True) == "dryrun"
+
+
+@case("NLQA04", "nlq", "需要 SQL 的动作清单：解释 / 优化 / 修复 / 转换方言", "P0",
+      ["没有 SQL 就点「解释」应该当场提示，而不是让模型猜一段 SQL 来解释",
+       "不测会怎样：用户点「解释」拿到一段凭空生成的 SQL 解释，还以为在讲自己的"])
+def _():
+    need = {a["id"] for a in assist.ACTIONS["ask"] if a["needs_sql"]}
+    assert need == {"explain", "optimize", "fix", "dialect"}, need
+    # Agent 的动作都能从问题出发，没有一个是「必须已有 SQL」
+    assert not any(a["needs_sql"] for a in assist.ACTIONS["agent"])
+    # 会真的执行库上查询的动作也只有这两个
+    runs = {a["id"] for a in assist.ACTIONS["agent"] if a["executes"]}
+    assert runs == {"auto", "query", "run_explain"}, runs
+    assert not any(a["executes"] for a in assist.ACTIONS["ask"] if a["id"] != "auto"), \
+        "Ask 下除自动（走的老 hybrid）之外都不许执行"
+
+
+@case("NLQA05", "nlq", "只读标注：写语句一律 executable=False 且说明不会执行", "P0",
+      ["Ask 产出的 SQL 没经过执行就展示，用户很可能复制到生产库跑",
+       "不测会怎样：模型给出的 DELETE 被标成可执行，前端亮着「重新执行」"])
+def _():
+    ok = assist._judge_output("SELECT name_ FROM pp_project", _allowed())
+    assert ok["executable"] is True
+    assert "LIMIT" in ok["sql"].upper(), ok["sql"]
+
+    for bad in ("DELETE FROM pp_project",
+                "UPDATE pp_project SET name_ = 'x'",
+                "DROP TABLE pp_project",
+                "INSERT INTO pp_project (name_) VALUES ('x')"):
+        v = assist._judge_output(bad, _allowed())
+        assert v["executable"] is False, bad
+        assert "不会执行" in v["warning"], v["warning"]
+
+    # 空产物不该被当成「可执行的空 SQL」
+    assert assist._judge_output("", _allowed())["executable"] is False
+    # 越界表要被闸拦下来，而不是标成可执行
+    outside = assist._judge_output("SELECT * FROM mysql_user_secret", _allowed())
+    assert outside["executable"] is False, outside
+
+
+@case("NLQA06", "nlq", "代码块拆分：```sql / ```INSERT / 无围栏 / 多块都不丢内容", "P0",
+      ["模型返回的是「代码块 + 说明」，拆分错了 SQL 就是空的或残缺的",
+       "不测会怎样：```INSERT 被当成语言标记删掉，样例里只剩一句注释"])
+def _():
+    code, prose = assist.split_code("说明\n```sql\nSELECT 1\n```\n后续")
+    assert code == "SELECT 1", code
+    assert "后续" in prose
+
+    # 单行围栏、且第一行就是语句（没有语言标记）
+    code2, _ = assist.split_code("```INSERT INTO t (a) VALUES (1)```")
+    assert code2.startswith("INSERT INTO"), code2
+
+    # 多行 INSERT：关键字不能被当成语言标记吃掉
+    code3, _ = assist.split_code("```INSERT INTO t (a)\nVALUES (1);\n```")
+    assert code3.startswith("INSERT INTO t"), code3
+    assert "VALUES (1);" in code3
+
+    # 无语言标记
+    code4, _ = assist.split_code("```\nSELECT 2\n```")
+    assert code4 == "SELECT 2", code4
+
+    # 没有代码块：整段都是说明
+    assert assist.split_code("没有代码块") == ("", "没有代码块")
+
+    # 多块要都留下，不能只取第一块
+    code5, _ = assist.split_code("```sql\nSELECT 1\n```\n```sql\nSELECT 2\n```")
+    assert "SELECT 1" in code5 and "SELECT 2" in code5, code5
+
+
+@case("NLQA07", "nlq", "提示词：生成 SQL 复用同一份规则，方言转换不带 schema", "P0",
+      ["16 条中文语序规则只能有一份，两处各写一份必然漂移",
+       "不测会怎样：改了 engine 的规则，Ask 里的生成还是老规则，答非所问"])
+def _():
+    pack = _pack()
+    # 生成 SQL 与 engine 的提示词逐字一致（同一份规则，不是抄一遍）
+    assert (_assist_system("generate", pack=pack) ==
+            engine.build_messages(pack, "项目有多少")[0]["content"])
+
+    assert "不写 SQL" in _assist_system("chat")
+    exp = _assist_system("explain", question="", sql="SELECT 1 FROM pp_project")
+    assert "待处理的 SQL" in exp and "SELECT 1 FROM pp_project" in exp
+    assert "【一句话】" in exp          # 四段式结构不能少
+
+    # 方言转换：纯语法转换，给 schema 只是白烧 token
+    dial = _assist_system("dialect", question="", sql="SELECT 1", target="PostgreSQL")
+    assert "PostgreSQL" in dial
+    assert "=== 可用表结构 ===" not in dial, "方言转换不该带 schema"
+
+    # 样例生成必须带上「不执行」的口径，模型才会写测试库注释
+    sample = _assist_system("sample", question="给项目表生成两条数据")
+    assert "不会被本工具执行" in sample or "不会执行" in sample, sample[-300:]
+
+
+@case("NLQA08", "nlq", "SQL 来源：显式字段优先，其次是问题里直接贴的那段", "P1",
+      ["用户习惯把 SQL 连同「帮我看看」一起贴进问题框",
+       "不测会怎样：解释的是上一条残留的 SQL，不是他刚贴的"])
+def _():
+    assert assist._pick_sql("SELECT 1", "问题") == "SELECT 1"
+    assert assist._pick_sql("", "SELECT 1") == "SELECT 1"
+    got = assist._pick_sql("", "帮我看下 select * from pp_project where id_ = 1")
+    assert got.lower().startswith("select *"), got
+    assert assist._pick_sql("", "项目有多少") == ""
+    assert assist._pick_sql("", "WITH t AS (SELECT 1) SELECT * FROM t").startswith("WITH")
+
+
+@case("NLQA09", "nlq", "不连库也能用的动作：解释 / 改写 / 方言 / 通用问答", "P1",
+      ["用户只想让 AI 看看一条 SQL，不该被「先连数据库」挡住",
+       "不测会怎样：没连库时整个 Ask 菜单全灰，功能看起来不存在"])
+def _():
+    for a in ("chat", "explain", "optimize", "fix", "dialect"):
+        assert not assist.needs_db(a), f"{a} 不该强制连库"
+    for a in ("generate", "sample", "query", "schema", "dryrun"):
+        assert assist.needs_db(a), f"{a} 没有 schema 只能靠猜"
+
+
+@case("NLQA10", "nlq", "能力标记：只有解释 / 自动不需要 API Key", "P1",
+      ["没配 Key 是常态，菜单要能提前告诉用户哪些动作能用",
+       "不测会怎样：用户点「优化」才被告知要配 Key，白点一次"])
+def _():
+    cat = assist.catalog()
+    ask = {a["id"]: a for a in cat["actions"]["ask"]}
+    assert ask["explain"]["needs_llm"] is False, "解释有本地语法层兜底"
+    assert ask["auto"]["needs_llm"] is False, "自动有规则引擎兜底"
+    assert ask["generate"]["needs_llm"] is True
+    assert all(a["needs_llm"] for a in cat["actions"]["agent"]), "Agent 必须有模型"
+    assert cat["targets"] and "PostgreSQL" in cat["targets"]
+
+
+@case("NLQA11", "nlq", "方言目标归一化：pg / mssql / 达梦 都能认", "P2",
+      ["用户不会照标准名拼，写 pg 的比写 PostgreSQL 的多",
+       "不测会怎样：写成「pg」被原样塞进提示词，模型照着换个不存在的方言"])
+def _():
+    assert assist._target("pg") == "PostgreSQL"
+    assert assist._target("postgres") == "PostgreSQL"
+    assert assist._target("POSTGRESQL") == "PostgreSQL"
+    assert assist._target("mssql") == "SQL Server"
+    assert assist._target("达梦") == "达梦 DM"
+    assert assist._target("") == "PostgreSQL"
+
+
+@case("NLQA12", "nlq", "没配 Key 时解释 SQL 仍有语法层摘要，且如实说是摘要", "P1",
+      ["降级结果最怕看起来像完整答案，用户会以为模型真的读懂了",
+       "不测会怎样：把语法摘要当成业务解释，据此判断查询对不对"])
+def _():
+    text = assist.local_explain(
+        "SELECT name_ FROM pp_project WHERE IFNULL(deleted_, 'N') <> 'Y'", _pack())
+    assert "【一句话】" in text, text
+    assert "pp_project" in text
+    assert "未配置大模型" in text, "必须如实说明这是语法层摘要"
+    assert assist.local_explain("", _pack()) == ""
+
+
+@case("NLQA13", "nlq", "Agent 提示词不能留「请只输出 SQL」的收尾", "P0",
+      ["问答/查结构两类动作要的是文字，收尾还写着「只输出 SQL」会把回答逼成 SQL",
+       "不测会怎样：点「查看表结构」返回一条 SELECT，用户看到的是一段代码"])
+def _():
+    text = assist.agent_messages("回答用户的问题", _pack(), "项目有多少")[0]["content"]
+    assert "请只输出 SQL" not in text
+    assert "可用工具" in text, "工具协议不能丢"
+    assert "项目有多少" in text
+
+
+@case("NLQA14", "nlq", "入口校验：缺 SQL / 缺 Key 都在调模型之前拒绝", "P0",
+      ["校验放在调模型之后，等于每次误操作都烧一次额度",
+       "不测会怎样：没配 Key 点「优化」，先花 10 秒再报「没有 SQL」"])
+def _():
+    for a in ("explain", "optimize", "fix", "dialect"):
+        try:
+            assist.run(None, _pack(), {"mode": "ask", "action": a, "question": "看看"},
+                       {}, _allowed())
+        except ValueError as exc:
+            assert "SQL" in str(exc), str(exc)
+        else:
+            raise AssertionError(f"{a} 在没有 SQL 时被放行了")
+
+    # 没有 Key：生成类动作要在进模型前就给出可操作的提示
+    try:
+        assist.run(None, _pack(), {"mode": "ask", "action": "generate",
+                                   "question": "项目清单"}, {}, _allowed())
+    except Exception as exc:
+        assert "大模型" in str(exc) or "API Key" in str(exc), str(exc)
+    else:
+        raise AssertionError("没配 Key 时 generate 不该继续往下走")
+
+    # 解释是唯一例外：无 Key 也能用，且不会碰 conn
+    res = assist.run(None, _pack(),
+                     {"mode": "ask", "action": "explain", "question": "",
+                      "sql": "SELECT name_ FROM pp_project"},
+                     {}, _allowed())
+    assert res["kind"] == "text" and res["executed"] is False, res
+    assert "未配置大模型" in res["answer"]
+
+
+@case("NLQA15", "nlq", "Ask·自动直接交给大模型，不再「规则优先」", "P0",
+      ["用户 2026-11-27 明确否掉规则优先：规则引擎覆盖有限，让它先跑等于让一个"
+       "猜得不准的东西决定答案，猜错才叫 AI 补救",
+       "不测会怎样：有人出于「省额度」把默认改回 hybrid，配了 Key 的用户又拿到规则答案"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    src = (root / "pp6kit" / "webui.py").read_text(encoding="utf-8")
+    js = (root / "pp6kit" / "static" / "query.js").read_text(encoding="utf-8")
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+
+    # 自动 = engine "auto"（有 Key 直接调模型，失败才回退规则）
+    assert 'payload = dict(payload, engine="auto")' in src, "自动动作没走 AI 优先"
+    assert 'payload = dict(payload, engine="hybrid")' not in src, \
+        "自动动作又变回「规则优先」了"
+
+    # 界面上不能再出现「规则优先」这种说法
+    assert "规则优先" not in html, "查询页提示还写着「规则优先」"
+    assert "规则优先" not in js, "动作菜单提示还写着「规则优先」"
+    assert "大模型直接生成" in html and "大模型直接生成" in js
+
+    # 动作定义里「自动」的说明也同步了（前端兜底清单与后端目录）
+    assert assist.ACTIONS["ask"][0]["hint"].startswith("大模型直接生成"), \
+        assist.ACTIONS["ask"][0]["hint"]
+
+
+# ================================================================ 十、连续查询（追问 / 历史 / 结果加工）
+# 这一组守的是「查完之后还能接着做什么」：追问有没有真的把上一轮 SQL 交给模型、
+# 历史会不会无限膨胀、结果表能不能就地筛选排序。
+# 历史用例会把 _file 指到临时目录——**绝不能写到真实的 ~/.pp6kit**。
+
+@case("NLQA16", "nlq", "查询历史：去重、上限 30 条、可清空、空值不记", "P0",
+      ["历史是高频写入，没上限就会一直长；同一条反复「重新执行」也不该刷屏",
+       "不测会怎样：用户查一个月后文件几万条，界面加载越来越慢"])
+def _():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from pp6kit.nlq import history as nlq_history
+
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "query_history.json"
+        with patch.object(nlq_history, "_file", lambda: path):
+            nlq_history.clear()
+            for i in range(35):
+                nlq_history.add(f"问题{i}", f"SELECT {i}")
+
+            items = nlq_history.load()
+            assert len(items) == 30, len(items)
+            assert items[0]["question"] == "问题34", "最新的要排最前"
+
+            # 同问句 + 同 SQL 只留一条，且提到最前
+            nlq_history.add("问题20", "SELECT 20")
+            now = nlq_history.load()
+            assert len(now) == 30, len(now)
+            assert now[0]["question"] == "问题20"
+            assert sum(1 for x in now if x["question"] == "问题20") == 1
+
+            # 空问句 / 空 SQL 不记
+            before = len(now)
+            nlq_history.add("", "SELECT 1")
+            nlq_history.add("有问句", "")
+            assert len(nlq_history.load()) == before
+
+            nlq_history.clear()
+            assert nlq_history.load() == []
+
+
+@case("NLQA17", "nlq", "追问上下文：只有带 SQL 才拼进提示词，且明说「无关就忽略」", "P0",
+      ["追问是这个工具最高频的用法（只看执行中的 / 再按类型分组）",
+       "不测会怎样：换了话题还硬套上一轮的 WHERE，答的是上一题"])
+def _():
+    assert engine.context_block(None) == []
+    assert engine.context_block({}) == []
+    assert engine.context_block({"question": "问过什么", "sql": ""}) == []
+
+    block = "\n".join(engine.context_block(
+        {"question": "每个状态多少个", "sql": "SELECT COUNT(*) FROM pp_project"}))
+    assert "上一轮 SQL" in block
+    assert "SELECT COUNT(*) FROM pp_project" in block
+    assert "忽略这段" in block, "必须允许换话题"
+
+    pack = _pack()
+    msgs = engine.build_messages(pack, "只看执行中的",
+                                 context={"question": "每个状态多少个",
+                                          "sql": "SELECT COUNT(*) FROM pp_project"})
+    assert "上一轮 SQL" in msgs[0]["content"]
+    # 没有 context 时提示词里不该出现这一段
+    plain = engine.build_messages(pack, "项目清单")[0]["content"]
+    assert "上一轮" not in plain
+
+
+@case("NLQA18", "nlq", "追问上下文对 Ask / Agent 两条链路都生效", "P0",
+      ["生成走 engine，查证走 agent，助手动作走 assist——三处都得认 context",
+       "不测会怎样：Ask 能追问、Agent 不能，用户切模式就丢上下文"])
+def _():
+    pack = _pack()
+    ctx = {"question": "每个状态多少个", "sql": "SELECT 1 FROM pp_project"}
+
+    gen = assist.build_messages("generate", pack, "只看执行中的", context=ctx)
+    assert "上一轮 SQL" in gen[0]["content"]
+
+    explain = assist.build_messages("explain", pack, "", sql="SELECT 1", context=ctx)
+    assert "上一轮 SQL" in explain[0]["content"]
+
+    ag = assist.agent_messages("回答", pack, "只看执行中的", context=ctx)
+    assert "上一轮 SQL" in ag[0]["content"]
+
+    # 没 context 的调用照旧（老前端不带这个字段）
+    assert "上一轮" not in assist.agent_messages("回答", pack, "项目")[0]["content"]
+
+
+@case("NLQA19", "nlq", "前后端都把追问与历史接上了（缺一个就静默失效）", "P0",
+      ["前端不发 context、后端不读 context、引擎不拼提示词——断任何一环都白做",
+       "不测会怎样：界面上有「接着问」的条，实际模型根本没看到上一轮"])
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    py = (root / "pp6kit" / "webui.py").read_text(encoding="utf-8")
+    js = (root / "pp6kit" / "static" / "query.js").read_text(encoding="utf-8")
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+
+    # 后端：三个入口都透传，历史接口存在
+    assert py.count("context=context") >= 5, "有链路没透传 context"
+    assert "/api/nlq/history" in py and "/api/nlq/history/clear" in py
+
+    # 前端：请求带 context、成功后挂上下文、启动拉历史
+    assert "context: Q.thread" in js
+    assert "setThread(" in js and "loadHistory(" in js
+    assert 'id="qThread"' in html and 'id="qHistBar"' in html
+
+    # 结果加工：筛选框 + 可排序表头 + 截断提示
+    assert 'id="qFilter"' in html
+    assert "paintTable" in js and "Q.sort" in js
+    assert "可能被截断" in js, "500 行上限没提示，用户会当全量"
