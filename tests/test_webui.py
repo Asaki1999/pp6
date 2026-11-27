@@ -1790,8 +1790,12 @@ def _():
     assert '<strong>${esc(bo.name)}</strong>' in js, "非克隆态的名称输出被改坏了"
     assert 'class="chip accent">${esc(bo.code)}' in js, "非克隆态的编码 chip 被改坏了"
 
-    # ④ clone.js：两个接口 + 编码规则 + 词条
+    # ④ clone.js：三个接口（预检 / 起名 / 克隆）+ 编码规则 + 词条
     assert "/api/clone/inspect" in clone and "/api/clone?" in clone
+    assert "/api/clone/name?" in clone, "没有起名接口：编码又变成让用户手填了"
+    assert "suggestName" in clone and "applySuggestion" in clone
+    # AI 结果回来不能覆盖用户已经动过的字段
+    assert "touched.name" in clone and "touched.code" in clone
     assert "const CODE_RE = /^[a-z][a-z0-9_]{1,39}$/;" in clone
     assert "clone-chat-hint" in clone
     assert '<script src="/static/clone.js"></script>' in html

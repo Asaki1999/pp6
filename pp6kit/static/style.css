@@ -5877,3 +5877,6 @@ body.v3 .btn.primary:disabled:hover {
   .ai-bo-code-in input { width: 9em; }
   .pc-foot { padding: 12px 16px; }
 }
+
+/* 起名中：借用编码校验那一行显示状态，避免再加一个会跳动的元素 */
+#pcCodeCheck.pc-suggesting { color: var(--muted, #6b7689); }

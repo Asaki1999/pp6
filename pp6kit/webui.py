@@ -1305,11 +1305,19 @@ def _clone_missing_values_hint(snap) -> str:
 
 
 def _clone_name(desc: str, snap, cfg) -> tuple[str, str, list[str]]:
-    """给克隆对象起新名。AI 起名失败回退「原名副本 / <code>_copy」。"""
+    """给克隆对象起新名。AI 起名失败回退「原名副本 / <code>_copy」。
+
+    desc 为空（显式入口：用户只导了 zip，没说是用来干什么）时让模型按
+    原对象名称与字段推断，而不是硬塞一个「XX副本」——这正是用户 2026-11-27
+    要求的「编码别让用户手填，自动生成」。
+    """
     old_name = str((snap.project or {}).get("name") or "")
     old_code = str((snap.project or {}).get("code") or "")
     fallback_name = (old_name + "副本") if old_name else "克隆对象"
     fallback_code = (old_code + "_copy") if old_code else "clone_copy"
+    field_names = "、".join(f.name for f in (snap.fields or [])[:12] if f.name)
+    brief = (f"用户说明：{desc}" if str(desc or "").strip()
+             else "用户没写说明：按原对象名称与这些字段推断它记录什么，据此起一个贴切的新名字")
     try:
         from .nlq import llm
         text, _used = llm.chat_any(ai_bo._fast_cfg(cfg), [
@@ -1317,10 +1325,12 @@ def _clone_name(desc: str, snap, cfg) -> tuple[str, str, list[str]]:
             {"role": "user", "content":
                 "用户要参照已有业务对象克隆出一个新的业务对象。\n"
                 f"原对象：{old_name}（编码 {old_code}）\n"
-                f"用户说明：{desc}\n\n"
-                "给新对象起名：中文名体现用户说明里的用途或与原对象的关系，"
-                "除非用户明确说了，不要就叫「XX副本」；编码用语义化小写英文"
-                "（可带下划线，不用拼音），20 字符内。"
+                f"主要字段：{field_names or '（未解析到）'}\n"
+                f"{brief}\n\n"
+                "给新对象起名：中文名体现用途或与原对象的关系（例：项目变更、项目立项二期），"
+                "不要就叫「XX副本」「XX拷贝」；编码用语义化小写英文，"
+                "能看出对象类型（project_change / contract_apply），不用拼音，20 字符内，"
+                "必须以小写字母开头、只用小写字母数字下划线。"
                 '只输出 JSON：{"name": "...", "code": "..."}'},
         ], timeout=60, max_tokens=2000)
         spec = ai_bo._extract_json(text)
@@ -1330,6 +1340,49 @@ def _clone_name(desc: str, snap, cfg) -> tuple[str, str, list[str]]:
     except Exception as exc:
         return fallback_name, fallback_code, [
             f"没起成新名字（{str(exc)[:60]}），已用默认名，可在预览里改"]
+
+
+def _clone_fresh_name(name: str, src_code: str) -> str:
+    """AI 起的名字撞上系统已有对象时加「副本」。
+
+    克隆出来的是**新对象**，名字和现有对象一字不差的话，用户在列表里根本分不清
+    哪个是刚建的（2026-11-27 实测 AI 把「项目」克隆起名成「项目立项」，
+    而系统里刚好有个项目立项）。只做精确命中，不做模糊匹配——理由同
+    objects.lookup 的注释。
+    """
+    name = " ".join(str(name or "").split())[:60]
+    if not name:
+        return name
+    try:
+        hit = objects.lookup(name)
+    except Exception:
+        return name
+    if not hit or not hit.get("exists"):
+        return name
+    if str(hit.get("code") or "") == src_code:
+        return name            # 同名就是源对象本身，不用改
+    return f"{name}副本"[:60]
+
+
+def _clone_safe_code(code: str, src_code: str, taken) -> str:
+    """AI 给的编码落成能用的：不合法 / 等于源编码 / 撞库 → 追加数字后缀。
+
+    taken(code) 返回真值表示撞库。最多试 20 个后缀，仍不行就退回 `<src>_copy`。
+    """
+    base = re.sub(r"[^a-z0-9_]", "", str(code or "").lower())
+    if not base or not base[0].isalpha():
+        base = f"{src_code}_copy" if src_code else "clone_copy"
+    base = base[:36].rstrip("_") or "clone_copy"
+    if base == src_code or not _CLONE_CODE_RE.match(base):
+        base = f"{src_code}_copy" if src_code else "clone_copy"
+        base = re.sub(r"[^a-z0-9_]", "", base.lower())[:36] or "clone_copy"
+    if base != src_code and not taken(base):
+        return base
+    for i in range(2, 21):
+        cand = f"{base}{i}"[:40]
+        if cand != src_code and not taken(cand):
+            return cand
+    return f"{src_code}_copy2"[:40]
 
 
 def _clone_bo_result(snap, target, desc: str, cfg: dict) -> dict:
@@ -1760,6 +1813,34 @@ def clone_inspect(data: bytes) -> dict:
     return {"ok": True, "objects": items, "notes": [n for n in notes if n][:5]}
 
 
+def clone_suggest_name(data: bytes, src_code: str) -> dict:
+    """给克隆对象起名（AI）：弹窗打开后立刻调，把名称与编码填好。
+
+    用户明确要求「编码别手填」（2026-11-27）。起名失败不报错——回退规则名，
+    照样能克隆；只是名字朴素一点，预览里还能改。
+    """
+    from . import projlink
+
+    if not data:
+        raise ValueError("没有收到 zip 文件")
+    src_code = str(src_code or "").strip()
+    if not src_code:
+        raise ValueError("没有选择要克隆的对象")
+    target = projlink.TargetObject(code=src_code)
+    try:
+        snap = projlink.snapshot_from_zip(data, "package_upload", target)
+    except Exception as exc:
+        raise ValueError(f"读不了这份 zip（{type(exc).__name__}）") from exc
+    if snap.source == "unavailable" or not snap.fields:
+        warn = "；".join(snap.warnings) or "没解析到字段"
+        raise ValueError(f"没能从 zip 里读到「{src_code}」的字段定义：{warn}")
+
+    name, code, notes = _clone_name("", snap, _llm_conf())
+    name = _clone_fresh_name(name, src_code)
+    code = _clone_safe_code(code, src_code, lambda c: objects.code_taken(c) is not None)
+    return {"ok": True, "name": name[:60], "code": code[:40], "notes": notes}
+
+
 def clone_apply(data: bytes, src_code: str, name: str, code: str,
                 with_form: bool = True, with_list: bool = True) -> dict:
     """按 zip 里某个对象的字段定义，程序化克隆出一个新对象。
@@ -1779,15 +1860,6 @@ def clone_apply(data: bytes, src_code: str, name: str, code: str,
         raise ValueError("没有选择要克隆的对象")
     name = " ".join(str(name or "").split())[:60]
     code = str(code or "").strip()
-    if not name:
-        raise ValueError("新对象名称不能为空")
-    if not _CLONE_CODE_RE.match(code):
-        raise ValueError("对象编码不合法：小写字母开头，只用小写字母、数字、下划线（2–40 位）")
-    # 新编码必须与源对象不同：相同编码出包导入就是「更新原对象」，
-    # 等于拿克隆改人家线上数据（没连库时 code_taken 也拦不住这一条）。
-    if code == src_code:
-        raise ValueError(f"新编码不能和原对象一样（{src_code}）：克隆出来是独立的新对象，"
-                         f"编码相同导入就会覆盖原对象")
 
     t0 = _t.time()
     target = projlink.TargetObject(code=src_code)
@@ -1799,6 +1871,27 @@ def clone_apply(data: bytes, src_code: str, name: str, code: str,
     if snap.source == "unavailable" or not snap.fields:
         warn = "；".join(snap.warnings) or "没解析到字段"
         raise ValueError(f"没能从 zip 里读到「{src_code}」的字段定义：{warn}")
+
+    # 名称 / 编码留空 = 交给 AI 起（显式入口默认就是这样：用户不该手填编码）。
+    # 填了就以用户为准，仍走下面的硬校验。
+    auto_notes: list[str] = []
+    if not name or not code:
+        ai_name, ai_code, ai_notes = _clone_name("", snap, _llm_conf())
+        auto_notes.extend(ai_notes)
+        if not name:
+            name = _clone_fresh_name(ai_name, src_code)
+        if not code:
+            code = _clone_safe_code(ai_code, src_code,
+                                    lambda c: objects.code_taken(c) is not None)
+    if not name:
+        raise ValueError("新对象名称不能为空")
+    if not _CLONE_CODE_RE.match(code):
+        raise ValueError("对象编码不合法：小写字母开头，只用小写字母、数字、下划线（2–40 位）")
+    # 新编码必须与源对象不同：相同编码出包导入就是「更新原对象」，
+    # 等于拿克隆改人家线上数据（没连库时 code_taken 也拦不住这一条）。
+    if code == src_code:
+        raise ValueError(f"新编码不能和原对象一样（{src_code}）：克隆出来是独立的新对象，"
+                         f"编码相同导入就会覆盖原对象")
 
     spec = {"name": name, "code": code, "fields": _clone_fields_spec(snap)}
     bo, build_notes = ai_bo.build_bo(spec, known_objects=objects.ensure(),
@@ -1814,6 +1907,7 @@ def clone_apply(data: bytes, src_code: str, name: str, code: str,
 
     notices = [f"已照「{snap.project.get('name') or src_code}」克隆出 {len(bo.fields)} 个字段的新对象"
                f"「{bo.name}」（{bo.code}），表单和列表接着自动配"]
+    notices.extend(auto_notes)
     notices.extend(build_notes)
     hint = _clone_missing_values_hint(snap)
     if hint:
@@ -3808,6 +3902,11 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path.split("?")[0] == "/api/clone/inspect":
                 # 克隆预检：zip → 对象清单（前端单选）。不调模型，纯本地解析。
                 self._json(clone_inspect(self._body()))
+            elif self.path.split("?")[0] == "/api/clone/name":
+                # 起名：zip 二进制 + src（AI 只起名，不碰字段定义）
+                from urllib.parse import parse_qs, urlparse
+                qs = parse_qs(urlparse(self.path).query)
+                self._json(clone_suggest_name(self._body(), (qs.get("src") or [""])[0]))
             elif self.path.split("?")[0] == "/api/clone":
                 # 显式克隆：zip 走二进制 body，命名与选项放 query（与 /api/ai/sheet 同口径）
                 from urllib.parse import parse_qs, unquote, urlparse

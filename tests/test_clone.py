@@ -156,3 +156,62 @@ def parse_zip_without_dictionary_list():
     codes = [o["code"] for o in out["objects"]]
     assert len(codes) >= 3, codes
     assert all(o["fields"] > 0 for o in out["objects"]), out["objects"]
+
+
+@case("CLONE06", "clone", "编码不让用户手填：AI 起名 + 非法/撞库/重名的兜底", "P0",
+      ["AI 给合法编码 → 直接用；给大写或符号 → 规整成合法编码",
+       "AI 给回源编码 → 退回 <src>_copy（相同编码会覆盖原对象）",
+       "撞库 → 追加数字后缀",
+       "AI 起的名字撞系统已有对象 → 加「副本」（只精确命中）",
+       "起名接口失败不报错：回退规则名，克隆照样能走"])
+def clone_ai_names_the_object():
+    from pp6kit import objects, webui as w
+
+    real_taken = objects.code_taken
+    real_lookup = objects.lookup
+    real_name = w._clone_name
+    objects.code_taken = lambda code: None
+    objects.lookup = lambda name: {"exists": False}
+    try:
+        # ① 合法编码原样用；大写/符号被规整
+        assert w._clone_safe_code("project_change", "project", lambda c: False) == "project_change"
+        assert w._clone_safe_code("Project Change", "project", lambda c: False) == "projectchange"
+        assert w._clone_safe_code("", "project", lambda c: False) == "project_copy"
+
+        # ② 等于源编码 → 退回 <src>_copy
+        got = w._clone_safe_code("project", "project", lambda c: False)
+        assert got == "project_copy", got
+
+        # ③ 撞库 → 追加数字
+        busy = {"project_copy"}
+        got = w._clone_safe_code("project_copy", "project", lambda c: c in busy)
+        assert got == "project_copy2", got
+
+        # ④ 重名 → 加「副本」（源对象同名时不动）
+        objects.lookup = lambda name: ({"exists": True, "code": "project_create", "name": name}
+                                       if name == "项目立项" else {"exists": False})
+        assert w._clone_fresh_name("项目立项", "project") == "项目立项副本"
+        assert w._clone_fresh_name("项目变更", "project") == "项目变更"
+        objects.lookup = lambda name: {"exists": True, "code": "project", "name": name}
+        assert w._clone_fresh_name("项目", "project") == "项目"
+
+        # ⑤ AI 不可用（未配置 / 超时）：真实链路回退规则名，接口不报错
+        from pp6kit.nlq import llm
+
+        real_chat = llm.chat_any
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("no llm")
+
+        llm.chat_any = _boom
+        try:
+            out = w.clone_suggest_name(_zip_bytes(), "project")
+        finally:
+            llm.chat_any = real_chat
+        assert out["name"] == "项目副本", out
+        assert out["code"] == "project_copy", out
+        assert out["notes"], "起名回退时应该带一句说明"
+    finally:
+        objects.code_taken = real_taken
+        objects.lookup = real_lookup
+        w._clone_name = real_name

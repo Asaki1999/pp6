@@ -22,10 +22,16 @@
   const CODE_RE = /^[a-z][a-z0-9_]{1,39}$/;
 
   let zipFile = null;
+  let zipBuf = null;           // 读一次 ArrayBuffer，inspect / 起名 / 提交共用
   let objects = [];            // [{code,name,tbl,fields,flow,suggestedName,suggestedCode}]
   let picked = "";
   let codePool = null;         // 撞库用的编码集合（null = 还没拉）
   let busy = false;
+  // 起名：AI 结果回来时，用户已经动过的字段不覆盖
+  let suggestSeq = 0;
+  let suggesting = false;      // 起名中：编码校验的提示先让位，不然会被它覆盖
+  const suggestCache = new Map();   // srcCode -> {name, code}
+  const touched = { name: false, code: false };
 
   /* ---------------- 撞库 / 编码校验 ---------------- */
 
@@ -41,10 +47,66 @@
     return codePool;
   }
 
+  function setSuggesting(on) {
+    suggesting = on;
+    const tip = $("#pcCodeCheck");
+    if (!tip) return;
+    if (on) {
+      tip.className = "pc-suggesting";
+      tip.textContent = "AI 正在按原对象起名字和编码…";
+    } else {
+      checkCode();
+    }
+  }
+
+  function applySuggestion(d) {
+    const nameEl = $("#pcName");
+    const codeEl = $("#pcCode");
+    if (nameEl && !touched.name && d.name) nameEl.value = d.name;
+    if (codeEl && !touched.code && d.code) {
+      codeEl.value = d.code;
+      checkCode();
+      checkCodeTaken();
+    }
+  }
+
+  async function readZip() {
+    if (!zipBuf) zipBuf = await zipFile.arrayBuffer();
+    return zipBuf;
+  }
+
+  /* 起名不阻塞弹窗：先用「原名副本 / <code>_copy」占位，AI 回来再替换。
+     用户自己动过哪个字段就不覆盖哪个——他要的速度比建议重要。 */
+  async function suggestName(o) {
+    if (!o || !o.code) return;
+    if (suggestCache.has(o.code)) {
+      applySuggestion(suggestCache.get(o.code));
+      return;
+    }
+    const my = ++suggestSeq;
+    setSuggesting(true);
+    try {
+      const buf = await readZip();
+      const res = await fetch(`/api/clone/name?src=${encodeURIComponent(o.code)}`, {
+        method: "POST", body: buf,
+        headers: { "Content-Type": "application/octet-stream" },
+      });
+      const d = await res.json().catch(() => ({}));
+      if (my !== suggestSeq) return;            // 已经切到别的对象了
+      if (!res.ok || d.ok === false || !d.name || !d.code) return;
+      suggestCache.set(o.code, d);
+      applySuggestion(d);
+    } catch (_) {
+      // 起名失败不影响克隆：保留规则占位名，用户仍可改
+    } finally {
+      if (my === suggestSeq) setSuggesting(false);
+    }
+  }
+
   function checkCode() {
     const el = $("#pcCode");
     const tip = $("#pcCodeCheck");
-    if (!el || !tip) return false;
+    if (!el || !tip || suggesting) return false;
     const v = el.value.trim();
     if (!v) {
       el.classList.remove("bad");
@@ -67,10 +129,11 @@
   async function checkCodeTaken() {
     const el = $("#pcCode");
     const tip = $("#pcCodeCheck");
-    if (!el || !tip) return;
+    if (!el || !tip || suggesting) return;
     const v = el.value.trim();
     if (!CODE_RE.test(v)) return;
     const pool = await knownCodes();
+    if (suggesting) return;       // 等池子的这段时间里起名可能开始了，别抢提示
     if (pool.has(v.toLowerCase())) {
       el.classList.add("bad");
       tip.className = "bad";
@@ -114,6 +177,9 @@
     const codeEl = $("#pcCode");
     if (nameEl) nameEl.value = o.suggestedName || (o.name ? `${o.name}副本` : "");
     if (codeEl) codeEl.value = o.suggestedCode || (o.code ? `${o.code}_copy` : "");
+    // 先挂起名（它会占住提示位），再跑本地校验：否则校验的 await 回来会把
+    // 「AI 正在起名」顶掉，用户完全不知道名称还会变。
+    suggestName(o);
     checkCode();
     checkCodeTaken();
     if (nameEl) nameEl.focus();
@@ -143,6 +209,11 @@
 
   async function openClone(zip) {
     zipFile = zip;
+    zipBuf = null;
+    suggestCache.clear();
+    suggestSeq += 1;               // 作废上一份 zip 的起名回调
+    touched.name = false;
+    touched.code = false;
     objects = [];
     picked = "";
     const list = $("#pcObjects");
@@ -150,7 +221,7 @@
     setStatus("");
     openModal();
     try {
-      const buf = await zip.arrayBuffer();
+      const buf = await readZip();
       const res = await fetch("/api/clone/inspect", {
         method: "POST", body: buf,
         headers: { "Content-Type": "application/octet-stream" },
@@ -189,7 +260,7 @@
     if (go) { go.disabled = true; go.textContent = "正在克隆…"; }
     setStatus("正在按原对象逐字段复制定义，并生成表单与列表…");
     try {
-      const buf = await zipFile.arrayBuffer();
+      const buf = await readZip();
       const q = new URLSearchParams({ src: picked, name, code });
       const res = await fetch(`/api/clone?${q.toString()}`, {
         method: "POST", body: buf,
@@ -269,6 +340,7 @@
       const codeEl = $("#pcCode");
       if (codeEl) {
         codeEl.addEventListener("input", () => {
+          touched.code = true;          // 用户动过：AI 建议不再覆盖它
           checkCode();
           clearTimeout(codeEl._t);
           codeEl._t = setTimeout(checkCodeTaken, 300);
@@ -276,6 +348,7 @@
       }
       const nameEl = $("#pcName");
       if (nameEl) {
+        nameEl.addEventListener("input", () => { touched.name = true; });
         nameEl.addEventListener("keydown", (e) => {
           if (e.key === "Enter") { e.preventDefault(); submit(); }
         });
