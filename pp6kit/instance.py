@@ -196,12 +196,12 @@ def probe(port: int | None, timeout: float = 1.0) -> dict | None:
     return data
 
 
-def request_quit(port: int, token: str, timeout: float = 2.5) -> bool:
-    """请旧实例自己退出；老版本没有这个接口就返回 False。"""
+def _post_local(port: int, token: str, path: str, timeout: float) -> bool:
+    """向本机实例 POST 一个只认令牌的控制接口，返回它是否回 ok。"""
     if not port or not token:
         return False
     req = urllib.request.Request(
-        f"http://127.0.0.1:{int(port)}/api/quit",
+        f"http://127.0.0.1:{int(port)}{path}",
         data=b"{}",
         method="POST",
         headers={"X-PP6-Token": token, "Content-Type": "application/json"},
@@ -212,6 +212,21 @@ def request_quit(port: int, token: str, timeout: float = 2.5) -> bool:
     except Exception:
         return False
     return bool(isinstance(data, dict) and data.get("ok"))
+
+
+def request_quit(port: int, token: str, timeout: float = 2.5) -> bool:
+    """请旧实例自己退出；老版本没有这个接口就返回 False。"""
+    return _post_local(port, token, "/api/quit", timeout)
+
+
+def request_focus(port: int, token: str = "", timeout: float = 2.0) -> bool:
+    """请已有实例把窗口调到前面；窗口已经关了就让它在托盘里重开。
+
+    第二次双击时窗口可能已经关掉（托盘还在），只「复用服务」用户会以为
+    什么都没发生。令牌与 /api/quit 同一套：只认回环 + 实例令牌。
+    """
+    token = token or str(read_registry().get("token") or "")
+    return _post_local(port, token, "/api/focus", timeout)
 
 
 def _port_open(port: int) -> bool:

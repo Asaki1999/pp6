@@ -3405,6 +3405,31 @@ class Handler(BaseHTTPRequestHandler):
                                   ensure_ascii=False).encode("utf-8"),
                    "application/json; charset=utf-8")
 
+    def _focus_local(self) -> None:
+        """把应用窗口调到前台；窗口已经关掉就让壳把窗口重新打开。
+
+        只做「显示」这一件事，但仍然要回环 + 实例令牌：托盘/第二次双击都
+        靠它，而外部网页没有任何理由能让程序弹窗。
+        """
+        if self.client_address[0] not in ("127.0.0.1", "::1"):
+            self._json({"ok": False, "error": "只允许在本机操作"}, 403)
+            return
+        expected = getattr(self.server, "instance_token", "")
+        given = self.headers.get("X-PP6-Token") or ""
+        if not expected or not hmac.compare_digest(given.encode(), expected.encode()):
+            self._json({"ok": False, "error": "缺少实例令牌"}, 403)
+            return
+        hook = getattr(self.server, "on_focus", None)
+        if hook is None:
+            self._json({"ok": False, "error": "当前模式没有应用窗口"}, 409)
+            return
+        try:
+            hook()
+        except Exception:
+            self._json({"ok": False, "error": "窗口没能调到前面"}, 500)
+            return
+        self._json({"ok": True})
+
     def _quit_local(self) -> None:
         """让这个进程退出：新版接管的握手口，也是「退出应用」的入口。
 
@@ -3590,6 +3615,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self.path == "/api/quit":
                 self._quit_local()
+                return
+            if self.path == "/api/focus":
+                self._focus_local()
                 return
             if self.path == "/api/update/stream":
                 # 下载/替换要几十秒，用 SSE 把进度推给前端；替换成功时
@@ -3913,6 +3941,8 @@ def make_server(port: int = 8770, host: str = "127.0.0.1") -> tuple[ThreadingHTT
         # 每次启动都换，旧进程的令牌对新进程无效。
         httpd.instance_token = secrets.token_urlsafe(16)
         httpd.on_quit = None
+        # 应用窗口模式由壳挂上：把窗口调到前面（或从托盘重开）
+        httpd.on_focus = None
         return httpd, candidate
     raise RuntimeError(f"端口 {port}-{port + 19} 都被占用，请用 --port 指定其它端口")
 

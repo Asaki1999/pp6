@@ -1108,6 +1108,32 @@ Windows 版必须在 Windows 机器上打（PyInstaller 不能交叉编译）。
 
 > 分发 Windows 版要发**整个文件夹**，不能只发 exe（它依赖同级 `_internal`）。
 
+### Windows：应用窗口 + 系统托盘（2026-11-27）
+
+Windows 版**不再**是「在浏览器里开个页签」。双击 exe 得到的是一个独立应用窗口：
+没有地址栏、没有标签页，尺寸 1240×920，用的是系统自带的 Edge（没有 Edge 就用 Chrome）。
+
+实现是 `pp6kit/winapp.py`：`--app=<url>` 加一份**独占的** `--user-data-dir`。
+独占 profile 是关键——共享默认 profile 时 Edge 会把新窗口挂到已经在跑的进程上，
+`Popen` 立刻返回，「窗口关没关」就再也判断不出来；独占之后窗口与一个浏览器
+子进程严格 1:1，`Popen.poll()` 就是最准的生命周期信号。
+
+- **关窗口不等于退出**：托盘图标会留着（`pp6kit/traywin.py`，纯 ctypes 调
+  `Shell_NotifyIconW`，不引 pystray / pywin32）。右键菜单两项：「打开主窗口」「退出」。
+  单击/双击图标也是打开。
+- 托盘建不起来（Explorer 没在跑、session 0）→ 自动降级成「关窗口即退出」，
+  绝不留一个没有界面的后台进程。
+- **第二次双击不会再开一个**：旧进程收到 `POST /api/focus`（只认回环 + 实例令牌），
+  把窗口提到前面；窗口已经关了就重新打开。
+- **为什么不用 pywebview（WebView2）**：它在 Windows 上靠 pythonnet 调 .NET 的
+  WebView2 封装，PyInstaller 冻结后会卡在 CLR 初始化，用户看到「未响应」。
+  现在 Windows 打包**不带** pywebview / pythonnet（`build/pp6.spec` 按平台裁剪），
+  exe 里那份 Python 运行时不再加载 .NET。
+- 找不到 Edge / Chrome，或窗口拉起后立刻退出（profile 损坏、被组策略禁用）→
+  自动退回浏览器模式，日志里写明原因。
+- 命令行：`--browser` 强制浏览器；`--window` 在 Windows 等价于默认（应用窗口），
+  在 macOS 是 WKWebView 窗口。
+
 ### ⚠️ 改完界面看不到变化？
 
 PyInstaller 把 `pp6kit/static` **打进了 dist/**，改源码不会自动生效。
@@ -1131,7 +1157,8 @@ Windows 上双击 exe 是「再开一个进程」，旧进程不退出时仍占�
 
 | 情况 | 行为 |
 | --- | --- |
-| 同版本已在跑 | 不再起第二个服务，直接把浏览器指回原地址，进程退出（退出码 0） |
+| 同版本已在跑（Windows 应用窗口） | 请旧实例 `POST /api/focus` 把窗口提到前面；窗口已关就从托盘重开。新进程退出（退出码 0） |
+| 同版本已在跑（macOS / 浏览器模式） | 不再起第二个服务，把浏览器指回原地址，进程退出（退出码 0） |
 | 版本 / 提交不同 | 请旧实例退出（`POST /api/quit`，只认回环来源 + 实例令牌），**沿用同一个端口**接管；浏览器里已开的标签刷新就是新版 |
 | 旧实例不响应（老版本没这个接口） | 冻结包按 PID 结束，但先核对镜像名；源码运行一律不动手，弹窗让用户手动处理 |
 

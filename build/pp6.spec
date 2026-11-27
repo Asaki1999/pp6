@@ -37,17 +37,22 @@ datas = [
     # 数据库画像与追问语料（nlq/probe 用）
     (str(ROOT / "assets" / "dbprofile.json"), "assets"),
     (str(ROOT / "assets" / "probe_questions.json"), "assets"),
+    # 程序图标：Windows exe / 托盘菜单共用（winapp.executable_icon 按这个路径找）
+    (str(ROOT / "assets" / "app.ico"), "assets"),
 ]
 
 hiddenimports = [
-    "webview",
-    "webview.platforms.cocoa",
-    "webview.platforms.edgechromium",
-    "webview.platforms.winforms",
     "openpyxl",
     "openpyxl.cell._writer",
     "certifi",
 ]
+
+if sys.platform == "darwin":
+    # macOS 的应用窗口走 pywebview + 系统 WKWebView。Windows 不走这条：
+    # 那边用 Edge/Chrome 的 --app 模式（pp6kit/winapp.py），打包也就不带
+    # pywebview / pythonnet——pythonnet 在冻结包里卡在 CLR 初始化上，
+    # 正是历史上 Windows 版「未响应」的来源。
+    hiddenimports += ["webview", "webview.platforms.cocoa"]
 
 # 更新检查走 HTTPS：certifi 的 cacert.pem 必须随包，否则冻结态容易
 # CERTIFICATE_VERIFY_FAILED（系统证书路径各家机器不一样）
@@ -61,6 +66,13 @@ excludes = [
     "tkinter", "matplotlib", "numpy", "pandas", "PIL", "PyQt5", "PyQt6",
     "PySide2", "PySide6", "pytest", "IPython", "notebook", "scipy",
 ]
+
+if sys.platform == "win32":
+    # Windows 的应用窗口走 Edge/Chrome 的 --app 模式（pp6kit/winapp.py），
+    # 完全不需要 pywebview；而 webview 会顺着函数内的延迟 import 被分析到，
+    # 再把 pythonnet（.NET 互操作）拖进包里——那正是历史上「未响应」的来源。
+    # 这里显式排除：exe 里没有 .NET，也不会有那条初始化路径。
+    excludes += ["webview", "clr", "pythonnet"]
 
 a = Analysis(
     [str(ROOT / "app_entry.py")],
@@ -85,6 +97,8 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
+    # Windows 的 exe 图标与托盘图标同源；macOS 走 BUNDLE 的 .icns
+    icon=str(ROOT / "assets" / "app.ico") if (sys.platform == "win32" and (ROOT / "assets" / "app.ico").exists()) else None,
     disable_windowed_traceback=False,
 )
 

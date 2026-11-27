@@ -61,6 +61,16 @@ def setup(level: int = logging.INFO) -> Path:
     if _READY:
         return log_path()
 
+    # 窗口模式（PyInstaller console=False）下 sys.stdout / sys.stderr 可能是
+    # None：之后任何一句 print 都会 AttributeError，而且异常发生在最外层，
+    # 用户看不到、日志也来不及写——表现就是「双击没反应」。这里先兜住。
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name, None) is None:
+            try:
+                setattr(sys, name, open(os.devnull, "w", encoding="utf-8", errors="ignore"))
+            except OSError:
+                pass
+
     root = logging.getLogger()
     root.setLevel(level)
     fmt = logging.Formatter(

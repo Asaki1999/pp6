@@ -19,6 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from pp6kit import desktop_api, instance
+from pp6kit import winapp as winapp_mod
 from tests._harness import case, skip
 
 
@@ -190,3 +191,277 @@ def _():
     assert instance.same_build(a, {**a, "commit": "def5678"}) is False
     rebuilt = {**a, "builtAt": "2026-11-24T12:00:00+08:00"}
     assert instance.same_build(a, rebuilt) is False
+
+
+# ---------------------------------------------------------------- Windows 应用窗口
+
+@case("DSK07", "desktop", "Windows 应用窗口的命令行：--app + 独占 profile", "P0",
+      ["带 --app=<url> / --user-data-dir / --window-size",
+       "首启不弹欢迎与「设为默认浏览器」向导", "不带 --incognito"])
+def _():
+    from pp6kit import winapp
+
+    args = winapp.launch_args(r"C:\Edge\msedge.exe", "http://127.0.0.1:8770/",
+                              r"C:\Users\x\.pp6kit\appwindow")
+    assert args[0].endswith("msedge.exe"), args[0]
+    assert "--app=http://127.0.0.1:8770/" in args, args
+    assert any(a.startswith("--user-data-dir=") for a in args), args
+    assert "--window-size=1240,920" in args, args
+    assert "--no-first-run" in args and "--no-default-browser-check" in args, args
+    # 关掉最后一个窗口就让进程退出，否则 Edge 会「后台驻留」，生命周期判不准
+    assert "--disable-background-mode" in args, args
+    # profile 必须独占：共享默认 profile 时 Edge 会把窗口挂到已经在跑的进程上，
+    # Popen 立刻返回，「窗口关没关」就再也判断不出来
+    assert any("appwindow" in a for a in args if a.startswith("--user-data-dir=")), args
+    joined = " ".join(args)
+    assert "--incognito" not in joined, args
+
+
+@case("DSK08", "desktop", "浏览器查找：Edge 优先、按候选顺序、找不到返回 None", "P0",
+      ["同一台机器装了 Edge 与 Chrome → 选 Edge",
+       "都没有 → None（调用方退回默认浏览器）", "变量没展开的候选直接跳过"])
+def _():
+    from pp6kit import winapp
+
+    def only(*wanted):
+        names = {w.replace("\\", "/").rsplit("/", 1)[-1].lower() for w in wanted}
+        return lambda p: p.replace("\\", "/").rsplit("/", 1)[-1].lower() in names
+
+    edge, chrome = r"C:\Edge\msedge.exe", r"C:\Chrome\chrome.exe"
+
+    def fake_expand(p):
+        for var, val in (("%ProgramFiles(x86)%", r"C:\PF86"),
+                         ("%ProgramFiles%", r"C:\PF"),
+                         ("%LocalAppData%", r"C:\Users\x\AppData\Local")):
+            p = p.replace(var, val)
+        return p
+
+    got = winapp.find_browser(only(edge, chrome), expand=fake_expand)
+    assert got and got[0] == "Edge", got
+    got = winapp.find_browser(only(chrome), expand=fake_expand)
+    assert got and got[0] == "Chrome", got
+    assert winapp.find_browser(only(), expand=fake_expand) is None
+    if os.name != "nt":
+        # %ProgramFiles% 展开不了（非 Windows）的候选不能被当成存在的路径
+        assert winapp.find_browser(lambda p: True) is None
+    assert winapp.tray_available() in (True, False)
+
+
+@case("DSK09", "desktop", "托盘菜单：打开主窗口 / 退出，工具提示不超长", "P1",
+      ["菜单项有序且命令号唯一", "有「退出」，否则关窗后没法结束进程",
+       "szTip 上限 127 字符"])
+def _():
+    from pp6kit import winapp
+
+    items = winapp.tray_menu()
+    labels = [label for _, label in items]
+    ids = [cmd for cmd, _ in items]
+    assert labels[0] == "打开主窗口", labels
+    assert any("退出" in x for x in labels), labels
+    assert len(set(ids)) == len(ids), ids
+    assert all(isinstance(x, str) and x.strip() for x in labels), labels
+    assert len(winapp.TRAY_TOOLTIP) <= 127, len(winapp.TRAY_TOOLTIP)
+
+
+@case("DSK10", "desktop", "窗口关没关只看子进程：不会重复开窗，关了能重开", "P0",
+      ["窗口开着时再次 open() 不启第二个进程", "进程退出后 is_open()=False 且能重开",
+       "close() 会真的结束子进程"])
+def _():
+    from pp6kit import winapp
+
+    class FakeProc:
+        def __init__(self):
+            self.alive = True
+            self.terminated = False
+
+        def poll(self):
+            return None if self.alive else 0
+
+        def terminate(self):
+            self.terminated = True
+            self.alive = False
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            self.alive = False
+
+    spawned = []
+
+    def spawn(args):
+        proc = FakeProc()
+        spawned.append((args, proc))
+        return proc
+
+    win = winapp.AppWindow(
+        "http://127.0.0.1:8770/",
+        browser=("Edge", Path(r"C:\Edge\msedge.exe")),
+        profile=Path(tempfile.mkdtemp(prefix="pp6-win-")),
+        spawn=spawn,
+    )
+    try:
+        assert win.open() is True and len(spawned) == 1
+        assert win.is_open() is True
+        assert win.open() is True and len(spawned) == 1, "窗口还开着，不该再启一个"
+        spawned[0][1].alive = False          # 用户关掉窗口
+        assert win.is_open() is False
+        assert win.open() is True and len(spawned) == 2, "窗口关了要能重开"
+        win.close()
+        assert spawned[-1][1].terminated is True
+    finally:
+        shutil.rmtree(win.profile, ignore_errors=True)
+
+
+@case("DSK11", "desktop", "--app 模式下重复双击：先聚焦，聚焦不了也不报错", "P1",
+      ["request_focus 走 /api/focus + 实例令牌", "对端没响应时返回 False 而不是抛异常"])
+def _():
+    assert instance.request_focus(0) is False
+    with _registry_tmp() as reg:
+        build = {"version": "test9.99", "commit": "abc1234", "frozen": False}
+        _write_reg(reg, 18979, "tok-dsk11", build)
+        # 端口上没人监听：要返回 False，不能抛异常把启动流程带崩
+        assert instance.request_focus(18979, timeout=0.5) is False
+
+
+# ---------------------------------------------------------- 应用窗口主循环
+
+@contextmanager
+def _patched(obj, **attrs):
+    old = {key: getattr(obj, key) for key in attrs}
+    for key, value in attrs.items():
+        setattr(obj, key, value)
+    try:
+        yield
+    finally:
+        for key, value in old.items():
+            setattr(obj, key, value)
+
+
+def _drive_loop(port: int, make_window, make_tray, tray_ok: bool):
+    """跑一遍 _run_app_window，返回 (rc, exits, 窗口实例)。
+
+    Windows 的主循环是纯 Python：窗口、托盘、进程退出都可以换成假件，
+    所以在 macOS 上也能验证「关窗 → 收摊 → 退出」与「托盘常驻」两条链路。
+    """
+    import types
+
+    from pp6kit import app as desktop
+    from pp6kit import webui
+
+    exits: list[int] = []
+    holder: dict = {}
+
+    def wrap(url):
+        holder["win"] = make_window(url)
+        return holder["win"]
+
+    fake_tray_mod = types.SimpleNamespace(Tray=lambda **kw: make_tray(**kw))
+    had = "pp6kit.traywin" in sys.modules
+    previous = sys.modules.get("pp6kit.traywin")
+    sys.modules["pp6kit.traywin"] = fake_tray_mod
+    try:
+        with _patched(winapp_mod, AppWindow=wrap, tray_available=lambda: tray_ok), \
+                _patched(desktop, _hard_exit=lambda code=0: exits.append(code),
+                         WINDOW_SETTLE_SECONDS=0.2, WINDOW_POLL_SECONDS=0.05), \
+                _patched(desktop.webbrowser, open=lambda url: False):
+            httpd, url = webui.start_background(port)
+            rc = desktop._run_app_window(url, httpd)
+    finally:
+        if had:
+            sys.modules["pp6kit.traywin"] = previous
+        else:
+            sys.modules.pop("pp6kit.traywin", None)
+    return rc, exits, holder.get("win")
+
+
+@case("DSK12", "desktop", "没有托盘时关窗就退出：服务收摊、退出码 0", "P0",
+      ["窗口关闭 → 主循环返回", "退出前关闭窗口与 HTTP 服务",
+       "窗口只 open 一次（不会重复拉起）"])
+def _():
+    class Window:
+        def __init__(self, url):
+            self.url, self.opened, self.closed = url, 0, 0
+            self.t0 = time.monotonic()
+
+        @property
+        def available(self):
+            return True
+
+        @property
+        def name(self):
+            return "Edge"
+
+        def open(self):
+            self.opened += 1
+            return True
+
+        def is_open(self):
+            # 先存在 0.15 秒（窗口画出来）再关掉：模拟用户开了又关
+            return time.monotonic() - self.t0 < 0.15
+
+        def focus(self):
+            return True
+
+        def close(self, timeout=3.0):
+            self.closed += 1
+
+    rc, exits, win = _drive_loop(18981, Window, lambda **kw: None, tray_ok=False)
+    assert rc == 0 and exits == [0], (rc, exits)
+    assert win.opened == 1, win.opened
+    assert win.closed >= 1, win.closed
+
+
+@case("DSK13", "desktop", "有托盘：关窗不退出，托盘能重开窗口，退出才结束", "P0",
+      ["窗口关掉后主循环继续等（服务常驻）", "托盘「打开」重新拉起窗口",
+       "托盘「退出」→ 收摊并 os._exit(0)"])
+def _():
+    state = {"visible": True, "opened": 0, "closed": 0}
+
+    class Window:
+        def __init__(self, url):
+            self.url = url
+
+        @property
+        def available(self):
+            return True
+
+        @property
+        def name(self):
+            return "Edge"
+
+        def open(self):
+            state["opened"] += 1
+            state["visible"] = True
+            return True
+
+        def is_open(self):
+            return state["visible"]
+
+        def focus(self):
+            return True
+
+        def close(self, timeout=3.0):
+            state["closed"] += 1
+            state["visible"] = False
+
+    class Tray:
+        def __init__(self, on_open=None, on_quit=None, icon_path=""):
+            self.on_open, self.on_quit, self.error = on_open, on_quit, ""
+            self.stopped = False
+
+        def start(self, timeout=4.0):
+            # 0.15s 用户关窗 → 0.3s 点「打开主窗口」→ 0.6s 点「退出」
+            threading.Timer(0.15, lambda: state.update(visible=False)).start()
+            threading.Timer(0.3, lambda: self.on_open()).start()
+            threading.Timer(0.6, lambda: self.on_quit()).start()
+            return True
+
+        def stop(self):
+            self.stopped = True
+
+    rc, exits, _win = _drive_loop(18982, Window, Tray, tray_ok=True)
+    assert rc == 0 and exits == [0], (rc, exits)
+    assert state["opened"] == 2, state       # 初始一次 + 托盘重开一次
+    assert state["closed"] >= 1, state
+

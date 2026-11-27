@@ -329,7 +329,7 @@ def _serving(port: int, host: str = "127.0.0.1"):
     thread.start()
     try:
         yield SimpleNamespace(port=used, token=httpd.lan_token,
-                             instance_token=httpd.instance_token)
+                              instance_token=httpd.instance_token, server=httpd)
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -426,3 +426,30 @@ def _():
             assert status == 403, (headers, status)
         status, _, _ = _origin_req(s.port, "GET", "/api/version")
         assert status == 200, status
+
+
+@case("SEC21", "security", "窗口聚焦接口只认本机 + 实例令牌，没有窗口时明确 409", "P0",
+      ["没令牌 / 令牌不对 → 403", "浏览器模式没有窗口 → 409 而不是假装成功",
+       "有窗口钩子时才会被调用，且只调一次"])
+def _():
+    with _serving(18997) as s:
+        for headers in ({}, {"X-PP6-Token": ""}, {"X-PP6-Token": "guess-me"}):
+            status, _, _ = _origin_req(s.port, "POST", "/api/focus", headers)
+            assert status == 403, (headers, status)
+        # 默认（浏览器/headless）没有窗口钩子：必须说清楚，别让调用方以为聚焦了
+        status, _, _ = _origin_req(s.port, "POST", "/api/focus",
+                                   {"X-PP6-Token": s.instance_token})
+        assert status == 409, status
+
+        calls = []
+        s.server.on_focus = lambda: calls.append(1)
+        status, _, body = _origin_req(s.port, "POST", "/api/focus",
+                                      {"X-PP6-Token": s.instance_token})
+        assert status == 200, (status, body)
+        assert calls == [1], calls
+        # 回环之外的来源即使带令牌也不行（同 /api/quit 的口径）
+        status, _, _ = _origin_req(s.port, "POST", "/api/focus",
+                                   {"X-PP6-Token": s.instance_token,
+                                    "Host": "192.168.1.5:%d" % s.port})
+        assert status == 403, status
+

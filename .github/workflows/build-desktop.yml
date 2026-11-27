@@ -178,7 +178,9 @@ jobs:
           Write-Host "冒烟测试通过：exe 启动后 /api/template 返回 200"
 
       # 上面的 --headless 只验证了服务能起，绕过了 GUI —— 而用户双击走的正是 GUI 路径。
-      # 这一步专门测默认启动路径（Windows 上即浏览器模式），断言它真能走到「浏览器模式已启动」。
+      # Windows 默认走「Edge/Chrome 的 --app 窗口 + 托盘」：这里断言的是**选路正确**
+      # （日志里有「模式 appwindow」）加服务可用。runner 是 session 0、没有交互桌面，
+      # Edge 大概率起不来——那会按设计退回浏览器，不能因此判定失败。
       - name: 冒烟测试（Windows 默认启动路径）
         if: runner.os == 'Windows'
         shell: pwsh
@@ -191,20 +193,25 @@ jobs:
           for ($i = 0; $i -lt 20; $i++) {
             Start-Sleep -Seconds 2
             if ($p.HasExited) { Write-Host "进程已退出，退出码 $($p.ExitCode)"; break }
-            if ((Test-Path $log) -and (Select-String -Path $log -Pattern "浏览器模式已启动" -Quiet)) {
+            if ((Test-Path $log) -and (Select-String -Path $log -Pattern "模式 appwindow" -Quiet)) {
               $ok = $true; break
             }
           }
+          $serving = $false
+          try {
+            $r = Invoke-WebRequest -Uri "http://127.0.0.1:8898/api/version" -UseBasicParsing -TimeoutSec 5
+            $serving = ($r.StatusCode -eq 200)
+          } catch { }
           Write-Host "=== 默认启动路径日志 ==="
           if (Test-Path $log) { Get-Content $log -Tail 40 } else { Write-Host "(日志未生成)" }
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-          if (-not $ok) { Write-Error "默认启动路径失败：40 秒内未进入浏览器模式"; exit 1 }
-          Write-Host "默认启动路径通过：双击后的实际路径可用"
+          if (-not $ok) { Write-Error "默认启动路径失败：40 秒内没有进入 appwindow 模式"; exit 1 }
+          if (-not $serving) { Write-Error "默认启动路径失败：服务未响应 /api/version"; exit 1 }
+          Write-Host "默认启动路径通过：选中 appwindow，服务可用（窗口本身在无桌面环境起不来属正常）"
 
-      # 应用窗口（--window）走 WebView2 + pythonnet，是历史上「未响应」的嫌疑段。
-      # 这里只收集诊断信息、不阻断发布：runner 是 session 0，无交互桌面，
-      # 窗口相关判定在这里不可靠，不能拿它卡住发布。
-      - name: 诊断（Windows 应用窗口，不阻断）
+      # 这条只收集诊断、不阻断：托盘与窗口都要交互桌面，session 0 下判定不可靠。
+      # 真正要确认的是「exe 里带上了 winapp / 托盘代码且不崩」，日志能看出来。
+      - name: 诊断（Windows 应用窗口与托盘，不阻断）
         if: runner.os == 'Windows'
         continue-on-error: true
         shell: pwsh

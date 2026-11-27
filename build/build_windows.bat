@@ -54,6 +54,7 @@ echo 打包完成: dist\PP6ImportBuilder\PP6ImportBuilder.exe
 echo.
 echo 分发方式：把整个 dist\PP6ImportBuilder 文件夹压缩发给同事（不能只发 exe，
 echo 它依赖同目录下的 _internal 文件夹）。
-echo Windows 10/11 自带 Edge WebView2；若极老系统缺这个组件，程序会自动改用浏览器打开。
+echo Windows 10/11 自带 Edge：程序用 Edge 的 --app 模式开独立窗口（带系统托盘）。
+echo 没装 Edge 时会用 Chrome；两者都没有则自动改用默认浏览器打开。
 echo.
 pause

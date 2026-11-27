@@ -1,8 +1,13 @@
 """桌面应用入口。
 
-窗口用系统自带 WebView（macOS: WKWebView / Windows: Edge WebView2），
-界面仍是本地 HTML，但用户看到的是一个独立应用窗口，不是浏览器标签页。
-文件读写走原生对话框（见 desktop_api），不依赖浏览器下载语义。
+窗口分两条实现：
+
+- macOS：pywebview + 系统 WKWebView，文件读写走原生对话框（见 desktop_api）；
+- Windows：Edge / Chrome 的 ``--app`` 模式（见 winapp），一个独占 profile 的
+  独立窗口，配系统托盘常驻。**不用 pywebview**——它在 Windows 上靠 pythonnet
+  调 .NET，冻结包里会卡在 CLR 初始化上（用户看到「未响应」），这正是以前
+  Windows 版被降级成「浏览器开个页签」的原因；页签关掉进程还在，用户只能去
+  任务管理器杀。
 
 关于启动顺序：`console=False` 的打包产物没有控制台，所以日志必须最先就位，
 重模块的导入也放到日志之后——否则导入阶段崩掉就只剩一个卡死的窗口，查不到原因。
@@ -12,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -58,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="固定端口（默认 8770，被占则顺延；显式指定时不启用单实例接管）")
     ap.add_argument("--headless", action="store_true", help="只起服务不开窗口（自检用）")
     ap.add_argument("--window", action="store_true",
-                    help="用系统 WebView 窗口打开（Windows 需显式指定）")
+                    help="用应用窗口打开（macOS 走 WKWebView；Windows 走 Edge --app）")
     ap.add_argument("--browser", action="store_true", help="不用应用窗口，直接在浏览器打开")
     args = ap.parse_args(argv)
 
@@ -66,16 +72,17 @@ def main(argv: list[str] | None = None) -> int:
     log = applog.get("pp6kit.app")
 
     # 模式先定，后面每一步都按它走。
-    # Windows 默认浏览器：WebView2 + pythonnet 这条链在冻结包里极易卡死在主线程，
-    # 用户看到的就是「未响应」；而界面本来就是本地网页，浏览器打开功能完全一致。
+    # Windows 用 appwindow：Edge/Chrome 的 --app 模式 + 独占 profile，窗口与
+    # 一个浏览器子进程 1:1，关窗即知、可常驻托盘。pywebview 在那条路上会把
+    # pythonnet 拖进来，冻结包卡死过，所以 Windows 不再走它。
     if args.headless:
         mode = "headless"
     elif args.browser:
         mode = "browser"
     elif args.window:
-        mode = "window"
+        mode = "appwindow" if os.name == "nt" else "window"
     elif os.name == "nt":
-        mode = "browser"
+        mode = "appwindow"
     else:
         mode = "window"
 
@@ -108,6 +115,13 @@ def main(argv: list[str] | None = None) -> int:
                     webbrowser.open(_browser_url(claim.url))
                 except Exception:
                     log.warning("打开已有实例的页面失败", exc_info=True)
+            else:
+                # 双击第二次时窗口可能已经关掉（托盘还在）：请旧进程把窗口
+                # 重开或提到前面，否则用户会觉得「双击了但什么都没发生」。
+                if instance.request_focus(claim.port):
+                    log.info("已请已有实例把窗口调到前面")
+                else:
+                    log.warning("已有实例在跑，但没能把窗口调到前面（%s）", claim.url)
             return 0
         if claim.status == "blocked":
             log.error("无法接管已在运行的实例：%s", claim.detail)
@@ -147,13 +161,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if mode == "browser":
-        if os.name == "nt" and not args.browser:
-            log.info("Windows 默认使用浏览器模式：避开 WebView2/pythonnet 在冻结包中"
-                     "初始化卡死的问题（可用 --window 强制应用窗口）")
-        else:
-            log.info("按参数要求跳过应用窗口，直接使用浏览器")
+        log.info("按参数要求跳过应用窗口，直接使用浏览器")
         return _run_in_browser(url, httpd)
 
+    if mode == "appwindow":
+        return _run_app_window(url, httpd)
+
+    # 以下是 macOS 的 pywebview 路径（Windows 在上一行就返回了：那边用
+    # Edge/Chrome --app，冻结包里也没有 pywebview）。
     try:
         import webview  # type: ignore
     except Exception:
@@ -162,6 +177,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # WebView2 缺失时创建窗口会白屏甚至卡死（用户看到「未响应」）。
     # 这种情况直接走浏览器——功能完全一样，只是没有独立窗口。
+    # 保留这段：Windows 上若要强制走 pywebview（源码运行），仍能先自查。
     if os.name == "nt":
         state = applog.webview2_state()
         if state is False:
@@ -313,6 +329,144 @@ def _selftest(window) -> None:
         except Exception:
             pass
         os._exit(0)
+
+
+# ------------------------------------------------------------ Windows 应用窗口
+
+#: 窗口刚拉起时还在初始化，别把「头几秒没窗口」当成启动失败
+WINDOW_SETTLE_SECONDS = 4.0
+#: 主循环多久看一眼窗口状态（托盘动作本身是队列唤醒，不走这个间隔）
+WINDOW_POLL_SECONDS = 1.0
+
+
+def _run_app_window(url: str, httpd) -> int:
+    """Windows：Edge / Chrome 的 ``--app`` 窗口 + 系统托盘。
+
+    生命周期收敛成三件事：
+
+    1. 打开窗口（独占 profile，窗口与一个浏览器子进程 1:1）；
+    2. 关掉窗口**不杀服务**：托盘图标留着，菜单可以重开窗口或退出；
+    3. 托盘菜单、新实例接管、第二次双击要聚焦——全部投进同一个队列，
+       主线程单点处理，不在回调线程里做长活。
+    """
+    log = applog.get("pp6kit.app")
+    try:
+        from . import winapp
+    except Exception:
+        log.warning("应用窗口模块加载失败，改用浏览器打开", exc_info=True)
+        return _run_in_browser(url, httpd)
+
+    win = winapp.AppWindow(url)
+    if not win.available:
+        log.warning("没找到 Edge / Chrome，改用默认浏览器打开")
+        return _run_in_browser(url, httpd)
+    if not win.open():
+        log.warning("应用窗口启动失败，改用默认浏览器打开")
+        return _run_in_browser(url, httpd)
+
+    actions: "queue.Queue[str]" = queue.Queue()
+    tray = None
+    tray_ok = False
+    if winapp.tray_available():
+        try:
+            from .traywin import Tray
+
+            tray = Tray(on_open=lambda: actions.put("open"),
+                        on_quit=lambda: actions.put("quit"),
+                        icon_path=winapp.executable_icon())
+            tray_ok = tray.start()
+            if not tray_ok:
+                log.warning("托盘创建失败（%s）：关闭窗口就退出进程", tray.error)
+        except Exception:
+            log.warning("托盘不可用：关闭窗口就退出进程", exc_info=True)
+    else:
+        log.info("非 Windows 平台不启用托盘：关闭窗口即退出")
+
+    def _quit() -> None:
+        """新实例要接管时先把窗口关掉，别给对方留一个「连接不上」的残窗口。"""
+        actions.put("quit")
+        # 这个 hook 由 /api/quit 的处理线程同步调用，它自己会在 0.2 秒后
+        # os._exit：关窗口别拖太久，否则接管方要多等好几秒。
+        win.close(timeout=1.5)
+
+    httpd.on_quit = _quit
+    httpd.on_focus = lambda: actions.put("open")
+    log.info("应用窗口已启动（%s，托盘%s）-> %s",
+             win.name, "已就绪" if tray_ok else "不可用", url)
+
+    opened_at = time.monotonic()
+    window_seen = False
+    use_browser = False
+    try:
+        while True:
+            try:
+                action = actions.get(timeout=WINDOW_POLL_SECONDS)
+            except queue.Empty:
+                if win.is_open():
+                    window_seen = True
+                    continue
+                if tray_ok:
+                    continue                      # 托盘常驻：窗口关了、服务还在
+                if not window_seen and time.monotonic() - opened_at < WINDOW_SETTLE_SECONDS:
+                    continue                      # 还在初始化，再等等
+                if window_seen:
+                    log.info("窗口已关闭，进程退出（无托盘常驻）")
+                else:
+                    # 窗口压根没起来（profile 损坏、被组策略禁用）：别留一个
+                    # 没有界面的服务在后台，改用浏览器至少还能用
+                    log.warning("应用窗口没能打开，改用默认浏览器")
+                    use_browser = True
+                break
+            if action == "quit":
+                log.info("收到退出请求")
+                break
+            if action == "open":
+                if win.is_open():
+                    win.focus()
+                elif win.open():
+                    log.info("已重新打开应用窗口")
+                else:
+                    log.warning("重新打开应用窗口失败")
+    finally:
+        httpd.on_quit = None
+        httpd.on_focus = None
+        if tray is not None:
+            tray.stop()
+        win.close()
+
+    if use_browser:
+        return _run_in_browser(url, httpd)
+
+    httpd.shutdown()
+    try:
+        httpd.server_close()
+    except Exception:
+        pass
+    instance.clear_registry()
+    log.info("应用已退出（运行 %.1f 秒）", applog.elapsed())
+    _hard_exit()
+    return 0
+
+
+def _hard_exit(code: int = 0) -> None:
+    """让进程立刻消失。
+
+    托盘线程、HTTP 线程、浏览器子进程，任何一环在解释器退出阶段卡住，
+    用户看到的就是「窗口关了进程还在」——那正是这次要解决的问题本身。
+    先把日志刷下去，再 ``os._exit``：宁可少跑 atexit（登记表已经手动清过）。
+    """
+    try:
+        import logging
+
+        logging.shutdown()
+    except Exception:
+        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream and stream.flush()
+        except Exception:
+            pass
+    os._exit(code)
 
 
 def _run_in_browser(url: str, httpd) -> int:
