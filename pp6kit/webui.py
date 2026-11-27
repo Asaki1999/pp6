@@ -1630,6 +1630,20 @@ def ai_generate_bo(payload: dict, projlink_header: str | None = None) -> dict:
     bo = bo_res["bo"]
     notices.extend(bo_res["notices"])
     steps.append({"step": "对象", "model": bo_res["model"], "seconds": bo_res["seconds"]})
+    return _finish_bo(bo, notices=notices, steps=steps, want_form=want_form,
+                      want_list=want_list, cfg=cfg, link_target=link_target,
+                      link_decisions=link_decisions, model=bo_res["model"])
+
+
+def _finish_bo(bo, *, notices: list[str], steps: list[dict],
+               want_form: bool, want_list: bool, cfg: dict,
+               link_target, link_decisions, model: str) -> dict:
+    """对象定稿之后的部分：撞库校验 → 补链接字段 → 表单 / 列表设计 → 关系识别 → 组装响应。
+
+    /api/ai/bo 与 /api/clone 共用这一份，保证「克隆出来的结果」与「AI 生成的结果」
+    结构完全一致——前端只认一套字段，不用按入口分支。
+    """
+    pool = objects.ensure()
 
     # 编码撞库硬校验（2026-11-26 用户要求）：连着库时，新对象的 code 不许和
     # 系统已有对象一样——AI 起的名撞了库，导入就会跟线上对象搅在一起。
@@ -1698,9 +1712,139 @@ def ai_generate_bo(payload: dict, projlink_header: str | None = None) -> dict:
         # 本次关联的目标对象（没关联时为 None）：前端据此显示「已关联：合同」，
         # 出包/导出时也用它确认两边说的是同一个对象。
         "linkTarget": (link_target.to_dict() if link_target is not None else None),
-        "model": bo_res["model"],
+        "model": model,
         "seconds": round(sum(s.get("seconds", 0) for s in steps), 2),
     }
+
+
+_CLONE_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
+
+
+def clone_inspect(data: bytes) -> dict:
+    """对象 zip → 可选对象清单（弹窗用）。只解析，不调模型、不落库。
+
+    多对象包全列出来：流程包常带一个主对象 + 若干子对象，由用户单选。
+    """
+    import tempfile
+
+    from .inspect import inspect_path
+
+    if not data:
+        raise ValueError("没有收到 zip 文件")
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "clone.zip"
+        path.write_bytes(data)
+        try:
+            proj, notes = inspect_path(path)
+        except Exception as exc:      # BadZipFile / 解析异常都归成一句人话
+            raise ValueError(f"读不了这份 zip（{type(exc).__name__}）："
+                             f"请确认是从「业务对象」导出的同步包") from exc
+    if not proj.bos:
+        raise ValueError("这份 zip 里没有业务对象（bo/*.xml）；请确认导出的是「业务对象」包")
+    items = []
+    for bo in proj.bos:
+        code = str(bo.code or "").strip()
+        if not code:
+            continue
+        items.append({
+            "code": code,
+            "name": bo.name or code,
+            "tbl": bo.tbl_name or "",
+            "fields": len(bo.fields or []),
+            "flow": bool(bo.flow_driven),
+            "suggestedName": f"{bo.name or code}副本"[:60],
+            "suggestedCode": f"{code}_copy"[:40],
+        })
+    if not items:
+        raise ValueError("zip 里的业务对象没有编码，无法克隆")
+    return {"ok": True, "objects": items, "notes": [n for n in notes if n][:5]}
+
+
+def clone_apply(data: bytes, src_code: str, name: str, code: str,
+                with_form: bool = True, with_list: bool = True) -> dict:
+    """按 zip 里某个对象的字段定义，程序化克隆出一个新对象。
+
+    红线（2026-11-27 设计稿）：字段定义必须来自 zip 解析结果本身，**不让大模型
+    转写**——长度、候选值、级联、子表列任何一项靠自然语言描述都会丢。
+    AI 只参与「表单/列表怎么排」（与 /api/ai/bo 同一条链）。
+    """
+    import time as _t
+
+    from . import projlink
+
+    if not data:
+        raise ValueError("没有收到 zip 文件")
+    src_code = str(src_code or "").strip()
+    if not src_code:
+        raise ValueError("没有选择要克隆的对象")
+    name = " ".join(str(name or "").split())[:60]
+    code = str(code or "").strip()
+    if not name:
+        raise ValueError("新对象名称不能为空")
+    if not _CLONE_CODE_RE.match(code):
+        raise ValueError("对象编码不合法：小写字母开头，只用小写字母、数字、下划线（2–40 位）")
+    # 新编码必须与源对象不同：相同编码出包导入就是「更新原对象」，
+    # 等于拿克隆改人家线上数据（没连库时 code_taken 也拦不住这一条）。
+    if code == src_code:
+        raise ValueError(f"新编码不能和原对象一样（{src_code}）：克隆出来是独立的新对象，"
+                         f"编码相同导入就会覆盖原对象")
+
+    t0 = _t.time()
+    target = projlink.TargetObject(code=src_code)
+    try:
+        snap = projlink.snapshot_from_zip(data, "package_upload", target)
+    except Exception as exc:
+        raise ValueError(f"读不了这份 zip（{type(exc).__name__}）："
+                         f"请确认是从「业务对象」导出的同步包") from exc
+    if snap.source == "unavailable" or not snap.fields:
+        warn = "；".join(snap.warnings) or "没解析到字段"
+        raise ValueError(f"没能从 zip 里读到「{src_code}」的字段定义：{warn}")
+
+    spec = {"name": name, "code": code, "fields": _clone_fields_spec(snap)}
+    bo, build_notes = ai_bo.build_bo(spec, known_objects=objects.ensure(),
+                                     strict_objects=True, prefer_code=True,
+                                     trust_codes=True)
+    # 字段编码/物理列按原对象原样复制；名称与编码用用户填的那份（build 可能做了清洗）
+    bo.name = name
+    bo.code = code
+    # 原对象是流程对象时，新对象也标成流程：否则那批流程冗余字段没有流程承载
+    src_flow = _clone_src_flow(data, src_code)
+    if src_flow:
+        bo.flow_driven = True
+
+    notices = [f"已照「{snap.project.get('name') or src_code}」克隆出 {len(bo.fields)} 个字段的新对象"
+               f"「{bo.name}」（{bo.code}），表单和列表接着自动配"]
+    notices.extend(build_notes)
+    hint = _clone_missing_values_hint(snap)
+    if hint:
+        notices.append(hint)
+    if src_flow:
+        notices.append("原对象是流程对象：流程冗余字段已带上；流程图不克隆，"
+                       "需要的话去「新建流程配置」重画")
+
+    steps = [{"step": "对象", "model": "clone", "seconds": round(_t.time() - t0, 2)}]
+    out = _finish_bo(bo, notices=notices, steps=steps, want_form=with_form,
+                     want_list=with_list, cfg=_llm_conf(), link_target=None,
+                     link_decisions={}, model="clone")
+    out["bo"]["cloneFrom"] = {"name": snap.project.get("name") or src_code, "code": src_code}
+    return out
+
+
+def _clone_src_flow(data: bytes, src_code: str) -> bool:
+    """zip 里这个对象是不是流程对象（只解析，失败按非流程处理）。"""
+    import tempfile
+
+    from .inspect import inspect_path
+
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "clone.zip"
+            path.write_bytes(data)
+            proj, _notes = inspect_path(path)
+        bo = proj.bo(src_code)
+        return bool(bo and bo.flow_driven)
+    except Exception:
+        return False
 
 
 def ai_workflow(data: bytes, instruction: str, focus: str = "") -> tuple[bytes, str, dict]:
@@ -3633,6 +3777,20 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "error": str(exc)})
                 except Exception as exc:
                     self._json({"ok": False, "error": f"文档解析失败：{exc}"})
+            elif self.path.split("?")[0] == "/api/clone/inspect":
+                # 克隆预检：zip → 对象清单（前端单选）。不调模型，纯本地解析。
+                self._json(clone_inspect(self._body()))
+            elif self.path.split("?")[0] == "/api/clone":
+                # 显式克隆：zip 走二进制 body，命名与选项放 query（与 /api/ai/sheet 同口径）
+                from urllib.parse import parse_qs, unquote, urlparse
+                qs = parse_qs(urlparse(self.path).query)
+                self._json(clone_apply(
+                    self._body(),
+                    (qs.get("src") or [""])[0],
+                    unquote((qs.get("name") or [""])[0]),
+                    (qs.get("code") or [""])[0],
+                    with_form=(qs.get("form") or ["1"])[0] != "0",
+                    with_list=(qs.get("list") or ["1"])[0] != "0"))
             elif self.path == "/api/ai/bo":
                 # 与 /api/parse、/api/build 同一个决策头：AI 生成也要能「关联项目」。
                 # 头非法 → parse_decisions 抛 ValueError → 统一 400（不静默当成没勾）。

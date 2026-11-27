@@ -2259,13 +2259,33 @@ function renderAiBo(d) {
          ⚠ 系统里已有同名对象 ${esc(exist.code)}（id ${esc(exist.id || "未知")}）· 将按「新建」导入</span>`
     : `<span class="chip" title="系统里没有同名对象，导入会新建一个">＋ 新对象</span>`;
 
+  /* 克隆态（v7）：名称/编码可改，前面挂「克隆自」。
+     非克隆态一个字都不动——cloneFrom 缺省即旧行为，老入口零影响。 */
+  const cloneFrom = bo.cloneFrom || null;
+  // 输入框宽度跟着内容走：写死 11em 会把「编码 / 字段数 / 新对象」挤到第二行，
+  // 设计稿要求这些在一行里（emoji 与中文都按 1 个字算，够了）。
+  // 名称按 em（中文≈1em/字），编码按 ch（等宽字体）；多给 1 个单位避免文字贴边
+  const nameW = Math.max(5, Math.min(14, String(bo.name || "").length + 1.5));
+  const codeW = Math.max(8, Math.min(20, String(bo.code || "").length + 1));
+  const headMain = cloneFrom
+    ? `<span class="clone-chip" title="出包后是全新对象，不影响「${esc(cloneFrom.name)}」">
+         <svg class="i"><use href="#i-copy"/></svg>克隆自：${esc(cloneFrom.name)}</span>
+       <input id="aiBoName" class="ai-bo-name-in" style="width:${nameW}em" value="${esc(bo.name)}"
+              title="新对象名称；改完导入的是这个名字" autocomplete="off">
+       <span class="ai-bo-code-in" title="新对象编码；出包后与原对象是两个独立对象">
+         <input id="aiBoCode" style="width:${codeW}ch" value="${esc(bo.code)}" spellcheck="false" autocomplete="off">
+         <span class="code-check"></span>
+       </span>
+       <span class="muted">${bo.fields.length} 个字段</span>`
+    : `<strong>${esc(bo.name)}</strong>
+       <span class="chip accent">${esc(bo.code)}</span>
+       <span class="muted">${bo.fields.length} 个字段</span>`;
+
   return `
     <div class="ai-card">
       <div class="ai-card-head">
-        <div>
-          <strong>${esc(bo.name)}</strong>
-          <span class="chip accent">${esc(bo.code)}</span>
-          <span class="muted">${bo.fields.length} 个字段</span>
+        <div${cloneFrom ? ' class="is-clone"' : ""}>
+          ${headMain}
           ${fromSheet}
           ${objInfo}
           ${existChip}
@@ -3752,6 +3772,11 @@ async function sendAiChat(text, { fresh = false } = {}) {
         objects: state.data ? state.data.objects.map((o) => ({ code: o.code, name: o.name })) : [],
       }, aiHeaders());
     }
+    // 克隆出来的对象，名称/编码与「克隆自」在微调后必须留着：
+    // refine 只重建字段，不认这两个前端态；丢了就会退回普通对象的样子
+    //（chip 与可编辑名称消失，用户以为克隆白做了）。
+    const prevClone = (state.aiData && state.aiData.bo && state.aiData.bo.cloneFrom) || null;
+    if (prevClone && d.bo && !d.bo.cloneFrom) d.bo.cloneFrom = prevClone;
     // 后端返回的都是完整结果，直接整块替换预览（手改过的字段以 AI 结果为准）
     state.aiData = d;
     box.classList.remove("is-error");
@@ -4339,6 +4364,34 @@ function bind() {
     }
     pickViaInput($("#aiSheetInput"));
   };
+  /* 克隆态对象信息条：名称/编码直接写回 state.aiData（出包读的就是它）。
+     用事件委托，renderAiBo 每次重建输入框就不用逐处重绑。 */
+  document.addEventListener("input", (e) => {
+    const d = state.aiData;
+    if (!d || !d.bo || !d.bo.cloneFrom) return;
+    const id = e.target && e.target.id;
+    if (id === "aiBoName") {
+      d.bo.name = e.target.value;
+      e.target.style.width = Math.max(5, Math.min(14, e.target.value.length + 1.5)) + "em";
+      return;
+    }
+    if (id !== "aiBoCode") return;
+    const v = String(e.target.value || "").trim();
+    d.bo.code = v;
+    e.target.style.width = Math.max(8, Math.min(20, v.length + 1)) + "ch";
+    // 物理表名跟着编码走；字段的物理列名不含表名，不用动。
+    // 字典 key 由服务端 apply 时按新编码重新生成。
+    d.bo.tbl = v ? `pp_${v}` : d.bo.tbl;
+    const ok = /^[a-z][a-z0-9_]{1,39}$/.test(v);
+    const wrap = e.target.closest(".ai-bo-code-in");
+    const tip = wrap && wrap.querySelector(".code-check");
+    if (wrap) wrap.classList.toggle("bad", v !== "" && !ok);
+    if (tip) {
+      tip.className = "code-check" + (v === "" ? "" : (ok ? " ok" : " bad"));
+      tip.textContent = v === "" ? "" : (ok ? "✓" : "小写字母开头");
+    }
+  });
+
   $("#aiSheetInput").onchange = async (e) => {
     const file = e.target.files[0];
     e.target.value = "";

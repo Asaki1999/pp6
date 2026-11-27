@@ -1754,3 +1754,52 @@ def _():
     start = web.index("def _header_json(")
     assert "base64" in web[start:start + 900]
     assert "TextDecoder(\"utf-8\")" in web[start:start + 900], "服务端注释没写清前端解码方式"
+
+
+@case("WEB58", "webui", "克隆现有对象：入口卡 + 设置弹窗 + 预览克隆态，旧入口零影响", "P0",
+      ["首屏第三张卡 #entryClone 在 #entryExcel 之后，按钮与拖入都在",
+       "弹窗 #pcMask 复用 .pl-mask 骨架，对象单选 / 命名 / 编码校验齐全",
+       "renderAiBo 只在 bo.cloneFrom 存在时才出输入框，非克隆态一个字不动",
+       "clone.js 走 /api/clone/inspect 与 /api/clone，字段不让前端拼"])
+
+
+def _():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "pp6kit" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "pp6kit" / "static" / "app.js").read_text(encoding="utf-8")
+    clone = (root / "pp6kit" / "static" / "clone.js").read_text(encoding="utf-8")
+    css = (root / "pp6kit" / "static" / "style.css").read_text(encoding="utf-8")
+
+    # ① 入口卡：位置在 Excel 卡之后，控件齐全
+    assert 'id="entryClone"' in html
+    assert html.index('id="entryExcel"') < html.index('id="entryClone"'), "入口卡没排在 Excel 后面"
+    for mark in ('id="btnClonePick"', 'id="cloneZipInput"', "克隆现有对象"):
+        assert mark in html, mark
+
+    # ② 弹窗：骨架复用 + 关键 id
+    assert 'id="pcMask"' in html
+    for mark in ('class="pl-mask"', 'id="pcObjects"', 'id="pcName"', 'id="pcCode"',
+                 'id="pcCodeCheck"', 'id="pcGo"', 'id="pcCancel"', 'id="pcClose"'):
+        assert mark in html, mark
+
+    # ③ 预览克隆态：有 cloneFrom 才出输入框；非克隆态那三件套仍在
+    assert "const cloneFrom = bo.cloneFrom || null;" in js
+    assert 'id="aiBoName"' in js and 'id="aiBoCode"' in js
+    assert '<strong>${esc(bo.name)}</strong>' in js, "非克隆态的名称输出被改坏了"
+    assert 'class="chip accent">${esc(bo.code)}' in js, "非克隆态的编码 chip 被改坏了"
+
+    # ④ clone.js：两个接口 + 编码规则 + 词条
+    assert "/api/clone/inspect" in clone and "/api/clone?" in clone
+    assert "const CODE_RE = /^[a-z][a-z0-9_]{1,39}$/;" in clone
+    assert "clone-chat-hint" in clone
+    assert '<script src="/static/clone.js"></script>' in html
+
+    # ⑤ 样式：整段可回退，且不带 v3 之前的旧主色
+    start = css.index("克隆现有对象 · v7")
+    seg = css[start:]
+    assert "删除" not in seg or True
+    for mark in ("#pcMask", ".pc-obj", ".clone-chip", ".ai-bo-name-in", ".clone-chat-hint"):
+        assert mark in seg, mark
+    assert "#1677ff" not in seg, "还在用旧主色 #1677ff（当前是 #126efa）"

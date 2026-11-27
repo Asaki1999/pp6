@@ -5763,3 +5763,117 @@ body.v3 .btn.primary:disabled:hover {
   box-shadow: none;
   transform: none;
 }
+
+/* ==========================================================================
+   克隆现有对象 · v7（2026-11-27）
+   设计稿：out/界面设计-v7/对象克隆/；色值已换成当前按钮体系（#126efa / --btn-**）
+
+   三块：首屏第三张入口卡 / 克隆设置弹窗（复用 .pl-mask 骨架）/ 预览页克隆态。
+   删掉本段即回退（JS 仍会调 DOM，但不会崩：缺元素时全部走 null 判断）。
+   ========================================================================== */
+
+/* ---------- ① 首屏入口卡：与「使用 Excel 规格表」同构 ---------- */
+#entryClone { margin-top: 12px; }
+#entryClone .eb-ic { color: var(--btn-primary, #126efa); }
+#entryClone.drag { border-color: #8fb8ff; background: #f5f8ff; }
+#entryClone .eb-a { flex-wrap: wrap; }
+
+/* ---------- ② 克隆设置弹窗 ---------- */
+#pcMask { z-index: 90; }
+#pcMask .pl-modal { width: 560px; max-width: 94vw; }
+
+.pc-objects { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 4px; }
+.pc-obj {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border: 1px solid var(--border, #eaeef6);
+  border-radius: 8px; cursor: pointer; transition: border-color .15s, background .15s;
+}
+.pc-obj:hover { border-color: #b9d4ff; }
+.pc-obj.on { border-color: var(--btn-primary, #126efa); background: var(--btn-text-soft, #edf4ff); }
+.pc-obj input[type="radio"] { accent-color: var(--btn-primary, #126efa); margin: 0; }
+.pc-obj .pc-obj-name { font-weight: 500; color: var(--text, #17212f); }
+.pc-obj .pc-obj-code { font: 12px/1 ui-monospace, Menlo, monospace; color: var(--muted, #6b7689); }
+.pc-obj .pc-obj-count { margin-left: auto; font-size: 12px; color: var(--muted, #6b7689); white-space: nowrap; }
+
+.chip.flow-chip {
+  display: inline-flex; align-items: center; height: 18px; padding: 0 7px;
+  border-radius: 9px; background: #f3f0ff; color: #6b4fd8;
+  font-size: 11px; font-weight: 500;
+}
+
+/* 命名区：两列（名称 / 编码），编码等宽 */
+.pc-naming { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 10px; margin: 14px 0 2px; }
+.pc-naming label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted, #6b7689); }
+.pc-naming input {
+  height: 34px; padding: 0 10px; border: 1px solid var(--border, #dfe3ea);
+  border-radius: 8px; font-size: 13px; color: var(--text, #17212f); background: #fff;
+}
+.pc-naming input:focus { outline: none; border-color: var(--btn-primary, #126efa); box-shadow: 0 0 0 3px rgb(18 110 250 / .12); }
+.pc-naming input.mono { font-family: ui-monospace, Menlo, monospace; letter-spacing: .3px; }
+.pc-naming input.bad { border-color: var(--danger, #d92d20); }
+#pcCodeCheck { grid-column: 2; font-size: 12px; min-height: 16px; }
+#pcCodeCheck.ok { color: #067a3c; }
+#pcCodeCheck.bad { color: var(--danger, #d92d20); }
+
+.pc-note {
+  margin: 10px 0 2px; padding: 8px 12px; border-radius: 8px;
+  background: var(--surface-2, #f7f9fc); border: 1px solid var(--border, #eef1f6);
+  font-size: 12px; line-height: 1.7; color: var(--muted, #6b7689);
+}
+.pc-note b { color: var(--text, #17212f); font-weight: 500; }
+.pc-status { margin-top: 10px; font-size: 12.5px; line-height: 1.7; color: var(--muted, #6b7689); }
+.pc-status.bad { color: var(--danger, #d92d20); }
+.pc-loading { padding: 14px 2px; font-size: 12.5px; color: var(--muted, #6b7689); }
+.pc-loading.bad { color: var(--danger, #d92d20); }
+
+/* 底部按钮：与弹窗规范一致（gap 10 / 最小 34 高） */
+.pc-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 22px; border-top: 1px solid var(--border, #eaeef6); }
+.pc-foot .btn { min-height: 34px; }
+
+/* ---------- ③ 预览页克隆态 ---------- */
+.ai-card-head > div.is-clone { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.clone-chip {
+  display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 10px;
+  border-radius: 12px; background: var(--btn-text-soft, #edf4ff);
+  border: 1px solid #cfe2ff; font-size: 12px; color: var(--btn-text, #0958d9); white-space: nowrap;
+}
+.clone-chip .i { width: 12px; height: 12px; }
+.ai-bo-name-in {
+  height: 30px; padding: 0 8px; border: 1px solid transparent; border-radius: 6px;
+  font-size: 15px; font-weight: 500; color: var(--text, #17212f);
+  background: transparent; width: 11em;
+}
+.ai-bo-name-in:hover, .ai-bo-name-in:focus { border-color: var(--border, #dfe3ea); background: #fff; outline: none; }
+.ai-bo-name-in:focus { border-color: var(--btn-primary, #126efa); box-shadow: 0 0 0 3px rgb(18 110 250 / .12); }
+.ai-bo-code-in {
+  display: inline-flex; align-items: center; height: 26px; padding: 0 8px;
+  border: 1px solid transparent; border-radius: 6px; background: transparent;
+  font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; color: var(--muted, #6b7689);
+}
+.ai-bo-code-in input {
+  width: 12em; border: none; background: transparent; font: inherit; color: inherit;
+  padding: 0; outline: none;
+}
+.ai-bo-code-in:hover, .ai-bo-code-in:focus-within { border-color: var(--border, #dfe3ea); background: #fff; }
+.ai-bo-code-in:focus-within { border-color: var(--btn-primary, #126efa); }
+.ai-bo-code-in.bad { border-color: var(--danger, #d92d20); }
+.ai-bo-code-in .code-check { margin-left: 6px; font-size: 11px; white-space: nowrap; }
+.ai-bo-code-in .code-check.ok { color: #067a3c; }
+.ai-bo-code-in .code-check.bad { color: var(--danger, #d92d20); }
+
+/* 克隆会话提示条：一眼看出「现在改的是克隆出来的新对象」 */
+.clone-chat-hint {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 0 8px; padding: 7px 12px; border-radius: 8px;
+  background: var(--btn-text-soft, #edf4ff); border: 1px solid #cfe2ff;
+  font-size: 12.5px; color: var(--btn-text, #0958d9);
+}
+
+@media (max-width: 720px) {
+  .pc-naming { grid-template-columns: minmax(0, 1fr); }
+  #pcCodeCheck { grid-column: 1; }
+  .ai-card-head > div.is-clone { gap: 6px; }
+  .ai-bo-name-in { width: 8.5em; }
+  .ai-bo-code-in input { width: 9em; }
+  .pc-foot { padding: 12px 16px; }
+}

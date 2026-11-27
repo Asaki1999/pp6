@@ -39,6 +39,14 @@ def _child(el, name: str):
 
 
 def _children(el, name: str) -> list:
+    """取同名子节点；父节点不存在时返回空列表。
+
+    以前直接 `for c in el`：对象包里没有 <dictionaryTypeList>（普通对象、
+    「多个对象整体导出」的包都是）时 el 是 None → TypeError，整个包被记成
+    「解析失败」，界面上只说「这份 zip 里没有业务对象」。
+    """
+    if el is None:
+        return []
     return [c for c in el if _local(c.tag) == name]
 
 

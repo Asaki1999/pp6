@@ -412,6 +412,23 @@
               <button class="link" id="btnDemo" title="载入一份示例 Excel 与生成结果">载入示例</button>
             </div>
           </section>
+
+          <!-- 克隆现有对象：导入一份对象 zip，字段定义原样复制成新对象。
+               字段不让大模型转写（长度/候选值/级联/子表列会丢），AI 只排表单与列表。 -->
+          <section class="card excelbar" id="entryClone" aria-label="克隆现有对象">
+            <div class="eb-l">
+              <span class="eb-ic"><svg class="i"><use href="#i-copy"/></svg></span>
+              <div>
+                <b>克隆现有对象</b>
+                <span class="hint">导入对象 zip，照它的字段生成新对象；名称与编码会换，字段可增删</span>
+              </div>
+            </div>
+            <div class="eb-a">
+              <button type="button" class="btn" id="btnClonePick">选择对象 zip</button>
+              <input type="file" id="cloneZipInput" accept=".zip" hidden>
+              <span class="hint">流程 / 非流程对象包都可以；也可拖入</span>
+            </div>
+          </section>
         </div><!-- /entry-grid -->
       </div>
 
@@ -1005,6 +1022,37 @@
   </div>
 </div>
 
+<!-- 克隆设置弹窗：选 zip 里的对象 → 填新名称/编码 → 开始克隆。
+     字段定义由服务端从 zip 程序化复制，这里只决定「新对象叫什么、编码是什么」。 -->
+<div class="pl-mask" id="pcMask" hidden>
+  <div class="pl-modal" role="dialog" aria-modal="true" aria-labelledby="pcTitle">
+    <div class="pl-modal-head">
+      <div>
+        <h3 id="pcTitle">克隆现有对象</h3>
+        <div class="sub" id="pcSub">选择 zip 里的对象，起个新名字；字段会原样复制到新对象。</div>
+      </div>
+      <button class="pl-modal-close" id="pcClose" title="关闭（Esc）">×</button>
+    </div>
+    <div class="pl-modal-body">
+      <div class="pc-objects" id="pcObjects"></div>
+      <div class="pc-naming">
+        <label for="pcName">新对象名称<input id="pcName" placeholder="例：项目变更二期"></label>
+        <label for="pcCode">新对象编码<input id="pcCode" class="mono" placeholder="例：projchange2" spellcheck="false" autocomplete="off"></label>
+        <span id="pcCodeCheck"></span>
+      </div>
+      <div class="pc-note">
+        字段、选项值、级联与子表列<b>与原对象完全一致</b>；名称与编码按上面填的来。
+        进入预览后可继续对话增删字段，也能直接在表格里删。出包后是<b>全新对象</b>，不影响原对象。
+      </div>
+      <div class="pc-status" id="pcStatus" hidden></div>
+    </div>
+    <div class="pc-foot">
+      <button class="btn ghost" id="pcCancel">取消</button>
+      <button class="btn primary" id="pcGo">开始克隆</button>
+    </div>
+  </div>
+</div>
+
 <!-- 「相近字段确认」弹窗：勾了「关联项目」的对象里，只有**直接对应**（同名同族）
      的字段自动覆盖；语义相近 / 可能相关 / 需确认的，逐条列出来由用户勾。
      默认全部不勾 = 保留我方，勾上「按项目覆盖」才覆盖。 -->
@@ -1036,6 +1084,7 @@
 <script src="/static/projlink.js"></script>
 <script src="/static/preflight.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/clone.js"></script>
 <script src="/static/tasks.js"></script>
 <script src="/static/environment.js"></script>
 <script src="/static/query-explanation.js"></script>

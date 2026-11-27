@@ -34,7 +34,7 @@ TEST_DIR = ROOT / "tests"
 # 新模块加在这里才会被加载——**这是最容易漏的一步**（用例写了但没跑）
 MODULES = ["delivery", "history", "naming", "pm_terms", "reader", "doc_text", "desktop", "validate", "bo", "projlink",
            "form", "tablefield", "links", "builder", "value", "value_rules", "workflow",
-           "patch", "webui", "update", "security", "nlq"]
+           "patch", "clone", "webui", "update", "security", "nlq"]
 
 # 本次回归会话独有的临时根目录（见 _isolate_tmp）
 _TMP_DIR: Path | None = None
